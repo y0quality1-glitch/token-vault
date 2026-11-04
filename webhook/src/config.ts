@@ -27,7 +27,8 @@ export const config = {
   encryptionKeyRef: 'env:VAULT_ENCRYPTION_KEY#v1',
   instanceId: process.env.WEBHOOK_INSTANCE_ID ?? DEFAULT_WEBHOOK_INSTANCE_ID,
   githubMode: (process.env.GITHUB_MODE === 'live' ? 'live' : 'mock') as 'mock' | 'live',
-  dataFile: resolve(import.meta.dirname, '../data/vault-store.json'),
+  /** Ciphertext-only store. Override (e.g. in tests) to avoid touching the local dev store. */
+  dataFile: process.env.WEBHOOK_DATA_FILE ?? resolve(import.meta.dirname, '../data/vault-store.json'),
   version: '0.1.0-poc',
   maxClockSkewMs: 60_000,
   maxExecutionTtlMs: 60_000,

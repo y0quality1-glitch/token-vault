@@ -1,9 +1,17 @@
 // Generates per-process .env files with random development secrets.
 // Secrets are never committed (see .gitignore). Existing files are left untouched.
+//
+// Runtime-only mode: if WEBHOOK_SIGNING_SECRET and VAULT_ENCRYPTION_KEY are already set in the
+// environment (CI, containers, a secret manager), nothing is written to disk.
 import { randomBytes } from 'node:crypto';
 import { existsSync, writeFileSync, readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+if (process.env.WEBHOOK_SIGNING_SECRET && process.env.VAULT_ENCRYPTION_KEY) {
+  console.log('[setup] secrets provided via environment; skipping .env generation');
+  process.exit(0);
+}
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const serverEnv = resolve(root, 'server/.env');
