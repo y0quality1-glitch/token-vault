@@ -16,7 +16,7 @@ import { PageHeader } from '@/components/ui/navigation';
 import { JsonView, Mono } from '@/components/ui/secret';
 import { useToast } from '@/components/ui/toast';
 import { TrustBoundary, type FlowStage, type StageState } from '@/components/TrustBoundary';
-import { cn, formatDuration, formatTime } from '@/lib/utils';
+import { cn, formatDateTime, formatDuration, formatTime } from '@/lib/utils';
 
 interface Preset {
   id: string;
@@ -420,6 +420,18 @@ function ResultPanel({ item, sending, canAudit }: { item: HistoryItem | null; se
           ]}
         />
         {r.execution.idempotent_replay && <Callout tone="info">Idempotent replay: the cached result was returned after re-authorization.</Callout>}
+        {r.execution.credential && (
+          <Callout tone="security">
+            <span className="font-medium">Minted GitHub App token</span> scoped to{' '}
+            <span className="font-mono">{r.execution.credential.repositories.join(', ') || 'all installation repositories'}</span> with{' '}
+            <span className="font-mono">
+              {Object.entries(r.execution.credential.permissions)
+                .map(([k, v]) => `${k}:${v}`)
+                .join(', ')}
+            </span>
+            {r.execution.credential.revoked ? ', revoked right after use.' : `, expiring ${formatDateTime(r.execution.credential.expires_at)}.`}
+          </Callout>
+        )}
 
         <div>
           <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Decision trace</p>

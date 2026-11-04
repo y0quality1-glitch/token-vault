@@ -107,7 +107,7 @@ export function IntegrationDetailPage() {
           <CardBody>
             <DetailList
               items={[
-                { label: 'Provider', value: 'GitHub (Personal Access Token)' },
+                { label: 'Provider', value: i.authType === 'GITHUB_APP' ? 'GitHub App (per-request installation tokens)' : 'GitHub (Personal Access Token)' },
                 { label: 'Environment', value: <EnvBadge env={i.environment} /> },
                 { label: 'Account / organization', value: i.accountLabel },
                 { label: 'Integration ID', value: <Mono>{i.id}</Mono> },
@@ -281,8 +281,9 @@ function EditMetadataDialog({ open, integration, onClose, onSaved }: { open: boo
 
 function RotateDialog({ open, integration, onClose, onSaved }: { open: boolean; integration: IntegrationDetail; onClose: () => void; onSaved: (i: IntegrationDetail) => void }) {
   const toast = useToast();
+  const isApp = integration.authType === 'GITHUB_APP';
   const [secret, setSecret] = useState('');
-  const rotate = useMutation((s: string) => api.post<IntegrationDetail>(`/integrations/${integration.id}/rotate`, { secret: s }));
+  const rotate = useMutation((s: string) => api.post<IntegrationDetail>(`/integrations/${integration.id}/rotate`, isApp ? { privateKey: s } : { secret: s }));
   useEffect(() => {
     if (!open) setSecret('');
   }, [open]);
@@ -291,7 +292,11 @@ function RotateDialog({ open, integration, onClose, onSaved }: { open: boolean; 
       open={open}
       onClose={onClose}
       title="Rotate / replace credential"
-      description="The new token is sent to the customer webhook, which re-encrypts it under the same credential reference."
+      description={
+        isApp
+          ? 'The new App private key is sent to the customer webhook, verified with GitHub and re-encrypted under the same credential reference.'
+          : 'The new token is sent to the customer webhook, which re-encrypts it under the same credential reference.'
+      }
       footer={
         <>
           <Button variant="outline" onClick={onClose}>
@@ -299,7 +304,7 @@ function RotateDialog({ open, integration, onClose, onSaved }: { open: boolean; 
           </Button>
           <Button
             loading={rotate.pending}
-            disabled={secret.length < 20}
+            disabled={isApp ? !secret.includes('PRIVATE KEY-----') : secret.length < 20}
             onClick={async () => {
               const r = await rotate.run(secret);
               setSecret('');
@@ -317,9 +322,15 @@ function RotateDialog({ open, integration, onClose, onSaved }: { open: boolean; 
     >
       <div className="space-y-4">
         <FormError error={rotate.error} />
-        <Field label="New Personal Access Token" error={rotate.fieldErrors.secret} hint="Minimum 20 characters. It will not be shown again.">
-          <Input type="password" autoComplete="new-password" className="font-mono" value={secret} onChange={(e) => setSecret(e.target.value)} />
-        </Field>
+        {isApp ? (
+          <Field label="New App private key (PEM)" htmlFor="rotatePrivateKey" error={rotate.fieldErrors.privateKey} hint="Generate a new key in the GitHub App settings, then delete the old one there. If the key is configured on the webhook (GITHUB_APP_PRIVATE_KEY), rotate it in the webhook's environment instead.">
+            <Textarea id="rotatePrivateKey" rows={4} spellCheck={false} autoComplete="off" className="font-mono text-xs [-webkit-text-security:disc]" value={secret} onChange={(e) => setSecret(e.target.value)} placeholder="-----BEGIN RSA PRIVATE KEY-----" />
+          </Field>
+        ) : (
+          <Field label="New Personal Access Token" error={rotate.fieldErrors.secret} hint="Minimum 20 characters. It will not be shown again.">
+            <Input type="password" autoComplete="new-password" className="font-mono" value={secret} onChange={(e) => setSecret(e.target.value)} />
+          </Field>
+        )}
         <p className="text-xs text-slate-500">
           Current: <span className="font-mono">{integration.maskedIdentifier}</span> · reference <span className="font-mono">{integration.credentialReference}</span>
         </p>

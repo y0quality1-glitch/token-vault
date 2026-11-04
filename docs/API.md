@@ -26,11 +26,11 @@ Errors use one shape: `{ "error": { "code": "…", "message": "…", "details": 
 | POST | `/webhooks/:id/simulate-outage` | `webhook:manage` | demo: `{enabled}` |
 | GET | `/integrations/catalog` | any role | |
 | GET | `/integrations` | any role | |
-| POST | `/integrations` | `integration:manage` | `{provider, webhookId, displayName, environment, accountLabel, authType, secret, allowedResources, description}`. The secret is forwarded to the webhook and never stored |
+| POST | `/integrations` | `integration:manage` | PAT: `{provider, webhookId, displayName, environment, accountLabel, authType: "PAT", secret, allowedResources, description}`. GitHub App: `{…, authType: "GITHUB_APP", appId, installationId (optional), keySource: "stored" \| "webhook_env", privateKey (PEM, when stored)}`; `accountLabel` is optional and defaults to the installation's account. Secrets are forwarded to the webhook and never stored. An invalid key or unknown installation returns 400 `INVALID_PRIVATE_KEY` / `INSTALLATION_NOT_FOUND` / `APP_KEY_NOT_CONFIGURED` |
 | GET | `/integrations/:id` | any role | includes granted agents |
 | PATCH | `/integrations/:id` | `integration:manage` | metadata only |
 | POST | `/integrations/:id/test` | `integration:manage` | webhook decrypts the credential and calls the provider |
-| POST | `/integrations/:id/rotate` | `integration:manage` | `{secret}` |
+| POST | `/integrations/:id/rotate` | `integration:manage` | PAT: `{secret}`. GitHub App: `{privateKey}` (400 `KEY_MANAGED_BY_WEBHOOK` if the key lives in the webhook's environment) |
 | POST | `/integrations/:id/disable` · `/enable` | `integration:manage` | |
 | DELETE | `/integrations/:id` | `integration:manage` | webhook crypto-shreds the credential; grants are revoked |
 | GET | `/agents` · `/agents/:id` | any role | |
@@ -88,7 +88,7 @@ Response (the same shape for allow and deny):
   "reason": "Authorized by grant \"GitHub Issue Creation\".",
   "matched_rule": { "type": "grant", "id": "grt_…", "name": "GitHub Issue Creation" },
   "grant_id": "grt_…",
-  "execution": { "status": "SUCCEEDED", "webhook_status": "OK", "upstream_status": 201, "duration_ms": 182, "simulated": true, "idempotent_replay": false },
+  "execution": { "status": "SUCCEEDED", "webhook_status": "OK", "upstream_status": 201, "duration_ms": 182, "simulated": true, "idempotent_replay": false, "credential": null },
   "result": { "number": 44, "title": "Token Vault POC test", "state": "open", "html_url": "…" },
   "checks": [{ "step": 1, "name": "Authenticate caller", "passed": true, "detail": "…" }]
 }
@@ -114,5 +114,13 @@ Every endpoint requires a valid control-plane signature: the `x-tv-timestamp`, `
 | POST | `/internal/v1/credentials/:ref/test` | decrypt and call the provider; returns validity only |
 | POST | `/internal/v1/credentials/:ref/delete` | crypto-shred |
 | POST | `/internal/v1/execute` | validate `aud`, `exp`, TTL and org, then inject the credential and return a sanitized result |
+
+For a GitHub App integration, `execution.credential` describes the token the webhook minted for this one request (the token itself is never returned):
+
+```json
+{ "type": "github_app_installation_token", "repositories": ["demo-org/demo-repo"], "permissions": { "issues": "write" }, "expires_at": "2026-11-04T13:00:00.000Z", "revoked": true }
+```
+
+It is also recorded in the audit event's metadata. For PAT integrations it is `null`.
 
 If a stored credential cannot be decrypted with the configured key, `test` and `execute` return HTTP 500 with `CREDENTIAL_UNREADABLE`. No secret material or ciphertext is included.

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { OPERATION_PERMISSIONS, mockTokenScope } from './github-app';
 
 /**
  * GitHub connector executed INSIDE the customer webhook. The decrypted token is
@@ -61,7 +62,19 @@ function looksLikeToken(token: string) {
 async function mockCall(token: string, call: ProviderCall): Promise<ProviderResult> {
   await new Promise((r) => setTimeout(r, 40 + Math.random() * 120)); // simulated network latency
   if (!looksLikeToken(token)) return { upstreamStatus: 401, body: { message: 'Bad credentials' }, simulated: true };
-  if (call.operation === 'credential.test') return { upstreamStatus: 200, body: { login: 'demo-bot', type: 'Bot' }, simulated: true };
+  // GitHub App installation tokens (ghs_): enforce the minted scope exactly like GitHub does.
+  if (token.startsWith('ghs_')) {
+    const scope = mockTokenScope(token);
+    if (!scope) return { upstreamStatus: 401, body: { message: 'Bad credentials' }, simulated: true };
+    const needed = OPERATION_PERMISSIONS[call.operation] ?? {};
+    for (const [perm, level] of Object.entries(needed)) {
+      const have = scope.permissions[perm as keyof typeof scope.permissions];
+      if (!have || (level === 'write' && have !== 'write')) return { upstreamStatus: 403, body: { message: 'Resource not accessible by integration' }, simulated: true };
+    }
+    const repo = call.resource.repository?.toLowerCase();
+    if (repo && scope.repositories.length && !scope.repositories.includes(repo)) return { upstreamStatus: 404, body: { message: 'Not Found' }, simulated: true };
+  }
+  if (call.operation === 'credential.test') return { upstreamStatus: 200, body: { login: token.startsWith('ghs_') ? 'token-vault-demo[bot]' : 'demo-bot', type: 'Bot' }, simulated: true };
 
   const repoName = call.resource.repository ?? '';
   const repo = mockRepos[repoName.toLowerCase()];

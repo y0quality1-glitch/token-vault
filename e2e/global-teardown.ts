@@ -10,6 +10,7 @@ const SECRET_PATTERNS: [string, RegExp][] = [
   ['GitHub token', /\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/],
   ['agent API credential', /tvak_[0-9a-f]{12}_[A-Za-z0-9_-]{20,}/],
   ['bearer header', /Bearer\s+[A-Za-z0-9._-]{20,}/],
+  ['private key', /-----BEGIN [A-Z ]*PRIVATE KEY-----/],
 ];
 
 export default function globalTeardown() {

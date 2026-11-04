@@ -21,17 +21,32 @@ const secretSchema = z
   .max(512, 'Token is too long')
   .refine((s) => !/\s/.test(s), 'Token must not contain whitespace');
 
-const createSchema = z.object({
+const baseSchema = z.object({
   provider: z.literal('github', { errorMap: () => ({ message: 'Only GitHub is available in the POC' }) }),
   webhookId: z.string().min(1, 'Select a customer webhook'),
   displayName: z.string().trim().min(3, 'Name must be at least 3 characters').max(60),
   environment: z.enum(['development', 'staging', 'production']),
-  accountLabel: z.string().trim().min(1, 'Account / organization label is required').max(80),
-  authType: z.literal('PAT'),
-  secret: secretSchema,
+  accountLabel: z.string().trim().max(80).default(''),
   allowedResources: z.array(z.string().trim().regex(repoPattern, 'Use owner/repository format')).max(20).default([]),
   description: z.string().trim().max(240).default(''),
 });
+
+const privateKeySchema = z
+  .string()
+  .max(10_000, 'Private key is too long')
+  .refine((k) => /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(k), 'Paste the PEM private key downloaded from the GitHub App settings');
+
+/** PAT: a stored token. GITHUB_APP: App ID + private key; the webhook mints a narrowed token per request. */
+const createSchema = z.discriminatedUnion('authType', [
+  baseSchema.extend({ authType: z.literal('PAT'), accountLabel: z.string().trim().min(1, 'Account / organization label is required').max(80), secret: secretSchema }),
+  baseSchema.extend({
+    authType: z.literal('GITHUB_APP'),
+    appId: z.string().trim().regex(/^\d{1,12}$/, 'Enter the numeric App ID from the GitHub App settings'),
+    installationId: z.union([z.literal(''), z.string().trim().regex(/^\d{1,15}$/, 'Installation ID is numeric')]).default(''),
+    keySource: z.enum(['stored', 'webhook_env']),
+    privateKey: privateKeySchema.optional(),
+  }),
+]);
 
 async function getIntegration(orgId: string, id: string): Promise<IntegrationRecord> {
   const i = await integrationRepo.getIntegration(orgId, id);
@@ -96,8 +111,12 @@ integrationsRouter.get('/integrations/:id', async (req, res) => {
 integrationsRouter.post('/integrations', requirePermission(PERMISSIONS.INTEGRATION_MANAGE), async (req, res) => {
   const ctx = orgCtx(req);
   const body = parse(createSchema, req.body);
-  const { secret, ...meta } = body;
-  if (req.body && typeof req.body === 'object') delete (req.body as Record<string, unknown>).secret;
+  const meta = body;
+  if (body.authType === 'GITHUB_APP' && body.keySource === 'stored' && !body.privateKey) {
+    throw badRequest('Request validation failed', { fields: { privateKey: 'Paste the App private key, or choose the key configured on the webhook' } });
+  }
+  // Credential material is forwarded to the customer webhook and never kept here.
+  if (req.body && typeof req.body === 'object') for (const k of ['secret', 'privateKey']) delete (req.body as Record<string, unknown>)[k];
 
   const webhook = await webhookRepo.getWebhook(ctx.org.id, meta.webhookId);
   if (!webhook) throw badRequest('Request validation failed', { fields: { webhookId: 'Unknown webhook' } });
@@ -106,16 +125,22 @@ integrationsRouter.post('/integrations', requirePermission(PERMISSIONS.INTEGRATI
 
   let stored;
   try {
-    stored = await callWebhook(webhook, 'POST', '/internal/v1/credentials', {
-      org_id: ctx.org.id,
-      provider: meta.provider,
-      secret,
-      metadata: { label: meta.displayName, account: meta.accountLabel, environment: meta.environment },
-    });
+    const metadata = { label: meta.displayName, account: meta.accountLabel, environment: meta.environment };
+    stored = await callWebhook(
+      webhook,
+      'POST',
+      '/internal/v1/credentials',
+      body.authType === 'GITHUB_APP'
+        ? { org_id: ctx.org.id, provider: meta.provider, type: 'github_app', app_id: body.appId, installation_id: body.installationId || undefined, key_source: body.keySource, private_key: body.privateKey, metadata }
+        : { org_id: ctx.org.id, provider: meta.provider, secret: body.secret, metadata },
+    );
   } catch (e) {
     webhookError(e);
   }
-  if (stored.status !== 201) throw new HttpError(502, 'WEBHOOK_REJECTED', stored.body?.error?.message ?? 'The webhook rejected the credential');
+  if (stored.status !== 201) {
+    // 400 = the customer webhook judged the input invalid (bad key, unknown App or installation): show its reason.
+    throw new HttpError(stored.status === 400 ? 400 : 502, stored.body?.error?.code ?? 'WEBHOOK_REJECTED', stored.body?.error?.message ?? 'The webhook rejected the credential');
+  }
 
   // Validate immediately through the webhook (it decrypts and calls the provider; we only see the outcome).
   let lastValidatedAt: string | null = null;
@@ -140,7 +165,7 @@ integrationsRouter.post('/integrations', requirePermission(PERMISSIONS.INTEGRATI
         provider: meta.provider,
         displayName: meta.displayName,
         environment: meta.environment,
-        accountLabel: meta.accountLabel,
+        accountLabel: meta.accountLabel || stored.body.account || '',
         authType: meta.authType,
         credentialReference: stored.body.credential_ref,
         credentialStatus,
@@ -222,15 +247,18 @@ integrationsRouter.post('/integrations/:id/test', requirePermission(PERMISSIONS.
 integrationsRouter.post('/integrations/:id/rotate', requirePermission(PERMISSIONS.INTEGRATION_MANAGE), async (req, res) => {
   const ctx = orgCtx(req);
   const i = await getIntegration(ctx.org.id, String(req.params.id));
-  const { secret } = parse(z.object({ secret: secretSchema }), req.body);
-  delete (req.body as Record<string, unknown>).secret;
+  const rotation =
+    i.authType === 'GITHUB_APP'
+      ? { private_key: parse(z.object({ privateKey: privateKeySchema }), req.body).privateKey }
+      : { secret: parse(z.object({ secret: secretSchema }), req.body).secret };
+  for (const k of ['secret', 'privateKey']) delete (req.body as Record<string, unknown>)[k];
   let result;
   try {
-    result = await callWebhook(await webhookFor(i), 'POST', `/internal/v1/credentials/${i.credentialReference}/rotate`, { org_id: ctx.org.id, secret });
+    result = await callWebhook(await webhookFor(i), 'POST', `/internal/v1/credentials/${i.credentialReference}/rotate`, { org_id: ctx.org.id, ...rotation });
   } catch (e) {
     webhookError(e);
   }
-  if (result.status !== 200) throw new HttpError(502, 'WEBHOOK_REJECTED', result.body?.error?.message ?? 'Rotation failed');
+  if (result.status !== 200) throw new HttpError(result.status === 400 ? 400 : 502, result.body?.error?.code ?? 'WEBHOOK_REJECTED', result.body?.error?.message ?? 'Rotation failed');
   const now = new Date().toISOString();
   const updated = await transaction(async (tx) => {
     const u = await integrationRepo.updateIntegration(

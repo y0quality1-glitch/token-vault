@@ -91,7 +91,7 @@ export const PROVIDER_CATALOG: { provider: ProviderId; name: string; description
     provider: 'github',
     name: 'GitHub',
     description: 'Repositories, contents and issues via the GitHub REST API. Fully implemented POC connector.',
-    authMethods: ['Personal Access Token'],
+    authMethods: ['GitHub App', 'Personal Access Token'],
     available: true,
   },
   {

@@ -4,7 +4,8 @@ import { describeError } from './db/client';
 import { PgNonceStore } from './security/nonce-store';
 import { hmacHex, signResponse, verifySignedRequest } from './security/signature';
 import * as store from './store/credential-store';
-import { SUPPORTED_OPERATIONS, callGitHub } from './providers/github';
+import { SUPPORTED_OPERATIONS, callGitHub, type ProviderCall, type ProviderResult } from './providers/github';
+import * as app from './providers/github-app';
 
 // Shared across instances via PostgreSQL: a replayed request is rejected by any instance.
 const nonces = new PgNonceStore(config.maxClockSkewMs * 2);
@@ -59,6 +60,56 @@ function credentialFailure(req: SignedRequest, res: Response, e: unknown, contex
   return signedJson(req, res, 502, { error: { code: 'UPSTREAM_UNREACHABLE', message: 'Upstream provider could not be reached' } });
 }
 
+/** Non-secret description of the credential actually used, for the control plane and audit. */
+export interface CredentialUse {
+  type: 'github_app_installation_token';
+  repositories: string[];
+  permissions: Record<string, string>;
+  expires_at: string;
+  revoked: boolean;
+}
+
+/**
+ * Runs one upstream call with a stored credential. A PAT is injected as-is. A GitHub App
+ * credential mints an installation token narrowed to this call's repository and the
+ * operation's permission, uses it once and revokes it.
+ */
+async function runWithCredential(secret: string, call: ProviderCall): Promise<ProviderResult & { credential?: CredentialUse }> {
+  if (!app.isGitHubAppCredential(secret)) return callGitHub(config.githubMode, secret, call);
+  const cred = JSON.parse(secret) as app.GitHubAppCredential;
+  const key = app.resolvePrivateKey(cred, config.githubAppPrivateKey);
+  const minted = await app.mintInstallationToken(config.githubMode, cred, key, call.operation, call.resource.repository);
+  try {
+    const result = await callGitHub(config.githubMode, minted.token, call);
+    const revoked = await app.revokeInstallationToken(config.githubMode, minted.token);
+    return { ...result, credential: { type: 'github_app_installation_token', repositories: minted.repositories, permissions: minted.permissions as Record<string, string>, expires_at: minted.expiresAt, revoked } };
+  } catch (e) {
+    await app.revokeInstallationToken(config.githubMode, minted.token);
+    throw e;
+  }
+}
+
+/** Validates a GitHub App registration request and resolves its installation. */
+async function prepareAppCredential(body: any): Promise<app.GitHubAppCredential> {
+  const appId = String(body?.app_id ?? '');
+  if (!/^\d{1,12}$/.test(appId)) throw new app.GitHubAppError('APP_AUTH_FAILED', 'app_id must be the numeric GitHub App ID');
+  const keySource = body?.key_source === 'webhook_env' ? 'webhook_env' : 'stored';
+  const installationId = body?.installation_id ? String(body.installation_id) : undefined;
+  if (installationId && !/^\d{1,15}$/.test(installationId)) throw new app.GitHubAppError('INSTALLATION_NOT_FOUND', 'installation_id must be numeric');
+  const cred: app.GitHubAppCredential = { type: 'github_app', appId, installationId: installationId ?? '', keySource, ...(keySource === 'stored' ? { privateKey: String(body?.private_key ?? '') } : {}) };
+  const key = app.resolvePrivateKey(cred, config.githubAppPrivateKey);
+  const found = await app.resolveInstallation(config.githubMode, appId, key, installationId);
+  return { ...cred, installationId: found.installationId, account: found.account };
+}
+
+function appFailure(req: SignedRequest, res: Response, e: unknown) {
+  if (e instanceof app.GitHubAppError) {
+    console.warn(`[vault] GitHub App: ${e.code}`);
+    return signedJson(req, res, e.code === 'TOKEN_MINT_FAILED' || e.code === 'APP_AUTH_FAILED' ? 502 : 400, { error: { code: e.code, message: e.message } });
+  }
+  return credentialFailure(req, res, e, 'github app');
+}
+
 function str(v: unknown, max = 200): string {
   return typeof v === 'string' ? v.slice(0, max) : '';
 }
@@ -84,37 +135,72 @@ export function buildRouter() {
     });
   });
 
-  // Register a credential. The secret is encrypted immediately and only a reference is returned.
+  // Register a credential: a PAT (encrypted immediately) or a GitHub App (App ID + private key).
   r.post('/internal/v1/credentials', requireSignature, async (req: SignedRequest, res) => {
-    const { org_id, provider, secret, metadata } = req.json ?? {};
-    if (!str(org_id) || provider !== 'github' || typeof secret !== 'string' || secret.length < 20 || secret.length > 512) {
-      return signedJson(req, res, 400, { error: { code: 'INVALID_CREDENTIAL_REQUEST', message: 'org_id, provider=github and a 20-512 character secret are required' } });
+    const { org_id, provider, secret, metadata, type } = req.json ?? {};
+    if (!str(org_id) || provider !== 'github') {
+      return signedJson(req, res, 400, { error: { code: 'INVALID_CREDENTIAL_REQUEST', message: 'org_id and provider=github are required' } });
     }
     const safeMeta: Record<string, string> = {};
     for (const [k, v] of Object.entries(metadata ?? {})) if (typeof v === 'string') safeMeta[k.slice(0, 40)] = v.slice(0, 200);
-    const rec = await store.createCredential(org_id, provider, secret, safeMeta);
-    console.log(`[vault] stored credential ${rec.credentialRef} provider=${provider} (encrypted, AES-256-GCM)`);
-    signedJson(req, res, 201, store.publicView(rec));
-  });
 
-  r.post('/internal/v1/credentials/:ref/rotate', requireSignature, async (req: SignedRequest, res) => {
-    const { org_id, secret } = req.json ?? {};
+    if (type === 'github_app') {
+      try {
+        const cred = await prepareAppCredential(req.json);
+        const rec = await store.createCredential(org_id, provider, JSON.stringify(cred), { ...safeMeta, auth: 'github_app', app_id: cred.appId, installation_id: cred.installationId, account: cred.account ?? '', key_source: cred.keySource }, app.maskApp(cred));
+        console.log(`[vault] stored GitHub App credential ${rec.credentialRef} app=${cred.appId} installation=${cred.installationId} key=${cred.keySource}`);
+        return signedJson(req, res, 201, { ...store.publicView(rec), auth_type: 'GITHUB_APP', app_id: cred.appId, installation_id: cred.installationId, account: cred.account ?? null });
+      } catch (e) {
+        return appFailure(req, res, e);
+      }
+    }
+
     if (typeof secret !== 'string' || secret.length < 20 || secret.length > 512) {
       return signedJson(req, res, 400, { error: { code: 'INVALID_CREDENTIAL_REQUEST', message: 'A 20-512 character secret is required' } });
     }
-    const rec = await store.rotateCredential(String(req.params.ref), str(org_id), secret);
-    if (!rec) return signedJson(req, res, 404, { error: { code: 'CREDENTIAL_NOT_FOUND', message: 'Unknown credential reference' } });
-    console.log(`[vault] rotated credential ${rec.credentialRef}`);
-    signedJson(req, res, 200, store.publicView(rec));
+    const rec = await store.createCredential(org_id, provider, secret, { ...safeMeta, auth: 'pat' });
+    console.log(`[vault] stored credential ${rec.credentialRef} provider=${provider} (encrypted, AES-256-GCM)`);
+    signedJson(req, res, 201, { ...store.publicView(rec), auth_type: 'PAT' });
+  });
+
+  r.post('/internal/v1/credentials/:ref/rotate', requireSignature, async (req: SignedRequest, res) => {
+    const { org_id, secret, private_key } = req.json ?? {};
+    const existing = await store.get(String(req.params.ref), str(org_id));
+    if (!existing) return signedJson(req, res, 404, { error: { code: 'CREDENTIAL_NOT_FOUND', message: 'Unknown credential reference' } });
+    try {
+      const current = await store.withSecret(existing, async (s) => s);
+      if (app.isGitHubAppCredential(current)) {
+        const cred = JSON.parse(current) as app.GitHubAppCredential;
+        if (cred.keySource === 'webhook_env') {
+          return signedJson(req, res, 400, { error: { code: 'KEY_MANAGED_BY_WEBHOOK', message: 'This App key lives in the webhook environment (GITHUB_APP_PRIVATE_KEY); rotate it there.' } });
+        }
+        const key = app.parsePrivateKey(String(private_key ?? ''));
+        await app.resolveInstallation(config.githubMode, cred.appId, key, cred.installationId); // the new key must work
+        const next: app.GitHubAppCredential = { ...cred, privateKey: String(private_key) };
+        const rec = await store.rotateCredential(existing.credentialRef, str(org_id), JSON.stringify(next), app.maskApp(next));
+        console.log(`[vault] rotated GitHub App key for ${existing.credentialRef}`);
+        return signedJson(req, res, 200, store.publicView(rec!));
+      }
+    } catch (e) {
+      if (e instanceof app.GitHubAppError) return appFailure(req, res, e);
+      return credentialFailure(req, res, e, `rotate ${existing.credentialRef}`);
+    }
+    if (typeof secret !== 'string' || secret.length < 20 || secret.length > 512) {
+      return signedJson(req, res, 400, { error: { code: 'INVALID_CREDENTIAL_REQUEST', message: 'A 20-512 character secret is required' } });
+    }
+    const rec = await store.rotateCredential(existing.credentialRef, str(org_id), secret);
+    console.log(`[vault] rotated credential ${existing.credentialRef}`);
+    signedJson(req, res, 200, store.publicView(rec!));
   });
 
   r.post('/internal/v1/credentials/:ref/test', requireSignature, async (req: SignedRequest, res) => {
     const rec = await store.get(String(req.params.ref), str(req.json?.org_id));
     if (!rec) return signedJson(req, res, 404, { error: { code: 'CREDENTIAL_NOT_FOUND', message: 'Unknown credential reference' } });
     try {
-      const result = await store.withSecret(rec, (token) => callGitHub(config.githubMode, token, { operation: 'credential.test', resource: {}, input: {} }));
+      const result = await store.withSecret(rec, (secret) => runWithCredential(secret, { operation: 'credential.test', resource: {}, input: {} }));
       signedJson(req, res, 200, { valid: result.upstreamStatus === 200, upstream_status: result.upstreamStatus, simulated: result.simulated, ...store.publicView(rec) });
     } catch (e) {
+      if (e instanceof app.GitHubAppError) return signedJson(req, res, 200, { valid: false, upstream_status: e.upstreamStatus, simulated: config.githubMode === 'mock', error_code: e.code, ...store.publicView(rec) });
       credentialFailure(req, res, e, `test ${rec.credentialRef}`);
     }
   });
@@ -139,18 +225,20 @@ export function buildRouter() {
     if (rec.status !== 'ACTIVE') return signedJson(req, res, 409, { error: { code: 'CREDENTIAL_DISABLED', message: 'Credential is disabled' } });
 
     try {
-      const result = await store.withSecret(rec, (token) =>
-        callGitHub(config.githubMode, token, { operation: claims.operation, resource: claims.resource ?? {}, input: claims.input ?? {} }),
+      const result = await store.withSecret(rec, (secret) =>
+        runWithCredential(secret, { operation: claims.operation, resource: claims.resource ?? {}, input: claims.input ?? {} }),
       );
-      console.log(`[vault] execute ${claims.request_id} op=${claims.operation} ref=${rec.credentialRef} upstream=${result.upstreamStatus}`);
+      console.log(`[vault] execute ${claims.request_id} op=${claims.operation} ref=${rec.credentialRef} upstream=${result.upstreamStatus}${result.credential ? ' (minted App token, revoked)' : ''}`);
       signedJson(req, res, 200, {
         request_id: claims.request_id,
         upstream_status: result.upstreamStatus,
         simulated: result.simulated,
         result: result.body,
         duration_ms: Date.now() - started,
+        ...(result.credential ? { credential: result.credential } : {}),
       });
     } catch (e) {
+      if (e instanceof app.GitHubAppError) return appFailure(req, res, e);
       credentialFailure(req, res, e, `execute ${claims.request_id}`);
     }
   });
