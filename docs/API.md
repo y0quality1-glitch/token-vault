@@ -91,6 +91,8 @@ HTTP status codes: 200 allowed · 400 malformed or unknown operation · 401 unau
 
 `GET /agent/v1/requests/:id` returns one of the calling agent's own requests.
 
+`GET /agent/v1/capabilities` returns the calling agent's own grants: integration, operations, repositories, status and expiry. Revoked and expired grants are listed with their status, and superseded versions are omitted. Agent tooling uses it to pick an integration and to show the model what it may do. Authorization is still decided per request by `/execute`. See [AGENTS.md](AGENTS.md) for the SDK and MCP server.
+
 ## Customer webhook: `/internal/v1` (port 4100)
 
 Every endpoint requires a valid control-plane signature: the `x-tv-timestamp`, `x-tv-nonce` and `x-tv-signature` headers carrying HMAC-SHA256 of `METHOD\nPATH\nTIMESTAMP\nNONCE\nSHA256(body)`. Every response carries `x-tv-response-signature`. No endpoint returns secret material.

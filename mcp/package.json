@@ -1,0 +1,25 @@
+{
+  "name": "@token-vault/mcp-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "MCP server exposing Token Vault-brokered GitHub tools to AI agents (stdio)",
+  "bin": { "token-vault-mcp": "./bin/token-vault-mcp.mjs" },
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@token-vault/sdk": "0.1.0",
+    "@token-vault/shared": "0.1.0",
+    "tsx": "^4.20.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.0"
+  }
+}

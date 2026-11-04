@@ -86,6 +86,16 @@ To run the processes one at a time: `npm run dev -w server`, `npm run dev -w web
 
 ---
 
+## Connect a real AI agent
+
+Token Vault ships an **MCP server** (`mcp/`) and a **TypeScript SDK** (`sdk/`), so Claude or your own agent can call GitHub through Token Vault using only its own Token Vault key. Register an agent, give it a grant, then:
+
+```bash
+npm run mcp:config
+```
+
+This prints ready-to-paste configuration for Claude Code and Claude Desktop. Revoke the grant and the agent's next tool call is denied. See [docs/AGENTS.md](docs/AGENTS.md).
+
 ## Demo script (5–8 minutes)
 
 The in-app **Demo guide** (sidebar footer) repeats this with direct links.
@@ -170,6 +180,8 @@ token-vault/
 ├── package.json              npm workspaces + root scripts
 ├── scripts/setup.mjs         generates server/.env and webhook/.env (random secrets)
 ├── shared/                   @token-vault/shared: domain types, operation catalog, RBAC matrix, decision codes
+├── sdk/                      @token-vault/sdk: TypeScript client for the agent API (typed errors, key never logged)
+├── mcp/                      Token Vault MCP server (stdio): brokered GitHub tools for AI agents
 ├── server/                   Control plane (Express modular monolith)
 │   ├── src/
 │   │   ├── app.ts            router composition (admin API /api/v1, agent API /agent/v1)
@@ -211,6 +223,7 @@ token-vault/
 │       └── pages/            one file per screen (see docs/SCREEN_MAP.md)
 └── docs/
     ├── SCREEN_MAP.md         information architecture, screen map, journeys
+    ├── AGENTS.md             connecting AI agents: MCP server and SDK
     └── API.md                endpoint reference
 ```
 

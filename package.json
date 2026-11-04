@@ -5,23 +5,27 @@
   "description": "Token Vault POC: identity-aware credential authorization and brokering for applications and AI agents",
   "workspaces": [
     "shared",
+    "sdk",
     "server",
     "webhook",
     "client",
+    "mcp",
     "e2e"
   ],
   "scripts": {
     "setup": "node scripts/setup.mjs",
     "dev": "node scripts/setup.mjs && concurrently -k -n api,vault,web -c blue,magenta,green \"npm run dev -w server\" \"npm run dev -w webhook\" \"npm run dev -w client\"",
     "build": "npm run build -w client",
-    "typecheck": "npm run typecheck -w shared && npm run typecheck -w server && npm run typecheck -w webhook && npm run typecheck -w client && npm run typecheck -w e2e",
-    "test": "npm run test -w server && npm run test -w webhook",
+    "typecheck": "npm run typecheck -w shared -w sdk -w server -w webhook -w mcp -w client -w e2e",
+    "test": "npm run test -w sdk -w server -w webhook -w mcp",
     "test:e2e": "npm test -w e2e",
     "db:up": "docker compose up -d --wait postgres",
     "db:down": "docker compose down",
     "db:migrate": "npm run db:migrate -w server && npm run db:migrate -w webhook",
     "db:generate": "npm run db:generate -w server",
-    "db:init": "docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U token_vault -d postgres -f /docker-entrypoint-initdb.d/pg-init.sql"
+    "db:init": "docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U token_vault -d postgres -f /docker-entrypoint-initdb.d/pg-init.sql",
+    "mcp:config": "node scripts/mcp-config.mjs",
+    "mcp": "npm run start -w mcp"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",
