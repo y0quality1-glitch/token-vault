@@ -19,6 +19,7 @@ import { CreateGrantPage } from '@/pages/access/CreateGrantPage';
 import { GrantDetailPage } from '@/pages/access/GrantDetailPage';
 import { PoliciesPage } from '@/pages/access/PoliciesPage';
 import { AccessRequestsPage } from '@/pages/access/AccessRequestsPage';
+import { AccessReviewsPage } from '@/pages/access/AccessReviewsPage';
 import { WebhookSetupPage } from '@/pages/webhook/WebhookSetupPage';
 import { WebhookHealthPage } from '@/pages/webhook/WebhookHealthPage';
 import { PlaygroundPage } from '@/pages/PlaygroundPage';
@@ -56,6 +57,7 @@ export function App() {
         <Route path="access/grants/new" element={<CreateGrantPage />} />
         <Route path="access/grants/:id" element={<GrantDetailPage />} />
         <Route path="access/requests" element={<AccessRequestsPage />} />
+        <Route path="access/reviews" element={<AccessReviewsPage />} />
         <Route path="access/policies" element={<PoliciesPage />} />
 
         <Route path="webhook/setup" element={<WebhookSetupPage />} />

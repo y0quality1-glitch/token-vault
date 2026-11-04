@@ -19,6 +19,7 @@ Token Vault
 │   ├── Create Access Grant (5 steps)/access/grants/new        CreateGrantPage.tsx
 │   ├── Grant Details                /access/grants/:id        GrantDetailPage.tsx
 │   ├── Access Requests (JIT)        /access/requests          AccessRequestsPage.tsx
+│   ├── Access Reviews               /access/reviews           AccessReviewsPage.tsx
 │   └── Policies                     /access/policies          PoliciesPage.tsx
 ├── Access Playground (Demo)         /playground               pages/PlaygroundPage.tsx
 ├── Webhook / Vault Agent

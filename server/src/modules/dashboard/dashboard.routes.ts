@@ -3,6 +3,7 @@ import type { DashboardSummary } from '@token-vault/shared';
 import { orgCtx } from '../../middleware/auth';
 import { agentRepo, auditRepo, grantRepo, grantRequestRepo, integrationRepo, webhookRepo } from '../../store/repos';
 import { effectiveStatus as requestStatus } from '../grant-requests/grant-requests.service';
+import { REVIEW_INTERVAL_DAYS, reviewDueAt } from '../access-reviews/access-reviews.routes';
 import { effectiveGrantStatus, loadLookups, toGrant } from '../../store/views';
 
 export const dashboardRouter = Router();
@@ -43,6 +44,15 @@ dashboardRouter.get('/dashboard', async (req, res) => {
   }
   for (const i of integrations.filter((x) => x.credentialStatus === 'INVALID' || x.credentialStatus === 'DISABLED')) {
     alerts.push({ id: `int-${i.id}`, severity: 'warning', title: `Integration "${i.displayName}" is ${i.credentialStatus.toLowerCase()}`, detail: 'Agents cannot use this integration until it is re-enabled or rotated.', link: `/integrations/${i.id}`, at: i.updatedAt });
+  }
+  const activeGrants = grants.filter((g) => effectiveGrantStatus(g) === 'ACTIVE');
+  const reviewsDue = activeGrants.filter((g) => reviewDueAt(g).getTime() <= now);
+  if (reviewsDue.length) {
+    alerts.push({ id: 'reviews-due', severity: 'warning', title: `${reviewsDue.length} grant${reviewsDue.length > 1 ? 's' : ''} due for access review`, detail: `Not reviewed in ${REVIEW_INTERVAL_DAYS} days: ${reviewsDue.map((g) => g.name).join(', ')}.`, link: '/access/reviews', at: new Date(now).toISOString() });
+  }
+  const expiring72h = activeGrants.filter((g) => new Date(g.expiresAt).getTime() - now <= 3 * 86400e3);
+  if (expiring72h.length) {
+    alerts.push({ id: 'expiring-72h', severity: 'info', title: `${expiring72h.length} grant${expiring72h.length > 1 ? 's' : ''} expire within 72 hours`, detail: expiring72h.map((g) => `${g.name} (${new Date(g.expiresAt).toUTCString()})`).join('; '), link: '/access/reviews', at: new Date(now).toISOString() });
   }
   const pendingRequests = grantRequests.filter((r) => requestStatus(r) === 'PENDING');
   if (pendingRequests.length) {

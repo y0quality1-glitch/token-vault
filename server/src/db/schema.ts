@@ -1,4 +1,4 @@
-import { boolean, customType, index, integer, jsonb, pgTable, text, uniqueIndex } from 'drizzle-orm/pg-core';
+import { bigint, boolean, customType, index, integer, jsonb, pgTable, text, uniqueIndex } from 'drizzle-orm/pg-core';
 import type {
   AgentStatus,
   AgentType,
@@ -209,6 +209,9 @@ export const grants = pgTable(
     revocationReason: text('revocation_reason'),
     lastUsedAt: ts('last_used_at'),
     usageCount: integer('usage_count').notNull().default(0),
+    /** Access reviews: last time a reviewer certified this grant should keep existing. */
+    lastReviewedAt: ts('last_reviewed_at'),
+    lastReviewedBy: text('last_reviewed_by'),
   },
   (t) => [index('grants_org_idx').on(t.organizationId), index('grants_agent_integration_idx').on(t.agentId, t.integrationId)],
 );
@@ -265,8 +268,15 @@ export const accessRequests = pgTable(
     idempotencyKey: text('idempotency_key'),
     checks: jsonb('checks').$type<DecisionCheck[]>().notNull(),
     createdAt: ts('created_at').notNull(),
+    // Tamper evidence (migration 0003): per-organization hash chain + HMAC with a key held outside the database.
+    // NULL on rows written before chaining existed ("legacy").
+    seq: bigint('seq', { mode: 'number' }),
+    prevHash: text('prev_hash'),
+    hash: text('hash'),
+    mac: text('mac'),
   },
   (t) => [
+    uniqueIndex('access_requests_org_seq_uq').on(t.organizationId, t.seq),
     index('access_requests_org_created_idx').on(t.organizationId, t.createdAt),
     index('access_requests_grant_idx').on(t.grantId),
     index('access_requests_agent_idx').on(t.agentId),
@@ -294,8 +304,14 @@ export const auditEvents = pgTable(
     metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull(),
     correlationId: text('correlation_id').notNull(),
     createdAt: ts('created_at').notNull(),
+    // Tamper evidence (migration 0003): per-organization hash chain + HMAC with a key held outside the database.
+    // NULL on rows written before chaining existed ("legacy").
+    seq: bigint('seq', { mode: 'number' }),
+    prevHash: text('prev_hash'),
+    hash: text('hash'),
+    mac: text('mac'),
   },
-  (t) => [index('audit_events_org_created_idx').on(t.organizationId, t.createdAt), index('audit_events_correlation_idx').on(t.correlationId)],
+  (t) => [uniqueIndex('audit_events_org_seq_uq').on(t.organizationId, t.seq), index('audit_events_org_created_idx').on(t.organizationId, t.createdAt), index('audit_events_correlation_idx').on(t.correlationId)],
 );
 
 /**

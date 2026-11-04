@@ -8,6 +8,7 @@ import {
   type Policy,
 } from '@token-vault/shared';
 import { config } from '../config';
+import { chainBatch } from '../modules/audit/chain';
 import { generateAgentCredential, hashSecret } from '../lib/crypto';
 import { correlationId, newId, requestId } from '../lib/ids';
 import { sql } from 'drizzle-orm';
@@ -210,6 +211,8 @@ export function buildSeed(): SeedData {
       expiresAt: iso(7 * DAY),
       createdAt: iso(-4 * DAY),
       lastUsedAt: iso(-18 * MIN),
+      lastReviewedAt: iso(-3 * DAY),
+      lastReviewedBy: IDS.securityAdmin,
     }),
     grant({
       id: IDS.grtStaging,
@@ -230,9 +233,9 @@ export function buildSeed(): SeedData {
       name: 'Release Notes Read',
       environment: 'staging',
       scopes: ['github.repositories.read', 'github.contents.read', 'github.issues.list'],
-      validFrom: iso(-8 * DAY),
+      validFrom: iso(-40 * DAY), // never reviewed in 40 days: due for access review
       expiresAt: iso(2 * DAY - 3 * HOUR), // expiring soon
-      createdAt: iso(-8 * DAY),
+      createdAt: iso(-40 * DAY),
       lastUsedAt: iso(-3 * HOUR),
     }),
     grant({
@@ -445,7 +448,7 @@ function seedHistory() {
   admin(15 * DAY, IDS.securityAdmin, 'policy.created', 'policy', 'pol_block_destructive', 'Block destructive GitHub operations', { effect: 'DENY' });
   admin(12 * DAY, IDS.developer, 'agent.registered', 'agent', IDS.agtAssistant, 'GitHub Assistant', { agentType: 'AI_AGENT' });
   admin(9 * DAY, IDS.developer, 'agent.registered', 'agent', IDS.agtRelease, 'Release Notes Bot', { agentType: 'APPLICATION' });
-  admin(8 * DAY, IDS.vaultAdmin, 'grant.created', 'grant', IDS.grtRelease, 'Release Notes Read', { scopes: ['github.repositories.read', 'github.contents.read', 'github.issues.list'] });
+  admin(40 * DAY, IDS.vaultAdmin, 'grant.created', 'grant', IDS.grtRelease, 'Release Notes Read', { scopes: ['github.repositories.read', 'github.contents.read', 'github.issues.list'] });
   admin(6 * DAY, IDS.vaultAdmin, 'integration.connected', 'integration', IDS.intPartner, 'Partner GitHub', { provider: 'github', credentialReference: SEED_CREDENTIAL_REFS.partnerGithub.ref });
   admin(4 * DAY, IDS.vaultAdmin, 'grant.created', 'grant', IDS.grtIssue, 'GitHub Issue Creation', { scopes: ['github.repositories.read', 'github.issues.list', 'github.issues.create'], repositories: ['demo-org/demo-repo'] });
   admin(2 * DAY, IDS.securityAdmin, 'grant.revoked', 'grant', IDS.grtTriage, 'Triage Issue Listing', { reason: 'Agent decommissioned' }, 'warning');
@@ -476,8 +479,9 @@ async function insertSeed(data: SeedData, ex: Executor) {
   await ex.insert(t.agents).values(data.agents);
   await ex.insert(t.grants).values(data.grants);
   await ex.insert(t.policies).values(data.policies);
-  await ex.insert(t.accessRequests).values(data.accessRequests);
-  await ex.insert(t.auditEvents).values(data.auditEvents);
+  // Seeded audit history is chained like live records (oldest first, per organization).
+  await ex.insert(t.accessRequests).values(chainBatch(config.auditSigningKey, 'access_requests', data.accessRequests));
+  await ex.insert(t.auditEvents).values(chainBatch(config.auditSigningKey, 'audit_events', data.auditEvents));
 }
 
 /** Seeds demo data only when the database has no organizations yet. Returns true if it seeded. */

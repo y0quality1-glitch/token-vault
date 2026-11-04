@@ -1,20 +1,51 @@
-import { and, count, desc, eq, gte, ilike, like, lte, ne, or, type SQL } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, ilike, isNotNull, isNull, like, lte, ne, or, sql, type SQL } from 'drizzle-orm';
 import type { AccessRequest, AuditEvent } from '@token-vault/shared';
-import { db, type Executor } from '../../db/client';
+import { config } from '../../config';
+import { db, transaction, type Executor } from '../../db/client';
+import { link, type ChainTable } from '../../modules/audit/chain';
 import { accessRequests, auditEvents } from '../../db/schema';
 
 /**
- * Append-only audit storage. There are intentionally no update or delete functions;
- * the database also rejects UPDATE/DELETE on these tables (migration 0001).
+ * Append-only, tamper-evident audit storage. There are intentionally no update or delete
+ * functions; the database also rejects UPDATE/DELETE on these tables (migration 0001).
+ *
+ * Every insert extends the organization's hash chain (see modules/audit/chain.ts). A
+ * transaction-scoped advisory lock per (table, organization) serializes appends, so
+ * concurrent writers cannot fork the chain; a unique (organization, seq) index backs it up.
  */
-export async function insertAccessRequest(record: AccessRequest, ex: Executor = db): Promise<AccessRequest> {
-  const [row] = await ex.insert(accessRequests).values(record).returning();
-  return row!;
+async function appendChained<T extends { organizationId: string }>(table: ChainTable, record: T, ex: Executor): Promise<T> {
+  const t = table === 'audit_events' ? auditEvents : accessRequests;
+  const run = async (tx: Executor) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${table}), hashtext(${record.organizationId}))`);
+    const [prev] = await tx
+      .select({ seq: t.seq, hash: t.hash })
+      .from(t)
+      .where(and(eq(t.organizationId, record.organizationId), isNotNull(t.seq)))
+      .orderBy(desc(t.seq))
+      .limit(1);
+    const fields = link(config.auditSigningKey, table, record.organizationId, prev?.seq && prev.hash ? { seq: prev.seq, hash: prev.hash } : null, record as unknown as Record<string, unknown>);
+    const [row] = await tx.insert(t).values({ ...(record as Record<string, unknown>), ...fields } as never).returning();
+    return row as unknown as T;
+  };
+  return ex === db ? transaction(run) : run(ex);
 }
 
-export async function insertAuditEvent(record: AuditEvent, ex: Executor = db): Promise<AuditEvent> {
-  const [row] = await ex.insert(auditEvents).values(record).returning();
-  return row!;
+export function insertAccessRequest(record: AccessRequest, ex: Executor = db): Promise<AccessRequest> {
+  return appendChained('access_requests', record, ex);
+}
+
+export function insertAuditEvent(record: AuditEvent, ex: Executor = db): Promise<AuditEvent> {
+  return appendChained('audit_events', record, ex);
+}
+
+/** Chained rows of one organization in sequence order, plus the count of pre-chain rows. */
+export async function chainRows(table: ChainTable, organizationId: string, ex: Executor = db) {
+  const t = table === 'audit_events' ? auditEvents : accessRequests;
+  const [rows, [legacy]] = await Promise.all([
+    ex.select().from(t).where(and(eq(t.organizationId, organizationId), isNotNull(t.seq))).orderBy(asc(t.seq)),
+    ex.select({ n: count() }).from(t).where(and(eq(t.organizationId, organizationId), isNull(t.seq))),
+  ]);
+  return { rows: rows as (Record<string, unknown> & { id: string; seq: number; prevHash: string | null; hash: string | null; mac: string | null })[], legacy: legacy?.n ?? 0 };
 }
 
 const escapeLike = (s: string) => s.replace(/[\\%_]/g, (c) => `\\${c}`);
@@ -126,4 +157,21 @@ export async function getAuditEvent(organizationId: string, id: string, ex: Exec
 
 export async function auditEventsByCorrelation(organizationId: string, correlationId: string, ex: Executor = db): Promise<AuditEvent[]> {
   return ex.select().from(auditEvents).where(and(eq(auditEvents.organizationId, organizationId), eq(auditEvents.correlationId, correlationId))).orderBy(auditEvents.createdAt);
+}
+
+/** Allowed/denied request counts per grant since a point in time (access reviews). */
+export async function usageByGrant(organizationId: string, sinceIso: string, ex: Executor = db): Promise<Map<string, { allowed: number; denied: number }>> {
+  const rows = await ex
+    .select({ grantId: accessRequests.grantId, decision: accessRequests.decision, n: count() })
+    .from(accessRequests)
+    .where(and(eq(accessRequests.organizationId, organizationId), gte(accessRequests.createdAt, sinceIso), isNotNull(accessRequests.grantId)))
+    .groupBy(accessRequests.grantId, accessRequests.decision);
+  const out = new Map<string, { allowed: number; denied: number }>();
+  for (const r of rows) {
+    const cur = out.get(r.grantId!) ?? { allowed: 0, denied: 0 };
+    if (r.decision === 'ALLOW') cur.allowed += r.n;
+    else cur.denied += r.n;
+    out.set(r.grantId!, cur);
+  }
+  return out;
 }

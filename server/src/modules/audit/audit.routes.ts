@@ -1,5 +1,7 @@
 import { Router } from 'express';
-import { PERMISSIONS } from '@token-vault/shared';
+import { PERMISSIONS, type IntegrityReport } from '@token-vault/shared';
+import { config } from '../../config';
+import { verify, type ChainTable } from './chain';
 import { notFound } from '../../lib/errors';
 import { orgCtx, requirePermission } from '../../middleware/auth';
 import { auditRepo } from '../../store/repos';
@@ -52,4 +54,18 @@ auditRouter.get('/audit-events/:id', requirePermission(PERMISSIONS.AUDIT_READ), 
   const item = await auditRepo.getAuditEvent(org.id, String(req.params.id));
   if (!item) throw notFound('Audit event');
   res.json(item);
+});
+
+/** Verifies both audit hash chains for the organization (signatures checked with a key outside the database). */
+auditRouter.get('/audit-integrity', requirePermission(PERMISSIONS.AUDIT_READ), async (req, res) => {
+  const { org } = orgCtx(req);
+  const tables: ChainTable[] = ['audit_events', 'access_requests'];
+  const chains = await Promise.all(
+    tables.map(async (table) => {
+      const { rows, legacy } = await auditRepo.chainRows(table, org.id);
+      return verify(config.auditSigningKey, table, org.id, rows, legacy);
+    }),
+  );
+  const report: IntegrityReport = { ok: chains.every((c) => c.ok), verifiedAt: new Date().toISOString(), chains };
+  res.json(report);
 });

@@ -27,7 +27,7 @@ interface NavGroup {
   label: string;
   icon: React.ComponentType<{ className?: string }>;
   to?: string;
-  children?: { label: string; to: string; badge?: 'pendingRequests' }[];
+  children?: { label: string; to: string; badge?: 'pendingRequests' | 'reviewsDue' }[];
   badge?: string;
 }
 
@@ -49,6 +49,7 @@ const NAV: NavGroup[] = [
     children: [
       { label: 'Access Grants', to: '/access/grants' },
       { label: 'Access Requests', to: '/access/requests', badge: 'pendingRequests' },
+      { label: 'Access Reviews', to: '/access/reviews', badge: 'reviewsDue' },
       { label: 'Policies', to: '/access/policies' },
     ],
   },
@@ -80,15 +81,14 @@ const NAV: NavGroup[] = [
   },
 ];
 
-/** Pending just-in-time requests, refreshed on navigation and every 30 s. */
-function usePendingRequests(pathname: string): number {
-  const [count, setCount] = useState(0);
+/** Sidebar counts (pending access requests, grants due for review), refreshed on navigation and every 30 s. */
+function useNavCounts(pathname: string): { pendingRequests: number; reviewsDue: number } {
+  const [counts, setCounts] = useState({ pendingRequests: 0, reviewsDue: 0 });
   useEffect(() => {
     let cancelled = false;
     const load = () =>
-      api
-        .get<{ pending: number }>('/grant-requests?status=PENDING')
-        .then((r) => !cancelled && setCount(r.pending))
+      Promise.all([api.get<{ pending: number }>('/grant-requests?status=PENDING'), api.get<{ due: number }>('/access-reviews?summary=1')])
+        .then(([r, v]) => !cancelled && setCounts({ pendingRequests: r.pending, reviewsDue: v.due }))
         .catch(() => undefined);
     void load();
     const t = setInterval(load, 30_000);
@@ -97,12 +97,12 @@ function usePendingRequests(pathname: string): number {
       clearInterval(t);
     };
   }, [pathname]);
-  return count;
+  return counts;
 }
 
 function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const { pathname } = useLocation();
-  const pendingRequests = usePendingRequests(pathname);
+  const navCounts = useNavCounts(pathname);
   return (
     <div className="flex h-full flex-col bg-slate-950 text-slate-300">
       <div className="flex h-14 items-center gap-2.5 border-b border-white/10 px-5">
@@ -145,9 +145,9 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                   >
                     <span className="flex items-center justify-between gap-2">
                       {c.label}
-                      {c.badge === 'pendingRequests' && pendingRequests > 0 && (
-                        <span className="rounded-full bg-amber-500 px-1.5 text-[10px] font-semibold leading-4 text-white" aria-label={`${pendingRequests} pending`}>
-                          {pendingRequests}
+                      {c.badge && navCounts[c.badge] > 0 && (
+                        <span className="rounded-full bg-amber-500 px-1.5 text-[10px] font-semibold leading-4 text-white" aria-label={`${navCounts[c.badge]} ${c.badge === 'reviewsDue' ? 'due' : 'pending'}`}>
+                          {navCounts[c.badge]}
                         </span>
                       )}
                     </span>

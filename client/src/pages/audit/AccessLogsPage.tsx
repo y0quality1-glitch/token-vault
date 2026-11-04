@@ -190,6 +190,7 @@ function AccessDetailDrawer({ id, onClose }: { id: string | null; onClose: () =>
               { label: 'Source', value: `${r.source} · ${r.sourceIp}` },
               { label: 'Correlation ID', value: r.correlationId, mono: true },
               { label: 'Idempotency key', value: r.idempotencyKey ?? '—', mono: true },
+              { label: 'Chain position', value: r.seq ? `#${r.seq} · ${r.hash?.slice(0, 16)}…` : 'Predates the chain', mono: true },
             ]}
           />
           {r.checks.length > 0 && (

@@ -204,6 +204,9 @@ export interface Grant {
   revocationReason: string | null;
   lastUsedAt: ISODate | null;
   usageCount: number;
+  /** Access reviews: when a reviewer last certified the grant (null: never reviewed). */
+  lastReviewedAt?: ISODate | null;
+  lastReviewedBy?: string | null;
 }
 
 export interface GrantDetail extends Grant {
@@ -283,6 +286,11 @@ export interface AccessRequest {
   idempotencyKey: string | null;
   checks: DecisionCheck[];
   createdAt: ISODate;
+  /** Tamper evidence: position in the organization's hash chain (null for pre-chain records). */
+  seq?: number | null;
+  prevHash?: string | null;
+  hash?: string | null;
+  mac?: string | null;
 }
 
 export type AuditActorType = 'USER' | 'AGENT' | 'SYSTEM';
@@ -304,6 +312,11 @@ export interface AuditEvent {
   metadata: Record<string, unknown>;
   correlationId: string;
   createdAt: ISODate;
+  /** Tamper evidence: position in the organization's hash chain (null for pre-chain records). */
+  seq?: number | null;
+  prevHash?: string | null;
+  hash?: string | null;
+  mac?: string | null;
 }
 
 // ---------------------------------------------------------------- Dashboard
@@ -424,4 +437,44 @@ export interface AgentAccessRequestBody {
   decision_note: string | null;
   grant_id: string | null;
   grant_expires_at: ISODate | null;
+}
+
+// ---------------------------------------------------------------- Audit integrity
+export type IntegrityProblemKind = 'hash_mismatch' | 'mac_invalid' | 'broken_link' | 'sequence_gap';
+
+export interface ChainVerification {
+  table: 'audit_events' | 'access_requests';
+  ok: boolean;
+  totalRecords: number;
+  chainedRecords: number;
+  /** Rows written before chaining existed; not covered by verification. */
+  legacyRecords: number;
+  headSeq: number | null;
+  headHash: string | null;
+  problems: { seq: number | null; id: string; kind: IntegrityProblemKind; detail: string }[];
+}
+
+export interface IntegrityReport {
+  ok: boolean;
+  verifiedAt: ISODate;
+  chains: ChainVerification[];
+}
+
+// ---------------------------------------------------------------- Access reviews
+export interface AccessReviewItem {
+  grant: Grant;
+  lastReviewedAt: ISODate | null;
+  lastReviewedByName: string | null;
+  reviewDueAt: ISODate;
+  due: boolean;
+  uses30d: number;
+  denied30d: number;
+}
+
+export interface AccessReviewSummary {
+  intervalDays: number;
+  due: number;
+  unused30d: number;
+  expiringSoon: number;
+  items: AccessReviewItem[];
 }

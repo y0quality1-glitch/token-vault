@@ -12,6 +12,7 @@ import { DataTable } from '@/components/ui/table';
 import { PageHeader } from '@/components/ui/navigation';
 import { JsonView, Mono } from '@/components/ui/secret';
 import { formatDateTime } from '@/lib/utils';
+import { IntegrityPanel } from '@/components/IntegrityPanel';
 
 const CATEGORIES = [
   { value: '', label: 'All event types' },
@@ -23,6 +24,8 @@ const CATEGORIES = [
   { value: 'policy.', label: 'Policies' },
   { value: 'member.', label: 'Members' },
   { value: 'auth.', label: 'Authentication' },
+  { value: 'grant_request.', label: 'Access requests' },
+  { value: 'demo.', label: 'Demo controls' },
 ];
 
 export function SecurityEventsPage() {
@@ -34,6 +37,7 @@ export function SecurityEventsPage() {
   return (
     <div className="space-y-4">
       <PageHeader title="Security Events" description="Administrative actions, denials, revocations and webhook health changes. Successful access events are in Access Logs." breadcrumbs={[{ label: 'Audit & Activity' }, { label: 'Security Events' }]} />
+      <IntegrityPanel onChanged={reload} />
       <Card className="p-4">
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <div className="relative">
@@ -96,6 +100,7 @@ export function SecurityEventsPage() {
                 { label: 'Outcome', value: <StatusBadge status={selected.outcome} /> },
                 { label: 'Severity', value: selected.severity },
                 { label: 'Correlation ID', value: selected.correlationId, mono: true },
+                { label: 'Chain position', value: selected.seq ? `#${selected.seq} · ${selected.hash?.slice(0, 16)}…` : 'Predates the chain', mono: true },
               ]}
             />
             <div>
