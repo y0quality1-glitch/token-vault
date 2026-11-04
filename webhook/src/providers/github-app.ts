@@ -23,23 +23,16 @@ export interface GitHubAppCredential {
   account?: string;
 }
 
-export type InstallationPermission = 'metadata' | 'contents' | 'issues';
 export type PermissionLevel = 'read' | 'write';
 
-/** Least privilege per operation: the minted token gets only this. */
-export const OPERATION_PERMISSIONS: Record<string, Partial<Record<InstallationPermission, PermissionLevel>>> = {
-  'credential.test': { metadata: 'read' },
-  'github.repositories.read': { metadata: 'read' },
-  'github.contents.read': { contents: 'read' },
-  'github.issues.list': { issues: 'read' },
-  'github.issues.create': { issues: 'write' },
-};
+/** Permissions for a credential test: the least an installation token can have. */
+export const TEST_PERMISSIONS: Record<string, PermissionLevel> = { metadata: 'read' };
 
 export interface MintedToken {
   token: string;
   expiresAt: string;
   repositories: string[];
-  permissions: Partial<Record<InstallationPermission, PermissionLevel>>;
+  permissions: Record<string, PermissionLevel>;
 }
 
 export class GitHubAppError extends Error {
@@ -137,12 +130,12 @@ export async function resolveInstallation(mode: 'mock' | 'live', appId: string, 
 
 /**
  * Mints an installation token narrowed to one repository (when given) and the
- * operation's permission. GitHub rejects narrowing to a repository the installation
+ * permissions the operation's definition declares (providerPermissions). GitHub rejects narrowing to a repository the installation
  * cannot access, which is reported as a scoped failure, not a broad fallback.
  */
-export async function mintInstallationToken(mode: 'mock' | 'live', cred: GitHubAppCredential, key: KeyObject, operation: string, repository?: string): Promise<MintedToken> {
-  const permissions = OPERATION_PERMISSIONS[operation];
-  if (!permissions) throw new GitHubAppError('TOKEN_MINT_FAILED', `No permission mapping for operation ${operation}`);
+export async function mintInstallationToken(mode: 'mock' | 'live', cred: GitHubAppCredential, key: KeyObject, permissions: Record<string, PermissionLevel>, repository?: string): Promise<MintedToken> {
+  // An empty permission set would mint a token with ALL of the installation's permissions.
+  if (!Object.keys(permissions).length) throw new GitHubAppError('TOKEN_MINT_FAILED', 'The operation declares no providerPermissions; refusing to mint an unrestricted token');
   const repoName = repository?.split('/')[1];
   const jwt = createAppJwt(cred.appId, key);
 

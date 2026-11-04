@@ -85,7 +85,8 @@ export interface Webhook {
 }
 
 // ---------------------------------------------------------------- Integrations
-export type ProviderId = 'github' | 'google' | 'slack' | 'openai';
+/** A provider definition key (e.g. "github"). */
+export type ProviderId = string;
 export type CredentialStatus = 'CONNECTED' | 'DISABLED' | 'INVALID' | 'ROTATION_REQUIRED';
 
 export interface CatalogEntry {

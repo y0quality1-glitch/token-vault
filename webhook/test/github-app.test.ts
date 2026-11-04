@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { createVerify, generateKeyPairSync } from 'node:crypto';
-import { callGitHub } from '../src/providers/github';
+import { findOperation, getProviderDefinition } from '@token-vault/shared';
+import { executeOperation } from '../src/providers/executor';
 import {
   GitHubAppError,
-  OPERATION_PERMISSIONS,
   createAppJwt,
   isGitHubAppCredential,
   mintInstallationToken,
@@ -36,11 +36,18 @@ describe('GitHub App credentials', () => {
     expect(() => resolvePrivateKey({ ...cred, keySource: 'webhook_env', privateKey: undefined }, undefined)).toThrow(/GITHUB_APP_PRIVATE_KEY/);
   });
 
-  it('maps each operation to the least permission it needs', () => {
-    expect(OPERATION_PERMISSIONS['github.issues.create']).toEqual({ issues: 'write' });
-    expect(OPERATION_PERMISSIONS['github.issues.list']).toEqual({ issues: 'read' });
-    expect(OPERATION_PERMISSIONS['github.contents.read']).toEqual({ contents: 'read' });
-    expect(OPERATION_PERMISSIONS['github.repositories.read']).toEqual({ metadata: 'read' });
+  const perms = (op: string) => findOperation(op)!.operation.providerPermissions;
+  const github = getProviderDefinition('github')!;
+
+  it('maps each operation to the least permission it needs (from the GitHub definition)', () => {
+    expect(perms('github.issues.create')).toEqual({ issues: 'write' });
+    expect(perms('github.issues.list')).toEqual({ issues: 'read' });
+    expect(perms('github.contents.read')).toEqual({ contents: 'read' });
+    expect(perms('github.repositories.read')).toEqual({ metadata: 'read' });
+  });
+
+  it('refuses to mint a token without declared permissions (it would get all of them)', async () => {
+    await expect(mintInstallationToken('mock', cred, parsePrivateKey(PEM), {}, 'demo-org/demo-repo')).rejects.toMatchObject({ code: 'TOKEN_MINT_FAILED' });
   });
 
   it('resolves the (mock) installation', async () => {
@@ -50,10 +57,10 @@ describe('GitHub App credentials', () => {
 
   it('mints per-request tokens that GitHub (mock) enforces: one repository, one permission, revocable', async () => {
     const key = parsePrivateKey(PEM);
-    const read = await mintInstallationToken('mock', cred, key, 'github.issues.list', 'demo-org/demo-repo');
+    const read = await mintInstallationToken('mock', cred, key, perms('github.issues.list'), 'demo-org/demo-repo');
     expect(read).toMatchObject({ repositories: ['demo-org/demo-repo'], permissions: { issues: 'read' } });
     expect(read.token).toMatch(/^ghs_/);
-    const call = (op: string, repo: string, token = read.token) => callGitHub('mock', token, { operation: op, resource: { repository: repo }, input: { title: 'x' } });
+    const call = (op: string, repo: string, token = read.token) => executeOperation('mock', github, { operation: op, resource: { repository: repo }, input: { title: 'x' } }, { kind: 'bearer', secret: token });
 
     expect((await call('github.issues.list', 'demo-org/demo-repo')).upstreamStatus).toBe(200);
     expect((await call('github.issues.create', 'demo-org/demo-repo')).upstreamStatus).toBe(403); // read token cannot write

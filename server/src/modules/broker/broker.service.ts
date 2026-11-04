@@ -206,7 +206,7 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
   if (!operation) {
     return respond({ ...base, status: 400, orgId, agent, integration: null, operation: req.operation, resource, decision: 'DENY', code: DECISION_CODES.UNKNOWN_OPERATION, reason: `Unknown operation "${req.operation}".`, checks: [authCheck, ...skippedChecks(2)] });
   }
-  if (operation.requiresRepository && !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(req.resource.repository ?? '')) {
+  if (operation.requiresRepository && !new RegExp(operation.resourcePattern).test(req.resource.repository ?? '')) {
     return respond({ ...base, status: 400, orgId, agent, integration: null, operation: req.operation, resource, decision: 'DENY', code: DECISION_CODES.MALFORMED_REQUEST, reason: 'Malformed request: resource.repository must be in owner/repository format.', checks: [authCheck, ...skippedChecks(2)] });
   }
 

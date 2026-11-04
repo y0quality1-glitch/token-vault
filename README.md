@@ -179,7 +179,7 @@ Revocation needs no token expiry: grant state is evaluated on every request, so 
 token-vault/
 ├── package.json              npm workspaces + root scripts
 ├── scripts/setup.mjs         generates server/.env and webhook/.env (random secrets)
-├── shared/                   @token-vault/shared: domain types, operation catalog, RBAC matrix, decision codes
+├── shared/                   @token-vault/shared: domain types, provider definitions (GitHub), RBAC matrix, decision codes
 ├── sdk/                      @token-vault/sdk: TypeScript client for the agent API (typed errors, key never logged)
 ├── mcp/                      Token Vault MCP server (stdio): brokered GitHub tools for AI agents
 ├── server/                   Control plane (Express modular monolith)
@@ -210,7 +210,7 @@ token-vault/
 │   │   ├── security/         HMAC verification + replay cache, AES-256-GCM sealing, masking
 │   │   ├── db/               customer-side schema (credentials, used_nonces), pg pool, migration runner
 │   │   ├── store/            encrypted credential store in the customer's own Postgres database
-│   │   ├── providers/        GitHub connector (mock + live), response allow-listing
+│   │   ├── providers/        generic executor for provider definitions, GitHub App plugin, simulated GitHub API
 │   │   └── routes.ts         /internal/v1/{health,credentials,execute} (all signature-protected)
 │   └── test/security.test.ts
 ├── client/                   Admin console (React 18 + TypeScript + Vite + Tailwind + Lucide)
@@ -248,6 +248,7 @@ token-vault/
 | Org isolation | Every query is scoped by `organizationId`. The webhook also checks `org_id` on each credential. | Same, plus row-level security |
 | Logs | Method, path, status and latency only. No bodies, headers or query strings. | Structured logging with redaction |
 | GitHub App credentials | The webhook holds only the App's private key (encrypted in the customer store, or in its own environment via `GITHUB_APP_PRIVATE_KEY`). For each authorized request it mints an installation token **narrowed to the one repository and the one permission the operation needs** (e.g. `issues:write` for `github.issues.create`), uses it once and revokes it. The control plane and audit log only see the token's scope, never the token. See [docs/GITHUB_APP.md](docs/GITHUB_APP.md). | Same; keep the key in a KMS/HSM and sign the App JWT there |
+| Provider definitions | Applications are data, not code ([docs/PROVIDER_DEFINITIONS.md](docs/PROVIDER_DEFINITIONS.md)). The webhook builds each request from the definition, checks the host against its allow-list **before** attaching the credential, never follows redirects, and returns only allow-listed response fields. Templates cannot reference credentials | Definitions authored in a CMS and published as signed, versioned documents |
 | Upstream GitHub | **Simulated** by default. Set `GITHUB_MODE=live` in `webhook/.env` to call api.github.com. In mock mode App JWTs are really signed and the simulated GitHub enforces minted-token scope. | A GitHub App installed on selected repositories of a dedicated test org (PATs remain available for demos) |
 
 ### Deviations from the specification
