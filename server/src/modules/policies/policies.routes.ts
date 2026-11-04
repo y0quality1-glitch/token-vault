@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { OPERATIONS, PERMISSIONS, type Policy } from '@token-vault/shared';
+import { PERMISSIONS, type Policy } from '@token-vault/shared';
 import { notFound } from '../../lib/errors';
 import { newId } from '../../lib/ids';
 import { isValidCidr } from '../../lib/net';
@@ -9,10 +9,10 @@ import { orgCtx, requirePermission } from '../../middleware/auth';
 import { transaction } from '../../db/client';
 import { policyRepo } from '../../store/repos';
 import { recordEvent, userActor } from '../audit/audit.service';
+import { getOperation } from '../providers/registry';
 
 export const policiesRouter = Router();
 
-const opIds = OPERATIONS.map((o) => o.id);
 
 const policySchema = z.object({
   name: z.string().trim().min(3, 'Name must be at least 3 characters').max(80),
@@ -26,7 +26,7 @@ const policySchema = z.object({
     operations: z
       .array(z.string())
       .min(1, 'Select at least one operation (or Any)')
-      .refine((ops) => ops.every((o) => o === '*' || opIds.includes(o)), 'Unknown operation'),
+      .refine((ops) => ops.every((o) => o === '*' || !!getOperation(o)), 'Unknown operation'),
     environment: z.enum(['any', 'development', 'staging', 'production']),
     timeWindow: z
       .object({ startHour: z.number().int().min(0).max(23), endHour: z.number().int().min(0).max(24) })

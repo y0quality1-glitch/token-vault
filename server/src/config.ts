@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const envFile = resolve(import.meta.dirname, '../.env');
@@ -30,6 +30,20 @@ if (seedMode !== 'if-empty' && seedMode !== 'reset') {
   process.exit(1);
 }
 
+// Provider definitions are pulled from the CMS catalog and verified against this pinned key.
+function readCmsPublicKey(): string | undefined {
+  const file = process.env.CMS_PUBLIC_KEY_FILE;
+  if (file) return readFileSync(file, 'utf8');
+  const inline = process.env.CMS_PUBLIC_KEY;
+  return inline ? inline.replace(/\\n/g, '\n') : undefined;
+}
+const cmsCatalogUrl = process.env.CMS_CATALOG_URL || undefined;
+const cmsPublicKey = readCmsPublicKey();
+if (cmsCatalogUrl && !cmsPublicKey) {
+  console.error('[api] CMS_CATALOG_URL is set but CMS_PUBLIC_KEY is missing: definitions cannot be verified. Run "npm run setup" or unset CMS_CATALOG_URL.');
+  process.exit(1);
+}
+
 export const config = {
   port: Number(process.env.PORT ?? 4000),
   databaseUrl,
@@ -47,4 +61,8 @@ export const config = {
   cookieSecure: process.env.NODE_ENV === 'production',
   executionTtlMs: 30_000,
   webhookTimeoutMs: 5_000,
+  /** Signed provider catalog (optional; without it only the bundled definitions are used). */
+  cmsCatalogUrl,
+  cmsPublicKey,
+  cmsPollIntervalMs: Number(process.env.CMS_POLL_INTERVAL_MS ?? 30_000),
 };

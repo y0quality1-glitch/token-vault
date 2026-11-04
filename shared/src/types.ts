@@ -107,8 +107,8 @@ export interface Integration {
   displayName: string;
   environment: Environment;
   accountLabel: string;
-  /** PAT: stored token. GITHUB_APP: the webhook mints a narrowed installation token per request. */
-  authType: 'PAT' | 'GITHUB_APP';
+  /** Id of the provider definition's auth method, e.g. PAT, GITHUB_APP (per-request App tokens) or API_KEY. */
+  authType: string;
   /** Opaque pointer to the encrypted credential inside the customer webhook. */
   credentialReference: string;
   credentialStatus: CredentialStatus;
@@ -344,7 +344,8 @@ export interface DashboardSummary {
 export interface ExecuteRequestBody {
   integration_id: string;
   operation: string;
-  resource?: { repository?: string; path?: string };
+  /** Resource fields named by the provider definition (GitHub: repository, path). */
+  resource?: { repository?: string; path?: string; [field: string]: string | undefined };
   input?: Record<string, unknown>;
   idempotency_key?: string;
 }

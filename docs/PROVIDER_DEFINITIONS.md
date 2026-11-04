@@ -2,7 +2,7 @@
 
 An application (provider) that agents can call through Token Vault is described by a **provider definition**, a JSON document, not code. The customer webhook executes definitions with one generic executor. The control plane derives its catalog, operations, grantable scopes and resource validation from them.
 
-GitHub is itself a definition: [`shared/src/providers/github.definition.ts`](../shared/src/providers/github.definition.ts). Today definitions ship with the build (`shared/src/providers/registry.ts`). The next step is a separate CMS app where platform admins author, review and publish signed definition versions, which Token Vault and the webhooks then pull.
+GitHub is itself a definition: [`shared/src/providers/github.definition.ts`](../shared/src/providers/github.definition.ts), bundled with the build. Further providers are authored, reviewed and published in the [provider CMS](CMS.md). The control plane and each webhook pull the signed catalog at runtime and accept only definitions that verify against the pinned CMS key.
 
 ## Shape
 

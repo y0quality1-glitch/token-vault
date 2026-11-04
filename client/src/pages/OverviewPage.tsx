@@ -1,6 +1,7 @@
 import { Link, useNavigate } from 'react-router-dom';
 import { Activity, AlertTriangle, ArrowRight, Bot, CheckCircle2, Circle, Clock, KeyRound, Plug, ShieldAlert, ShieldX, Webhook } from 'lucide-react';
-import { DECISION_LABELS, PERMISSIONS, operationLabel, type DashboardSummary } from '@token-vault/shared';
+import { DECISION_LABELS, PERMISSIONS, type DashboardSummary } from '@token-vault/shared';
+import { operationLabel } from '@/lib/providers';
 import { useApi } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
 import { Button } from '@/components/ui/button';

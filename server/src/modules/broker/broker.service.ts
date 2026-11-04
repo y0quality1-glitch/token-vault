@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import {
   DECISION_CODES,
-  getOperation,
   type AccessRequest,
   type DecisionCheck,
   type AgentCapabilitiesBody,
@@ -10,6 +9,7 @@ import {
   type MatchedRule,
 } from '@token-vault/shared';
 import { config } from '../../config';
+import { getOperation } from '../providers/registry';
 import { parseAgentCredential, verifySecret } from '../../lib/crypto';
 import { correlationId as newCorrelationId, nonce, requestId as newRequestId } from '../../lib/ids';
 import { transaction } from '../../db/client';
@@ -30,7 +30,11 @@ import { WebhookUnavailableError, callWebhook } from '../webhooks/webhook.client
 const bodySchema = z.object({
   integration_id: z.string().min(1).max(64),
   operation: z.string().min(1).max(80),
-  resource: z.object({ repository: z.string().max(140).optional(), path: z.string().max(240).optional() }).default({}),
+  // Field names come from the provider definition (e.g. repository + path for GitHub).
+  resource: z
+    .record(z.string().regex(/^[a-zA-Z][a-zA-Z0-9_]{0,39}$/), z.string().max(500))
+    .refine((r) => Object.keys(r).length <= 10, 'too many resource fields')
+    .default({}),
   input: z.record(z.unknown()).default({}),
   idempotency_key: z.string().min(1).max(128).optional(),
 });
@@ -199,21 +203,26 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
   }
   const req = parsedBody.data;
   const resource: Record<string, string> = {};
-  if (req.resource.repository) resource.repository = req.resource.repository;
-  if (req.resource.path) resource.path = req.resource.path;
+  for (const [k, v] of Object.entries(req.resource)) if (v) resource[k] = v;
 
   const operation = getOperation(req.operation);
   if (!operation) {
     return respond({ ...base, status: 400, orgId, agent, integration: null, operation: req.operation, resource, decision: 'DENY', code: DECISION_CODES.UNKNOWN_OPERATION, reason: `Unknown operation "${req.operation}".`, checks: [authCheck, ...skippedChecks(2)] });
   }
-  if (operation.requiresRepository && !new RegExp(operation.resourcePattern).test(req.resource.repository ?? '')) {
-    return respond({ ...base, status: 400, orgId, agent, integration: null, operation: req.operation, resource, decision: 'DENY', code: DECISION_CODES.MALFORMED_REQUEST, reason: 'Malformed request: resource.repository must be in owner/repository format.', checks: [authCheck, ...skippedChecks(2)] });
+  // The primary resource (what grants are scoped to) is named by the provider definition.
+  const primary = resource[operation.resourceName] ?? '';
+  if (operation.requiresRepository && !new RegExp(operation.resourcePattern).test(primary)) {
+    const example = operation.resourceName === 'repository' ? ' in owner/repository format' : ` matching ${operation.resourcePattern}`;
+    return respond({ ...base, status: 400, orgId, agent, integration: null, operation: req.operation, resource, decision: 'DENY', code: DECISION_CODES.MALFORMED_REQUEST, reason: `Malformed request: resource.${operation.resourceName} must be${example}.`, checks: [authCheck, ...skippedChecks(2)] });
   }
 
   // Integration lookup is org-scoped: an agent can never address another organization's integration.
   const integration = await integrationRepo.getIntegration(orgId, req.integration_id);
   if (!integration) {
     return respond({ ...base, status: 404, orgId, agent, integration: null, operation: operation.id, resource, decision: 'DENY', code: DECISION_CODES.INTEGRATION_NOT_FOUND, reason: `Integration "${req.integration_id}" does not exist in this organization.`, checks: [authCheck, ...skippedChecks(2)] });
+  }
+  if (integration.provider !== operation.provider) {
+    return respond({ ...base, status: 400, orgId, agent, integration, operation: operation.id, resource, decision: 'DENY', code: DECISION_CODES.UNKNOWN_OPERATION, reason: `Operation "${operation.id}" belongs to ${operation.provider}, but integration "${integration.displayName}" is ${integration.provider}.`, checks: [authCheck, ...skippedChecks(2)] });
   }
 
   // ---- Steps 2-10: deterministic policy evaluation (current state, every request)
@@ -225,7 +234,7 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
     grants: pairGrants,
     policies: orgPolicies,
     operation,
-    resource: req.resource,
+    resource: { repository: primary || undefined },
     sourceIp: ctx.sourceIp,
     now: Date.now(),
     recentRequests: (id) => recentRequests(id),

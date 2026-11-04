@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { CalendarClock, ClipboardCheck, ShieldOff, TimerOff } from 'lucide-react';
-import { PERMISSIONS, operationLabel, type AccessReviewItem, type AccessReviewSummary } from '@token-vault/shared';
+import { PERMISSIONS, type AccessReviewItem, type AccessReviewSummary } from '@token-vault/shared';
+import { operationLabel } from '@/lib/providers';
 import { useApi } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
 import { api } from '@/lib/api';

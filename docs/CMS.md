@@ -85,6 +85,22 @@ Public catalog (`/catalog/v1`, no authentication: definitions are not secret, th
 
 `SignedDefinition` = `{definition, digest, signature, key_id, published_at, published_by, approved_by}`.
 
-## Next
+## How Token Vault consumes the catalog
 
-Token Vault's control plane and the customer webhooks pull `/catalog/v1/definitions`, pin the public key and verify every definition, replacing the definitions bundled in `shared/`. The Connect form will be rendered from each definition's auth methods.
+The control plane and every customer webhook pull `/catalog/v1/definitions` **independently**. Each one pins the CMS public key (`CMS_PUBLIC_KEY`, written by `npm run setup`) and verifies every definition before using it. The webhook does not trust the control plane for definitions, so nothing the control plane sends can change where a webhook sends customer credentials.
+
+- **Start-up and polling.** Each service syncs at start-up (without blocking it) and then polls every `CMS_POLL_INTERVAL_MS` (default 30 s), using the ETag so an unchanged catalog costs a 304. The webhook also refreshes once when asked to run an operation it does not know yet.
+- **All or nothing.** If any entry in a catalog snapshot fails verification, the whole snapshot is rejected and the service keeps what it had.
+- **No rollbacks.** A version lower than one already accepted is refused, so an old signed definition cannot be replayed. This high-water mark is kept in memory, per process.
+- **Bundled baseline.** Definitions shipped with the code (GitHub) stay available when the CMS is unreachable. A catalog version replaces the bundled one by key.
+- **Archiving.** A provider that disappears from the catalog is removed, or falls back to its bundled version.
+
+Once published, a provider is usable without a deploy:
+- it appears in the **Integration Catalog** with a "CMS vN" badge;
+- the **Connect** form is built from its auth methods (secret label, hint and format checks come from the definition);
+- grants and access requests are scoped to its primary resource (for example a queue or project) and validated against its pattern;
+- agents call its operations through the normal broker.
+
+An operation can never run on an integration of another provider. This is enforced when the grant is created, by the broker, and by the webhook.
+
+Without `CMS_CATALOG_URL`, a service uses the bundled definitions only.

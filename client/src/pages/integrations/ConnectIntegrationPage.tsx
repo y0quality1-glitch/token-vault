@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom';
-import { ArrowRight, CheckCircle2, Github, Lock, ShieldCheck } from 'lucide-react';
+import { ArrowRight, CheckCircle2, Github, Lock, Plug, ShieldCheck } from 'lucide-react';
 import { PERMISSIONS, type Environment, type IntegrationDetail, type Webhook } from '@token-vault/shared';
 import { useApi, useMutation } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
@@ -14,9 +14,12 @@ import { Mono } from '@/components/ui/secret';
 import { Badge, StatusBadge } from '@/components/ui/badge';
 import { useToast } from '@/components/ui/toast';
 import { splitList } from '@/lib/utils';
+import { useProviders } from '@/lib/providers';
 
 export function ConnectIntegrationPage() {
-  const { provider } = useParams();
+  const { provider: key } = useParams();
+  const { providers, loaded } = useProviders();
+  const def = providers.find((p) => p.key === key);
   const { can } = useAuth();
   const navigate = useNavigate();
   const toast = useToast();
@@ -24,7 +27,8 @@ export function ConnectIntegrationPage() {
   const connected = webhooks.data?.items.filter((w) => w.status === 'CONNECTED') ?? [];
 
   const [form, setForm] = useState({ displayName: '', environment: 'development' as Environment, accountLabel: '', webhookId: '', description: '', allowedResources: '' });
-  const [authType, setAuthType] = useState<'PAT' | 'GITHUB_APP'>('GITHUB_APP');
+  // Auth methods come from the provider definition; the first one is the default.
+  const [authChoice, setAuthChoice] = useState('');
   const [app, setApp] = useState({ appId: '', installationId: '', keySource: 'stored' as 'stored' | 'webhook_env' });
   // Credential material lives only in this component's state until submission, then is cleared.
   const [secret, setSecret] = useState('');
@@ -33,22 +37,32 @@ export function ConnectIntegrationPage() {
   const [created, setCreated] = useState<IntegrationDetail | null>(null);
   const submit = useMutation((body: unknown) => api.post<IntegrationDetail>('/integrations', body));
 
-  if (provider !== 'github') return <Navigate to="/integrations/catalog" replace />;
+  if (!loaded) return <Spinner />;
+  if (!def) return <Navigate to="/integrations/catalog" replace />;
   if (!can(PERMISSIONS.INTEGRATION_MANAGE)) return <PermissionDenied required={PERMISSIONS.INTEGRATION_MANAGE} message="Only Vault Administrators and Owners can register credentials." />;
   if (webhooks.loading && !webhooks.data) return <Spinner />;
 
   const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => setForm((f) => ({ ...f, [k]: e.target.value }));
   const errors = { ...submit.fieldErrors, ...localErrors };
   const webhookId = form.webhookId || connected[0]?.id || '';
+  const provider = def; // narrowed for the async handler below
+  const method = def.auth.find((a) => a.id === authChoice) ?? def.auth[0]!;
+  const authType = method.id;
+  const isApp = method.kind === 'plugin' && method.plugin === 'github_app';
+  const isPat = method.id === 'PAT';
+  const resourceLabel = def.resource.label.toLowerCase();
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     const errs: Record<string, string> = {};
     if (form.displayName.trim().length < 3) errs.displayName = 'Name must be at least 3 characters';
-    if (authType === 'PAT') {
+    if (isPat) {
       if (!form.accountLabel.trim()) errs.accountLabel = 'Account / organization label is required';
       if (secret.length < 20) errs.secret = 'Token must be at least 20 characters';
       if (/\s/.test(secret)) errs.secret = 'Token must not contain whitespace';
+    } else if (!isApp) {
+      if (secret.length < 8) errs.secret = 'The secret is too short';
+      else if (method.secretPattern && !new RegExp(method.secretPattern).test(secret)) errs.secret = method.secretHint ?? 'The secret does not have the expected format';
     } else {
       if (!/^\d{1,12}$/.test(app.appId.trim())) errs.appId = 'Enter the numeric App ID from the GitHub App settings';
       if (app.installationId.trim() && !/^\d{1,15}$/.test(app.installationId.trim())) errs.installationId = 'Installation ID is numeric';
@@ -57,9 +71,9 @@ export function ConnectIntegrationPage() {
     if (!webhookId) errs.webhookId = 'Select a connected webhook';
     setLocalErrors(errs);
     if (Object.keys(errs).length) return;
-    const common = { provider: 'github', ...form, webhookId, allowedResources: splitList(form.allowedResources) };
+    const common = { provider: provider.key, ...form, webhookId, allowedResources: splitList(form.allowedResources) };
     const result = await submit.run(
-      authType === 'PAT'
+      !isApp
         ? { ...common, authType, secret }
         : { ...common, authType, appId: app.appId.trim(), installationId: app.installationId.trim(), keySource: app.keySource, ...(app.keySource === 'stored' ? { privateKey } : {}) },
     );
@@ -67,14 +81,14 @@ export function ConnectIntegrationPage() {
       setSecret(''); // never keep credential material after submission
       setPrivateKey('');
       setCreated(result);
-      toast.success('GitHub connected', 'The credential is encrypted inside your customer webhook.');
+      toast.success(`${provider.name} connected`, 'The credential is encrypted inside your customer webhook.');
     }
   }
 
   if (created) {
     return (
       <div className="mx-auto max-w-3xl">
-        <PageHeader title="Integration connected" breadcrumbs={[{ label: 'Integrations', to: '/integrations/catalog' }, { label: 'Connect GitHub' }]} />
+        <PageHeader title="Integration connected" breadcrumbs={[{ label: 'Integrations', to: '/integrations/catalog' }, { label: `Connect ${def.name}` }]} />
         <Card>
           <CardBody className="space-y-5">
             <div className="flex items-center gap-3">
@@ -120,11 +134,11 @@ export function ConnectIntegrationPage() {
       <PageHeader
         title={
           <span className="flex items-center gap-2">
-            <Github className="h-5 w-5" /> Connect GitHub
+            {def.key === 'github' ? <Github className="h-5 w-5" /> : <Plug className="h-5 w-5" />} Connect {def.name}
           </span>
         }
-        description="Register a GitHub App or a Personal Access Token with your customer-controlled vault."
-        breadcrumbs={[{ label: 'Integrations', to: '/integrations/catalog' }, { label: 'Integration Catalog', to: '/integrations/catalog' }, { label: 'Connect GitHub' }]}
+        description={`Register a ${def.auth.map((a) => a.label).join(' or ')} with your customer-controlled vault.${def.source === 'catalog' ? ` Definition v${def.version}, signed by the provider CMS.` : ''}`}
+        breadcrumbs={[{ label: 'Integrations', to: '/integrations/catalog' }, { label: 'Integration Catalog', to: '/integrations/catalog' }, { label: `Connect ${def.name}` }]}
       />
       {connected.length === 0 ? (
         <Callout
@@ -147,7 +161,7 @@ export function ConnectIntegrationPage() {
                 <FormError error={submit.error} />
                 <div className="grid gap-4 sm:grid-cols-2">
                   <Field label="Integration name" htmlFor="displayName" required error={errors.displayName}>
-                    <Input id="displayName" value={form.displayName} onChange={set('displayName')} placeholder="Demo GitHub" invalid={!!errors.displayName} />
+                    <Input id="displayName" value={form.displayName} onChange={set('displayName')} placeholder={`Demo ${def.name}`} invalid={!!errors.displayName} />
                   </Field>
                   <Field label="Environment" htmlFor="environment" required error={errors.environment}>
                     <Select id="environment" value={form.environment} onChange={set('environment')}>
@@ -156,8 +170,8 @@ export function ConnectIntegrationPage() {
                       <option value="production">Production</option>
                     </Select>
                   </Field>
-                  <Field label="GitHub account / organization label" htmlFor="accountLabel" required={authType === 'PAT'} error={errors.accountLabel} hint={authType === 'GITHUB_APP' ? 'Optional: defaults to the account the App is installed on' : undefined}>
-                    <Input id="accountLabel" value={form.accountLabel} onChange={set('accountLabel')} placeholder="demo-org" invalid={!!errors.accountLabel} />
+                  <Field label={`${def.name} account / organization label`} htmlFor="accountLabel" required={isPat} error={errors.accountLabel} hint={isApp ? 'Optional: defaults to the account the App is installed on' : isPat ? undefined : 'Optional'}>
+                    <Input id="accountLabel" value={form.accountLabel} onChange={set('accountLabel')} placeholder={def.key === 'github' ? 'demo-org' : ''} invalid={!!errors.accountLabel} />
                   </Field>
                   <Field label="Customer webhook" htmlFor="webhookId" required error={errors.webhookId}>
                     <Select id="webhookId" value={webhookId} onChange={set('webhookId')}>
@@ -172,23 +186,31 @@ export function ConnectIntegrationPage() {
                 <div>
                   <p className="mb-2 text-sm font-medium text-slate-700">Authentication</p>
                   <div className="grid gap-3 md:grid-cols-2">
-                    <RadioCard checked={authType === 'GITHUB_APP'} onChange={() => setAuthType('GITHUB_APP')} title="GitHub App" badge={<Badge tone="green">Recommended for production</Badge>} description="Only the App's private key is stored. Each request gets a 1-hour token minted for one repository and one permission, revoked after use." />
-                    <RadioCard checked={authType === 'PAT'} onChange={() => setAuthType('PAT')} title="Personal access token" description="A long-lived token stored encrypted and used as-is for every request. Simplest for demos." />
+                    {def.auth.map((a) => (
+                      <RadioCard
+                        key={a.id}
+                        checked={a.id === method.id}
+                        onChange={() => setAuthChoice(a.id)}
+                        title={a.label}
+                        badge={a.kind === 'plugin' ? <Badge tone="green">Recommended for production</Badge> : undefined}
+                        description={a.description || (a.kind === 'basic' ? 'Username and password, sent as HTTP basic auth.' : 'A secret stored encrypted by your webhook and attached to every request.')}
+                      />
+                    ))}
                   </div>
                 </div>
-                {authType === 'PAT' ? (
+                {!isApp ? (
                   <Field
                     label={
                       <span className="flex items-center gap-1.5">
-                        <Lock className="h-3.5 w-3.5 text-slate-400" /> Personal Access Token
+                        <Lock className="h-3.5 w-3.5 text-slate-400" /> {method.label}
                       </span>
                     }
                     htmlFor="secret"
                     required
                     error={errors.secret}
-                    hint="Use a mock token (e.g. mock_ghp_…) or a fine-grained PAT for a dedicated test organization only."
+                    hint={isPat ? 'Use a mock token (e.g. mock_ghp_…) or a fine-grained PAT for a dedicated test organization only.' : method.kind === 'basic' ? 'Enter username:password' : method.secretHint}
                   >
-                    <Input id="secret" type="password" autoComplete="new-password" spellCheck={false} value={secret} onChange={(e) => setSecret(e.target.value)} placeholder="ghp_••••••••••••••••••••" invalid={!!errors.secret} className="font-mono" />
+                    <Input id="secret" type="password" autoComplete="new-password" spellCheck={false} value={secret} onChange={(e) => setSecret(e.target.value)} placeholder={isPat ? 'ghp_••••••••••••••••••••' : ''} invalid={!!errors.secret} className="font-mono" />
                   </Field>
                 ) : (
                   <div className="space-y-4 rounded-lg border border-slate-200 p-4">
@@ -238,8 +260,8 @@ export function ConnectIntegrationPage() {
                     )}
                   </div>
                 )}
-                <Field label="Allowed repositories (optional)" htmlFor="allowedResources" error={errors.allowedResources} hint="owner/repository, comma or newline separated. Grants may only target these repositories.">
-                  <Textarea id="allowedResources" rows={2} value={form.allowedResources} onChange={set('allowedResources')} placeholder="demo-org/demo-repo" className="font-mono text-xs" />
+                <Field label={`Allowed ${resourceLabel} values (optional)`} htmlFor="allowedResources" error={errors.allowedResources} hint={`${def.resource.label}${def.resource.example ? ` (e.g. ${def.resource.example})` : ''}, comma or newline separated. Grants may only target these.`}>
+                  <Textarea id="allowedResources" rows={2} value={form.allowedResources} onChange={set('allowedResources')} placeholder={def.resource.example ?? ''} className="font-mono text-xs" />
                 </Field>
                 <Field label="Description" htmlFor="description">
                   <Textarea id="description" rows={2} value={form.description} onChange={set('description')} />
@@ -261,7 +283,7 @@ export function ConnectIntegrationPage() {
               <CardHeader title="How your credential is handled" />
               <CardBody>
                 <ol className="space-y-3 text-sm">
-                  {(authType === 'PAT'
+                  {(!isApp
                     ? [
                         'Submitted over TLS to the Token Vault backend. Never placed in browser storage, URLs or logs.',
                         'Forwarded in a signed, short-lived request to your customer webhook.',

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Check, Clock, Inbox, Quote, X } from 'lucide-react';
-import { PERMISSIONS, operationLabel, type GrantRequest, type GrantRequestStatus } from '@token-vault/shared';
+import { PERMISSIONS, type GrantRequest, type GrantRequestStatus } from '@token-vault/shared';
+import { operationLabel } from '@/lib/providers';
 import { useApi, useMutation } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
 import { api } from '@/lib/api';

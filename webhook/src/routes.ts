@@ -5,9 +5,10 @@ import { PgNonceStore } from './security/nonce-store';
 import { hmacHex, signResponse, verifySignedRequest } from './security/signature';
 import * as store from './store/credential-store';
 import { createHash } from 'node:crypto';
-import { PROVIDER_DEFINITIONS, getProviderDefinition, type AuthMethodDefinition, type ProviderDefinition } from '@token-vault/shared';
+import type { AuthMethodDefinition, ProviderDefinition } from '@token-vault/shared';
 import { ExecutionError, executeOperation, getExecutableOperation, injectionFor, testCredential, type ProviderCall, type ProviderResult } from './providers/executor';
 import * as app from './providers/github-app';
+import { catalogSync, registry } from './providers/registry';
 
 // Shared across instances via PostgreSQL: a replayed request is rejected by any instance.
 const nonces = new PgNonceStore(config.maxClockSkewMs * 2);
@@ -80,7 +81,7 @@ function secretAuthMethod(def: ProviderDefinition, metadata: Record<string, stri
 }
 
 function definitionFor(provider: string): ProviderDefinition {
-  const def = getProviderDefinition(provider);
+  const def = registry.get(provider);
   if (!def) throw new ExecutionError('UNSUPPORTED_OPERATION', `No provider definition for "${provider}"`);
   return def;
 }
@@ -177,7 +178,8 @@ export function buildRouter() {
       github_mode: config.githubMode,
       uptime_s: Math.round((Date.now() - startedAt) / 1000),
       credentials_stored: await store.countCredentials(),
-      providers: PROVIDER_DEFINITIONS.map((d) => ({ key: d.key, version: d.version, digest: createHash('sha256').update(JSON.stringify(d)).digest('hex').slice(0, 16) })),
+      providers: registry.list().map((e) => ({ key: e.definition.key, version: e.definition.version, source: e.source, digest: (e.digest ?? createHash('sha256').update(JSON.stringify(e.definition)).digest('hex')).slice(0, 16) })),
+      catalog: catalogSync ? { key_id: catalogSync.status.keyId, last_success_at: catalogSync.status.lastSuccessAt, last_error: catalogSync.status.lastError } : null,
       challenge_response: hmacHex(config.signingSecret, `health:${challenge}:${config.instanceId}`),
     });
   });
@@ -185,7 +187,7 @@ export function buildRouter() {
   // Register a credential: a PAT (encrypted immediately) or a GitHub App (App ID + private key).
   r.post('/internal/v1/credentials', requireSignature, async (req: SignedRequest, res) => {
     const { org_id, provider, secret, metadata, type } = req.json ?? {};
-    const def = typeof provider === 'string' ? getProviderDefinition(provider) : undefined;
+    const def = typeof provider === 'string' ? registry.get(provider) : undefined;
     if (!str(org_id) || !def) {
       return signedJson(req, res, 400, { error: { code: 'INVALID_CREDENTIAL_REQUEST', message: 'org_id and a known provider are required' } });
     }
@@ -236,7 +238,7 @@ export function buildRouter() {
       if (e instanceof app.GitHubAppError) return appFailure(req, res, e);
       return credentialFailure(req, res, e, `rotate ${existing.credentialRef}`);
     }
-    const def = getProviderDefinition(existing.provider);
+    const def = registry.get(existing.provider);
     if (!def || !validSecret(secretAuthMethod(def, existing.metadata), secret)) {
       return signedJson(req, res, 400, { error: { code: 'INVALID_CREDENTIAL_REQUEST', message: 'A 20-512 character secret is required' } });
     }
@@ -277,8 +279,10 @@ export function buildRouter() {
     if (!rec) return signedJson(req, res, 404, { error: { code: 'CREDENTIAL_NOT_FOUND', message: 'Credential reference cannot be resolved' } });
     if (rec.status !== 'ACTIVE') return signedJson(req, res, 409, { error: { code: 'CREDENTIAL_DISABLED', message: 'Credential is disabled' } });
     // The operation must belong to the credential's provider definition (a GitHub token is never used for another provider's call).
-    const def = getProviderDefinition(rec.provider);
-    if (typeof claims.operation !== 'string' || !def?.operations.some((o) => o.id === claims.operation && o.risk !== 'destructive')) {
+    const known = () => registry.get(rec.provider)?.operations.some((o) => o.id === claims.operation && o.risk !== 'destructive');
+    // The control plane may have seen a newer catalog: refresh once before refusing.
+    if (typeof claims.operation === 'string' && !known() && catalogSync) await catalogSync.refresh();
+    if (typeof claims.operation !== 'string' || !known()) {
       return signedJson(req, res, 400, { error: { code: 'UNSUPPORTED_OPERATION', message: 'This webhook does not execute that operation' } });
     }
 

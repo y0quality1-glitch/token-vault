@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { PERMISSIONS, PROVIDER_CATALOG, type CatalogEntry, type IntegrationDetail } from '@token-vault/shared';
+import { PERMISSIONS, type AuthMethodDefinition, type CatalogEntry, type IntegrationDetail } from '@token-vault/shared';
 import { transaction } from '../../db/client';
 import { HttpError, badRequest, conflict, notFound } from '../../lib/errors';
 import { newId } from '../../lib/ids';
@@ -11,10 +11,10 @@ import type { IntegrationRecord } from '../../store/types';
 import { effectiveGrantStatus, loadLookups, toIntegration } from '../../store/views';
 import { recordEvent, userActor } from '../audit/audit.service';
 import { WebhookUnavailableError, callWebhook } from '../webhooks/webhook.client';
+import { GENERIC_RESOURCE, providerCatalog, registry, resourceProblem } from '../providers/registry';
 
 export const integrationsRouter = Router();
 
-const repoPattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const secretSchema = z
   .string()
   .min(20, 'Token must be at least 20 characters')
@@ -22,12 +22,12 @@ const secretSchema = z
   .refine((s) => !/\s/.test(s), 'Token must not contain whitespace');
 
 const baseSchema = z.object({
-  provider: z.literal('github', { errorMap: () => ({ message: 'Only GitHub is available in the POC' }) }),
+  provider: z.string().refine((p) => !!registry.get(p), 'This provider is not available'),
   webhookId: z.string().min(1, 'Select a customer webhook'),
   displayName: z.string().trim().min(3, 'Name must be at least 3 characters').max(60),
   environment: z.enum(['development', 'staging', 'production']),
   accountLabel: z.string().trim().max(80).default(''),
-  allowedResources: z.array(z.string().trim().regex(repoPattern, 'Use owner/repository format')).max(20).default([]),
+  allowedResources: z.array(z.string().trim().regex(GENERIC_RESOURCE, 'One resource per line, without spaces')).max(20).default([]),
   description: z.string().trim().max(240).default(''),
 });
 
@@ -36,17 +36,36 @@ const privateKeySchema = z
   .max(10_000, 'Private key is too long')
   .refine((k) => /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(k), 'Paste the PEM private key downloaded from the GitHub App settings');
 
-/** PAT: a stored token. GITHUB_APP: App ID + private key; the webhook mints a narrowed token per request. */
-const createSchema = z.discriminatedUnion('authType', [
-  baseSchema.extend({ authType: z.literal('PAT'), accountLabel: z.string().trim().min(1, 'Account / organization label is required').max(80), secret: secretSchema }),
-  baseSchema.extend({
-    authType: z.literal('GITHUB_APP'),
-    appId: z.string().trim().regex(/^\d{1,12}$/, 'Enter the numeric App ID from the GitHub App settings'),
-    installationId: z.union([z.literal(''), z.string().trim().regex(/^\d{1,15}$/, 'Installation ID is numeric')]).default(''),
-    keySource: z.enum(['stored', 'webhook_env']),
-    privateKey: privateKeySchema.optional(),
-  }),
-]);
+const appSchema = baseSchema.extend({
+  authType: z.string(),
+  appId: z.string().trim().regex(/^\d{1,12}$/, 'Enter the numeric App ID from the GitHub App settings'),
+  installationId: z.union([z.literal(''), z.string().trim().regex(/^\d{1,15}$/, 'Installation ID is numeric')]).default(''),
+  keySource: z.enum(['stored', 'webhook_env']),
+  privateKey: privateKeySchema.optional(),
+});
+
+/** The secret rules of a definition's auth method (GitHub PATs keep their historical rules). */
+function secretSchemaFor(method: AuthMethodDefinition) {
+  if (method.id === 'PAT') return secretSchema;
+  const base = z.string().min(8, 'The secret is too short').max(4096, 'The secret is too long');
+  return method.secretPattern ? base.refine((s) => new RegExp(method.secretPattern!).test(s), method.secretHint ?? 'The secret does not have the expected format') : base;
+}
+
+/**
+ * Parses a create request against the provider definition: the auth method decides which
+ * credential fields apply. Plugin methods (GitHub App) take App fields; the others a secret.
+ */
+function parseCreate(raw: unknown) {
+  const head = parse(baseSchema.extend({ authType: z.string().min(1, 'Choose an authentication method') }), raw);
+  const def = registry.get(head.provider)!;
+  const method = def.auth.find((a) => a.id === head.authType);
+  if (!method) throw badRequest('Request validation failed', { fields: { authType: `${def.name} does not support "${head.authType}"` } });
+  const problem = resourceProblem(def.key, head.allowedResources);
+  if (problem) throw badRequest('Request validation failed', { fields: { allowedResources: problem } });
+  if (method.kind === 'plugin' && method.plugin === 'github_app') return { def, method, kind: 'github_app' as const, ...parse(appSchema, raw) };
+  const accountLabel = method.id === 'PAT' ? z.string().trim().min(1, 'Account / organization label is required').max(80) : z.string().trim().max(80).default('');
+  return { def, method, kind: 'secret' as const, ...parse(baseSchema.extend({ authType: z.string(), accountLabel, secret: secretSchemaFor(method) }), raw) };
+}
 
 async function getIntegration(orgId: string, id: string): Promise<IntegrationRecord> {
   const i = await integrationRepo.getIntegration(orgId, id);
@@ -85,7 +104,7 @@ async function detail(i: IntegrationRecord): Promise<IntegrationDetail> {
 integrationsRouter.get('/integrations/catalog', async (req, res) => {
   const { org } = orgCtx(req);
   const list = await integrationRepo.listIntegrations(org.id);
-  const items: CatalogEntry[] = PROVIDER_CATALOG.map((p) => ({
+  const items: CatalogEntry[] = providerCatalog().map((p) => ({
     ...p,
     connectedCount: list.filter((i) => i.provider === p.provider && i.credentialStatus !== 'DISABLED').length,
   }));
@@ -110,9 +129,9 @@ integrationsRouter.get('/integrations/:id', async (req, res) => {
  */
 integrationsRouter.post('/integrations', requirePermission(PERMISSIONS.INTEGRATION_MANAGE), async (req, res) => {
   const ctx = orgCtx(req);
-  const body = parse(createSchema, req.body);
+  const body = parseCreate(req.body);
   const meta = body;
-  if (body.authType === 'GITHUB_APP' && body.keySource === 'stored' && !body.privateKey) {
+  if (body.kind === 'github_app' && body.keySource === 'stored' && !body.privateKey) {
     throw badRequest('Request validation failed', { fields: { privateKey: 'Paste the App private key, or choose the key configured on the webhook' } });
   }
   // Credential material is forwarded to the customer webhook and never kept here.
@@ -130,9 +149,9 @@ integrationsRouter.post('/integrations', requirePermission(PERMISSIONS.INTEGRATI
       webhook,
       'POST',
       '/internal/v1/credentials',
-      body.authType === 'GITHUB_APP'
+      body.kind === 'github_app'
         ? { org_id: ctx.org.id, provider: meta.provider, type: 'github_app', app_id: body.appId, installation_id: body.installationId || undefined, key_source: body.keySource, private_key: body.privateKey, metadata }
-        : { org_id: ctx.org.id, provider: meta.provider, secret: body.secret, metadata },
+        : { org_id: ctx.org.id, provider: meta.provider, auth_method: body.method.id, secret: body.secret, metadata },
     );
   } catch (e) {
     webhookError(e);
@@ -203,12 +222,14 @@ integrationsRouter.patch('/integrations/:id', requirePermission(PERMISSIONS.INTE
   const body = parse(
     z.object({
       displayName: z.string().trim().min(3).max(60),
-      accountLabel: z.string().trim().min(1).max(80),
+      accountLabel: z.string().trim().max(80),
       description: z.string().trim().max(240),
-      allowedResources: z.array(z.string().trim().regex(repoPattern, 'Use owner/repository format')).max(20),
+      allowedResources: z.array(z.string().trim().regex(GENERIC_RESOURCE, 'One resource per line, without spaces')).max(20),
     }),
     req.body,
   );
+  const problem = resourceProblem(i.provider, body.allowedResources);
+  if (problem) throw badRequest('Request validation failed', { fields: { allowedResources: problem } });
   const updated = await transaction(async (tx) => {
     const u = await integrationRepo.updateIntegration(i.id, { ...body, updatedAt: new Date().toISOString() }, tx);
     await recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: 'integration.metadata_updated', target: { type: 'integration', id: u.id, name: u.displayName }, metadata: body }, tx);
@@ -247,10 +268,11 @@ integrationsRouter.post('/integrations/:id/test', requirePermission(PERMISSIONS.
 integrationsRouter.post('/integrations/:id/rotate', requirePermission(PERMISSIONS.INTEGRATION_MANAGE), async (req, res) => {
   const ctx = orgCtx(req);
   const i = await getIntegration(ctx.org.id, String(req.params.id));
+  const method = registry.get(i.provider)?.auth.find((a) => a.id === i.authType);
   const rotation =
-    i.authType === 'GITHUB_APP'
+    method?.kind === 'plugin'
       ? { private_key: parse(z.object({ privateKey: privateKeySchema }), req.body).privateKey }
-      : { secret: parse(z.object({ secret: secretSchema }), req.body).secret };
+      : { secret: parse(z.object({ secret: method ? secretSchemaFor(method) : secretSchema }), req.body).secret };
   for (const k of ['secret', 'privateKey']) delete (req.body as Record<string, unknown>)[k];
   let result;
   try {

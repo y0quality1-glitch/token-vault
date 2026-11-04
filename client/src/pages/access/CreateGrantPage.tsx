@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, ArrowRight, Bot, CheckCircle2, FlaskConical, Github, Lock } from 'lucide-react';
-import { GRANTABLE_OPERATIONS, OPERATIONS, PERMISSIONS, operationLabel, type Agent, type GrantDetail, type Integration } from '@token-vault/shared';
+import { PERMISSIONS, type Agent, type GrantDetail, type Integration } from '@token-vault/shared';
+import { getProvider, operationLabel, useProviders } from '@/lib/providers';
 import { useApi, useMutation } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
 import { api } from '@/lib/api';
@@ -17,6 +18,7 @@ import { AGENT_TYPE_LABELS, cn, formatDateTime, fromLocalInput, splitList, toLoc
 const STEPS = ['Select agent', 'Select integration', 'Select permissions', 'Configure restrictions', 'Review and create'];
 
 export function CreateGrantPage() {
+  const { operations, grantable } = useProviders();
   const { can } = useAuth();
   const navigate = useNavigate();
   const toast = useToast();
@@ -43,6 +45,8 @@ export function CreateGrantPage() {
 
   const agent = agents.data?.items.find((a) => a.id === agentId);
   const integration = integrations.data?.items.find((i) => i.id === integrationId);
+  const provider = integration ? getProvider(integration.provider) : undefined;
+  const resourceLabel = provider?.resource.label ?? 'Repository';
 
   useEffect(() => {
     if (agent && integration && !r.name) setR((x) => ({ ...x, name: `${agent.name} → ${integration.displayName}` }));
@@ -84,8 +88,9 @@ export function CreateGrantPage() {
       else if (to <= Date.now()) e.expiresAt = 'Expiry must be in the future';
       const rate = Number(r.rateLimitPerMinute);
       if (!Number.isInteger(rate) || rate < 1 || rate > 600) e.rateLimitPerMinute = 'Enter a whole number between 1 and 600';
-      const bad = repos.find((x) => !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(x));
-      if (bad) e.repositories = `"${bad}" is not in owner/repository format`;
+      const pattern = provider ? new RegExp(provider.resource.pattern) : /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+      const bad = repos.find((x) => !pattern.test(x));
+      if (bad) e.repositories = `"${bad}" is not a valid ${resourceLabel.toLowerCase()}${provider?.resource.example ? ` (e.g. ${provider.resource.example})` : ''}`;
       else if (integration?.allowedResources.length) {
         const outside = repos.filter((x) => !integration.allowedResources.some((a) => a.toLowerCase() === x.toLowerCase()));
         if (outside.length) e.repositories = `Not allowed by the integration: ${outside.join(', ')}`;
@@ -219,7 +224,7 @@ export function CreateGrantPage() {
               <h2 className="text-sm font-semibold text-slate-900">Step 3: Select permissions</h2>
               {allErrors.scopes && <p className="text-sm text-red-600">{allErrors.scopes}</p>}
               <div className="grid gap-3 md:grid-cols-2">
-                {GRANTABLE_OPERATIONS.map((o) => (
+                {grantable.filter((o) => !integration || o.provider === integration.provider).map((o) => (
                   <div key={o.id} className={cn('rounded-lg border p-3.5', scopes.includes(o.id) ? 'border-brand-400 bg-brand-50/40' : 'border-slate-200')}>
                     <Checkbox id={o.id} checked={scopes.includes(o.id)} onChange={(v) => setScopes((s) => (v ? [...s, o.id] : s.filter((x) => x !== o.id)))} label={o.label} description={<span className="font-mono">{o.id} · {o.description}</span>} />
                   </div>
@@ -230,7 +235,7 @@ export function CreateGrantPage() {
                   <Lock className="h-3.5 w-3.5" /> Not available in this POC
                 </p>
                 <div className="mt-2 flex flex-wrap gap-2">
-                  {OPERATIONS.filter((o) => !o.grantable).map((o) => (
+                  {operations.filter((o) => !o.grantable && (!integration || o.provider === integration.provider)).map((o) => (
                     <Badge key={o.id} tone="gray">
                       {o.label}
                     </Badge>
@@ -251,8 +256,8 @@ export function CreateGrantPage() {
                 <Field label="Environment" hint="Inherited from the integration">
                   <Input value={integration?.environment ?? ''} disabled />
                 </Field>
-                <Field label="Allowed repository (optional)" error={allErrors.repositories ?? allErrors['repositories.0']} hint={integration?.allowedResources.length ? `Integration allows: ${integration.allowedResources.join(', ')}` : 'Leave empty to allow any repository the integration can reach.'}>
-                  <Input value={r.repositories} onChange={(e) => setR({ ...r, repositories: e.target.value })} placeholder="demo-org/demo-repo" className="font-mono text-xs" invalid={!!allErrors.repositories} />
+                <Field label={`Allowed ${resourceLabel.toLowerCase()} (optional)`} error={allErrors.repositories ?? allErrors['repositories.0']} hint={integration?.allowedResources.length ? `Integration allows: ${integration.allowedResources.join(', ')}` : `Leave empty to allow any ${resourceLabel.toLowerCase()} the integration can reach.`}>
+                  <Input aria-label="Allowed resource" value={r.repositories} onChange={(e) => setR({ ...r, repositories: e.target.value })} placeholder={provider?.resource.example ?? 'demo-org/demo-repo'} className="font-mono text-xs" invalid={!!allErrors.repositories} />
                 </Field>
                 <Field label="Maximum requests per minute" required error={allErrors.rateLimitPerMinute}>
                   <Input type="number" min={1} max={600} value={r.rateLimitPerMinute} onChange={(e) => setR({ ...r, rateLimitPerMinute: e.target.value })} invalid={!!allErrors.rateLimitPerMinute} />

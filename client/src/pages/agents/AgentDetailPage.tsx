@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Ban, Bot, KeyRound, Power, RefreshCw, ShieldOff } from 'lucide-react';
-import { PERMISSIONS, operationLabel, type AccessRequest, type Agent, type Grant, type IssuedCredential } from '@token-vault/shared';
+import { PERMISSIONS, type AccessRequest, type Agent, type Grant, type IssuedCredential } from '@token-vault/shared';
+import { operationLabel } from '@/lib/providers';
 import { useApi, useMutation } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
 import { usePlayground } from '@/context/PlaygroundContext';

@@ -6,6 +6,7 @@ import { closeDatabase, runMigrations } from './db/client';
 import { DEMO_PASSWORD, resetDatabase, seedIfEmpty } from './store/seed';
 import { sessionRepo } from './store/repos';
 import { startHeartbeat } from './modules/webhooks/webhook.service';
+import { catalogSync } from './modules/providers/registry';
 
 async function main() {
   await runMigrations();
@@ -16,11 +17,14 @@ async function main() {
     console.log('[api] empty database: seeded demo data');
   }
   await sessionRepo.purgeExpiredSessions();
+  // Never blocks startup: if the CMS is unreachable, the bundled definitions apply until the next poll.
+  await catalogSync?.start();
 
   const app = createApp();
   const server = app.listen(config.port, () => {
     console.log(`[api] Token Vault control plane listening on http://localhost:${config.port}`);
     console.log(`[api] Customer webhook expected at ${config.defaultWebhookUrl}`);
+    console.log(catalogSync ? `[api] Provider catalog ${config.cmsCatalogUrl} (pinned key ${catalogSync.status.keyId})` : '[api] Provider catalog: bundled definitions only (CMS_CATALOG_URL not set)');
     console.log(`[api] Demo sign-in: owner@demo.test / ${DEMO_PASSWORD} (mock account, development only)`);
   });
   const heartbeat = startHeartbeat();

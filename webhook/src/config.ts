@@ -41,6 +41,24 @@ function readAppKey(): string | undefined {
   return inline ? inline.replace(/\\n/g, '\n') : undefined;
 }
 
+/**
+ * Provider definitions are pulled from the CMS catalog and verified against this pinned
+ * public key. The webhook trusts the CMS key directly, not the control plane: nothing the
+ * control plane sends can change where this webhook sends customer credentials.
+ */
+function readCmsPublicKey(): string | undefined {
+  const file = process.env.CMS_PUBLIC_KEY_FILE;
+  if (file) return readFileSync(file, 'utf8');
+  const inline = process.env.CMS_PUBLIC_KEY;
+  return inline ? inline.replace(/\\n/g, '\n') : undefined;
+}
+const cmsCatalogUrl = process.env.CMS_CATALOG_URL || undefined;
+const cmsPublicKey = readCmsPublicKey();
+if (cmsCatalogUrl && !cmsPublicKey) {
+  console.error('[vault] CMS_CATALOG_URL is set but CMS_PUBLIC_KEY is missing: definitions cannot be verified. Run "npm run setup" or unset CMS_CATALOG_URL.');
+  process.exit(1);
+}
+
 export const config = {
   port: Number(process.env.PORT ?? 4100),
   signingSecret: required('WEBHOOK_SIGNING_SECRET', 32),
@@ -52,6 +70,10 @@ export const config = {
   /** Optional GitHub App private key held only by this webhook (PEM; literal "\n" sequences allowed). */
   githubAppPrivateKey: readAppKey(),
   dbPoolMax: Number(process.env.DB_POOL_MAX ?? 5),
+  /** Signed provider catalog (optional; without it only the bundled definitions are used). */
+  cmsCatalogUrl,
+  cmsPublicKey,
+  cmsPollIntervalMs: Number(process.env.CMS_POLL_INTERVAL_MS ?? 30_000),
   /** if-missing: (re)create demo mock credentials only where absent or unreadable. reset: wipe the store first (tests). */
   seedMode: seedMode as 'if-missing' | 'reset',
   /** Pre-PostgreSQL JSON store; imported once on startup if present, then renamed. */

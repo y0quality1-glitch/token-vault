@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { KeyRound, Plus } from 'lucide-react';
-import { PERMISSIONS, operationLabel, type Grant, type GrantStatus } from '@token-vault/shared';
+import { PERMISSIONS, type Grant, type GrantStatus } from '@token-vault/shared';
+import { operationLabel } from '@/lib/providers';
 import { useApi } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
 import { Button } from '@/components/ui/button';

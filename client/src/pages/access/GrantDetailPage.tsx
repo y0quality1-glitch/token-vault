@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { CalendarClock, CheckCircle2, FileClock, History, Pencil, ShieldOff, TimerOff } from 'lucide-react';
-import { GRANTABLE_OPERATIONS, PERMISSIONS, operationLabel, type GrantDetail } from '@token-vault/shared';
+import { PERMISSIONS, type GrantDetail } from '@token-vault/shared';
+import { operationLabel, useProviders } from '@/lib/providers';
 import { useApi, useMutation } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
 import { api } from '@/lib/api';
@@ -258,6 +259,10 @@ function ExtendDialog({ open, grant, onClose, onSaved }: { open: boolean; grant:
 }
 
 function EditRestrictionsDialog({ open, grant, onClose, onSaved }: { open: boolean; grant: GrantDetail; onClose: () => void; onSaved: (g: GrantDetail) => void }) {
+  const { grantable: all } = useProviders();
+  // Only operations of the grant's own provider can be added.
+  const provider = grant.scopes.map((x) => all.find((o) => o.id === x)?.provider).find(Boolean);
+  const grantable = provider ? all.filter((o) => o.provider === provider) : all;
   const toast = useToast();
   const [f, setF] = useState({ scopes: [] as string[], repositories: '', validFrom: '', expiresAt: '', rateLimitPerMinute: '', allowedCidrs: '' });
   const save = useMutation((body: unknown) => api.post<GrantDetail>(`/grants/${grant.id}/versions`, body));
@@ -314,7 +319,7 @@ function EditRestrictionsDialog({ open, grant, onClose, onSaved }: { open: boole
           <p className="mb-2 text-sm font-medium text-slate-700">Permissions</p>
           {fe.scopes && <p className="mb-2 text-xs text-red-600">{fe.scopes}</p>}
           <div className="grid gap-2 sm:grid-cols-2">
-            {GRANTABLE_OPERATIONS.map((o) => (
+            {grantable.map((o) => (
               <Checkbox key={o.id} checked={f.scopes.includes(o.id)} onChange={(v) => setF({ ...f, scopes: v ? [...f.scopes, o.id] : f.scopes.filter((x) => x !== o.id) })} label={o.label} />
             ))}
           </div>
