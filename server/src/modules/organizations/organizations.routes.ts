@@ -1,10 +1,11 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { PERMISSIONS, type Member } from '@token-vault/shared';
+import { PERMISSIONS } from '@token-vault/shared';
+import { transaction } from '../../db/client';
 import { conflict, notFound } from '../../lib/errors';
 import { parse } from '../../lib/validate';
 import { orgCtx, requirePermission } from '../../middleware/auth';
-import { db } from '../../store/db';
+import { orgRepo } from '../../store/repos';
 import { recordEvent, userActor } from '../audit/audit.service';
 
 export const organizationsRouter = Router();
@@ -13,7 +14,7 @@ organizationsRouter.get('/organizations/current', (req, res) => {
   res.json(orgCtx(req).org);
 });
 
-organizationsRouter.patch('/organizations/current', requirePermission(PERMISSIONS.ORG_MANAGE), (req, res) => {
+organizationsRouter.patch('/organizations/current', requirePermission(PERMISSIONS.ORG_MANAGE), async (req, res) => {
   const ctx = orgCtx(req);
   const body = parse(
     z.object({
@@ -22,32 +23,29 @@ organizationsRouter.patch('/organizations/current', requirePermission(PERMISSION
     }),
     req.body,
   );
-  const org = db.organizations.find((o) => o.id === ctx.org.id)!;
-  Object.assign(org, body, { updatedAt: new Date().toISOString() });
-  recordEvent({ orgId: org.id, actor: userActor(ctx), eventType: 'organization.updated', target: { type: 'organization', id: org.id, name: org.name }, metadata: body });
+  const org = await transaction(async (tx) => {
+    const updated = await orgRepo.updateOrganization(ctx.org.id, { ...body, updatedAt: new Date().toISOString() }, tx);
+    await recordEvent({ orgId: updated.id, actor: userActor(ctx), eventType: 'organization.updated', target: { type: 'organization', id: updated.id, name: updated.name }, metadata: body }, tx);
+    return updated;
+  });
   res.json(org);
 });
 
-function toMember(m: (typeof db.members)[number]): Member {
-  const u = db.users.find((x) => x.id === m.userId)!;
-  return { id: m.id, organizationId: m.organizationId, userId: u.id, email: u.email, fullName: u.fullName, role: m.role, createdAt: m.createdAt };
-}
-
-organizationsRouter.get('/organizations/current/members', (req, res) => {
+organizationsRouter.get('/organizations/current/members', async (req, res) => {
   const { org } = orgCtx(req);
-  res.json({ items: db.members.filter((m) => m.organizationId === org.id).map(toMember) });
+  res.json({ items: await orgRepo.listMembers(org.id) });
 });
 
-organizationsRouter.patch('/organizations/current/members/:memberId', requirePermission(PERMISSIONS.MEMBERS_MANAGE), (req, res) => {
+organizationsRouter.patch('/organizations/current/members/:memberId', requirePermission(PERMISSIONS.MEMBERS_MANAGE), async (req, res) => {
   const ctx = orgCtx(req);
   const { role } = parse(z.object({ role: z.enum(['OWNER', 'VAULT_ADMIN', 'SECURITY_ADMIN', 'DEVELOPER', 'AUDITOR']) }), req.body);
-  const member = db.members.find((m) => m.id === String(req.params.memberId) && m.organizationId === ctx.org.id);
-  if (!member) throw notFound('Member');
-  const owners = db.members.filter((m) => m.organizationId === ctx.org.id && m.role === 'OWNER');
-  if (member.role === 'OWNER' && role !== 'OWNER' && owners.length === 1) throw conflict('An organization must keep at least one owner');
-  const previous = member.role;
-  member.role = role;
-  const target = toMember(member);
-  recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: 'member.role_changed', target: { type: 'user', id: target.userId, name: target.fullName }, severity: 'warning', metadata: { from: previous, to: role } });
-  res.json(target);
+  const updated = await transaction(async (tx) => {
+    const member = await orgRepo.getMember(ctx.org.id, String(req.params.memberId), tx);
+    if (!member) throw notFound('Member');
+    if (member.role === 'OWNER' && role !== 'OWNER' && (await orgRepo.countOwners(ctx.org.id, tx)) === 1) throw conflict('An organization must keep at least one owner');
+    await orgRepo.updateMemberRole(member.id, role, tx);
+    await recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: 'member.role_changed', target: { type: 'user', id: member.userId, name: member.fullName }, severity: 'warning', metadata: { from: member.role, to: role } }, tx);
+    return { ...member, role };
+  });
+  res.json(updated);
 });

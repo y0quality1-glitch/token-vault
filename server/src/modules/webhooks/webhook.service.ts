@@ -1,6 +1,9 @@
 import { config } from '../../config';
 import { hmacHex, randomToken, safeEqualHex } from '../../lib/crypto';
-import { db, type WebhookRecord } from '../../store/db';
+import { describeError } from '../../lib/errors';
+import { sanitize } from '../../lib/sanitize';
+import { integrationRepo, webhookRepo } from '../../store/repos';
+import type { WebhookRecord } from '../../store/types';
 import { SYSTEM_ACTOR, recordEvent } from '../audit/audit.service';
 import { WebhookUnavailableError, callWebhook } from './webhook.client';
 
@@ -39,40 +42,47 @@ export async function checkHealth(webhook: WebhookRecord): Promise<HealthOutcome
   }
 }
 
-export function applyHealth(webhook: WebhookRecord, outcome: HealthOutcome) {
+/** Persists the outcome of a health check and audits status transitions. */
+export async function applyHealth(webhook: WebhookRecord, outcome: HealthOutcome): Promise<WebhookRecord> {
   const now = new Date().toISOString();
   const previous = webhook.status;
-  webhook.healthHistory = [{ at: now, ok: outcome.ok, latencyMs: outcome.latencyMs, detail: outcome.detail }, ...webhook.healthHistory].slice(0, 30);
-  if (outcome.ok) {
-    webhook.status = 'CONNECTED';
-    webhook.lastHeartbeatAt = now;
-    webhook.lastError = null;
-    webhook.instanceId = outcome.instanceId ?? webhook.instanceId;
-    webhook.softwareVersion = outcome.version ?? webhook.softwareVersion;
-    if (!webhook.verifiedAt) webhook.verifiedAt = now;
-    webhook.registrationChallenge = null; // one-time challenge consumed
-  } else {
-    webhook.status = webhook.verifiedAt ? 'UNHEALTHY' : 'PENDING';
-    webhook.lastError = outcome.detail;
-  }
-  if (previous !== webhook.status && webhook.verifiedAt && previous !== 'PENDING') {
-    recordEvent({
-      orgId: webhook.organizationId,
+  const healthHistory = [{ at: now, ok: outcome.ok, latencyMs: outcome.latencyMs, detail: outcome.detail }, ...webhook.healthHistory].slice(0, 30);
+  const patch: Partial<WebhookRecord> = outcome.ok
+    ? {
+        healthHistory,
+        status: 'CONNECTED',
+        lastHeartbeatAt: now,
+        lastError: null,
+        instanceId: outcome.instanceId ?? webhook.instanceId,
+        softwareVersion: outcome.version ?? webhook.softwareVersion,
+        verifiedAt: webhook.verifiedAt ?? now,
+        registrationChallenge: null, // one-time challenge consumed
+      }
+    : { healthHistory, status: webhook.verifiedAt ? 'UNHEALTHY' : 'PENDING', lastError: outcome.detail };
+  const updated = await webhookRepo.updateWebhook(webhook.id, patch);
+  if (previous !== updated.status && updated.verifiedAt && previous !== 'PENDING') {
+    await recordEvent({
+      orgId: updated.organizationId,
       actor: SYSTEM_ACTOR,
       eventType: outcome.ok ? 'webhook.recovered' : 'webhook.unhealthy',
-      target: { type: 'webhook', id: webhook.id, name: webhook.name },
+      target: { type: 'webhook', id: updated.id, name: updated.name },
       outcome: outcome.ok ? 'SUCCESS' : 'FAILURE',
       severity: outcome.ok ? 'info' : 'critical',
       metadata: { detail: outcome.detail },
     });
   }
+  return updated;
 }
 
 /** Periodic heartbeat over all verified webhooks. */
 export function startHeartbeat() {
   const tick = async () => {
-    for (const w of db.webhooks.filter((x) => x.verifiedAt)) {
-      applyHealth(w, w.simulateOutage ? { ok: false, latencyMs: null, detail: 'Simulated outage enabled' } : await checkHealth(w));
+    try {
+      for (const w of await webhookRepo.listVerifiedWebhooks()) {
+        await applyHealth(w, w.simulateOutage ? { ok: false, latencyMs: null, detail: 'Simulated outage enabled' } : await checkHealth(w));
+      }
+    } catch (e) {
+      console.error('[api] heartbeat failed:', sanitize(describeError(e)));
     }
   };
   setTimeout(() => void tick().then(syncSeedCredentialMetadata), 1500);
@@ -84,18 +94,20 @@ export function startHeartbeat() {
  * generates the mock secret values. Ask the webhook for non-secret metadata.
  */
 export async function syncSeedCredentialMetadata() {
-  for (const i of db.integrations.filter((x) => !x.maskedIdentifier)) {
-    const w = db.webhooks.find((x) => x.id === i.webhookId);
-    if (!w || w.status !== 'CONNECTED') continue;
-    try {
-      const res = await callWebhook(w, 'POST', `/internal/v1/credentials/${i.credentialReference}/test`, { org_id: i.organizationId });
-      if (res.status === 200) {
-        i.maskedIdentifier = res.body.masked_identifier;
-        i.credentialFingerprint = res.body.fingerprint;
-        i.lastValidatedAt = new Date().toISOString();
+  try {
+    for (const i of await integrationRepo.listUnsyncedIntegrations()) {
+      const w = await webhookRepo.getWebhook(i.organizationId, i.webhookId);
+      if (!w || w.status !== 'CONNECTED') continue;
+      try {
+        const res = await callWebhook(w, 'POST', `/internal/v1/credentials/${i.credentialReference}/test`, { org_id: i.organizationId });
+        if (res.status === 200) {
+          await integrationRepo.updateIntegration(i.id, { maskedIdentifier: res.body.masked_identifier, credentialFingerprint: res.body.fingerprint, lastValidatedAt: new Date().toISOString() });
+        }
+      } catch {
+        /* retried on next manual test */
       }
-    } catch {
-      /* retried on next manual test */
     }
+  } catch (e) {
+    console.error('[api] credential metadata sync failed:', sanitize(describeError(e)));
   }
 }

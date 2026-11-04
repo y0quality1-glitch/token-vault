@@ -1,0 +1,22 @@
+# Local PostgreSQL for the Token Vault control plane (development only).
+# Credentials below are local-development defaults, not secrets. Override in any shared environment.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: token_vault
+      POSTGRES_PASSWORD: token_vault
+      POSTGRES_DB: token_vault
+    ports:
+      - "5432:5432"
+    volumes:
+      - token-vault-pg:/var/lib/postgresql/data
+      - ./scripts/pg-init.sql:/docker-entrypoint-initdb.d/pg-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U token_vault -d token_vault"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  token-vault-pg:

@@ -20,8 +20,8 @@ agentRouter.post('/execute', async (req, res) => {
   res.status(result.status).json(result.body);
 });
 
-agentRouter.get('/requests/:id', (req, res) => {
-  const r = getOwnRequest(req.headers.authorization, String(req.params.id));
+agentRouter.get('/requests/:id', async (req, res) => {
+  const r = await getOwnRequest(req.headers.authorization, String(req.params.id));
   if (r.status === 401) return void res.status(401).json({ error: { code: 'AGENT_UNAUTHENTICATED', message: 'Invalid agent credential' } });
   if (r.status === 404) return void res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Request not found' } });
   res.json(r.body);

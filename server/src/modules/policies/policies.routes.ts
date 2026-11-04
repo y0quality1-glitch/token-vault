@@ -6,7 +6,8 @@ import { newId } from '../../lib/ids';
 import { isValidCidr } from '../../lib/net';
 import { parse } from '../../lib/validate';
 import { orgCtx, requirePermission } from '../../middleware/auth';
-import { db, findInOrg, inOrg } from '../../store/db';
+import { transaction } from '../../db/client';
+import { policyRepo } from '../../store/repos';
 import { recordEvent, userActor } from '../audit/audit.service';
 
 export const policiesRouter = Router();
@@ -35,35 +36,44 @@ const policySchema = z.object({
   }),
 });
 
-policiesRouter.get('/policies', (req, res) => {
+policiesRouter.get('/policies', async (req, res) => {
   const { org } = orgCtx(req);
-  res.json({ items: inOrg(db.policies, org.id).sort((a, b) => a.priority - b.priority) });
+  res.json({ items: await policyRepo.listPolicies(org.id) });
 });
 
-policiesRouter.post('/policies', requirePermission(PERMISSIONS.POLICY_MANAGE), (req, res) => {
+const normalize = (c: z.infer<typeof policySchema>['conditions']) => ({ ...c, timeWindow: c.timeWindow ?? null, sourceCidrs: c.sourceCidrs ?? [] });
+
+policiesRouter.post('/policies', requirePermission(PERMISSIONS.POLICY_MANAGE), async (req, res) => {
   const ctx = orgCtx(req);
   const body = parse(policySchema, req.body);
   const now = new Date().toISOString();
-  const policy: Policy = { id: newId('pol'), organizationId: ctx.org.id, ...body, conditions: { ...body.conditions, timeWindow: body.conditions.timeWindow ?? null, sourceCidrs: body.conditions.sourceCidrs ?? [] }, createdAt: now, updatedAt: now };
-  db.policies.push(policy);
-  recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: 'policy.created', target: { type: 'policy', id: policy.id, name: policy.name }, metadata: { effect: policy.effect, priority: policy.priority, enabled: policy.enabled } });
+  const policy = await transaction(async (tx) => {
+    const created = await policyRepo.insertPolicy({ id: newId('pol'), organizationId: ctx.org.id, ...body, conditions: normalize(body.conditions), createdAt: now, updatedAt: now } satisfies Policy, tx);
+    await recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: 'policy.created', target: { type: 'policy', id: created.id, name: created.name }, metadata: { effect: created.effect, priority: created.priority, enabled: created.enabled } }, tx);
+    return created;
+  });
   res.status(201).json(policy);
 });
 
-policiesRouter.put('/policies/:id', requirePermission(PERMISSIONS.POLICY_MANAGE), (req, res) => {
+policiesRouter.put('/policies/:id', requirePermission(PERMISSIONS.POLICY_MANAGE), async (req, res) => {
   const ctx = orgCtx(req);
-  const policy = findInOrg(db.policies, ctx.org.id, String(req.params.id));
-  if (!policy) throw notFound('Policy');
   const body = parse(policySchema, req.body);
-  const wasEnabled = policy.enabled;
-  Object.assign(policy, body, { conditions: { ...body.conditions, timeWindow: body.conditions.timeWindow ?? null, sourceCidrs: body.conditions.sourceCidrs ?? [] }, updatedAt: new Date().toISOString() });
-  recordEvent({
-    orgId: ctx.org.id,
-    actor: userActor(ctx),
-    eventType: wasEnabled !== policy.enabled ? (policy.enabled ? 'policy.enabled' : 'policy.disabled') : 'policy.updated',
-    target: { type: 'policy', id: policy.id, name: policy.name },
-    severity: policy.effect === 'DENY' && wasEnabled && !policy.enabled ? 'warning' : 'info',
-    metadata: { effect: policy.effect, priority: policy.priority, enabled: policy.enabled },
+  const updated = await transaction(async (tx) => {
+    const existing = await policyRepo.getPolicy(ctx.org.id, String(req.params.id), tx);
+    if (!existing) throw notFound('Policy');
+    const policy = await policyRepo.updatePolicy(existing.id, { ...body, conditions: normalize(body.conditions), updatedAt: new Date().toISOString() }, tx);
+    await recordEvent(
+      {
+        orgId: ctx.org.id,
+        actor: userActor(ctx),
+        eventType: existing.enabled !== policy.enabled ? (policy.enabled ? 'policy.enabled' : 'policy.disabled') : 'policy.updated',
+        target: { type: 'policy', id: policy.id, name: policy.name },
+        severity: policy.effect === 'DENY' && existing.enabled && !policy.enabled ? 'warning' : 'info',
+        metadata: { effect: policy.effect, priority: policy.priority, enabled: policy.enabled },
+      },
+      tx,
+    );
+    return policy;
   });
-  res.json(policy);
+  res.json(updated);
 });

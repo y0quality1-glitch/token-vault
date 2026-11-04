@@ -1,7 +1,7 @@
 import { config } from '../../config';
 import { hmacHex, safeEqualHex, sha256Hex } from '../../lib/crypto';
 import { nonce as newNonce } from '../../lib/ids';
-import type { WebhookRecord } from '../../store/db';
+import type { WebhookRecord } from '../../store/types';
 
 /**
  * Credential Broker transport: signed, short-lived control plane -> customer webhook calls.

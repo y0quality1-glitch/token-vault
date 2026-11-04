@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { getOperation, type Policy } from '@token-vault/shared';
 import { evaluate, policyMatches } from '../src/modules/policy-engine/engine';
-import type { GrantRecord } from '../src/store/db';
+import type { GrantRecord } from '../src/store/types';
 import { sanitize } from '../src/lib/sanitize';
 import { ipInCidr } from '../src/lib/net';
 

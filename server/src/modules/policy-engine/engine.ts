@@ -1,6 +1,6 @@
 import { DECISION_CODES, type DecisionCheck, type MatchedRule, type OperationDef, type Policy } from '@token-vault/shared';
 import { ipAllowed, ipInCidr } from '../../lib/net';
-import type { AgentRecord, GrantRecord, IntegrationRecord } from '../../store/db';
+import type { AgentRecord, GrantRecord, IntegrationRecord } from '../../store/types';
 
 /**
  * Deterministic authorization (spec section "Screen 10 - Policies").

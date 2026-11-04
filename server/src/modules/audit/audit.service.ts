@@ -1,7 +1,8 @@
 import type { AccessRequest, AuditEvent, AuditActorType, AuditOutcome } from '@token-vault/shared';
+import { db, type Executor } from '../../db/client';
 import { correlationId as newCorrelationId, newId } from '../../lib/ids';
 import { sanitize } from '../../lib/sanitize';
-import { db } from '../../store/db';
+import { auditRepo } from '../../store/repos';
 import type { AdminContext } from '../../types/express';
 
 export interface Actor {
@@ -17,41 +18,44 @@ export function userActor(ctx: AdminContext): Actor {
 export const SYSTEM_ACTOR: Actor = { type: 'SYSTEM', id: 'system', name: 'Token Vault' };
 
 /**
- * Append-only audit log. Records are never updated or deleted through the API;
- * metadata is sanitized so secrets cannot be persisted even by mistake.
+ * Append-only audit log. Metadata is sanitized so secrets cannot be persisted even by
+ * mistake. Pass the transaction executor to write the event atomically with the change
+ * it describes.
  */
-export function recordEvent(input: {
-  orgId: string;
-  actor: Actor;
-  eventType: string;
-  target: { type: string; id: string; name: string };
-  outcome?: AuditOutcome;
-  severity?: AuditEvent['severity'];
-  metadata?: Record<string, unknown>;
-  correlationId?: string;
-}): AuditEvent {
-  const event: AuditEvent = Object.freeze({
-    id: newId('evt'),
-    organizationId: input.orgId,
-    actorType: input.actor.type,
-    actorId: input.actor.id,
-    actorName: input.actor.name,
-    eventType: input.eventType,
-    targetType: input.target.type,
-    targetId: input.target.id,
-    targetName: input.target.name,
-    outcome: input.outcome ?? 'SUCCESS',
-    severity: input.severity ?? 'info',
-    metadata: sanitize(input.metadata ?? {}),
-    correlationId: input.correlationId ?? newCorrelationId(),
-    createdAt: new Date().toISOString(),
-  });
-  db.auditEvents.unshift(event);
-  return event;
+export async function recordEvent(
+  input: {
+    orgId: string;
+    actor: Actor;
+    eventType: string;
+    target: { type: string; id: string; name: string };
+    outcome?: AuditOutcome;
+    severity?: AuditEvent['severity'];
+    metadata?: Record<string, unknown>;
+    correlationId?: string;
+  },
+  ex: Executor = db,
+): Promise<AuditEvent> {
+  return auditRepo.insertAuditEvent(
+    {
+      id: newId('evt'),
+      organizationId: input.orgId,
+      actorType: input.actor.type,
+      actorId: input.actor.id,
+      actorName: input.actor.name,
+      eventType: input.eventType,
+      targetType: input.target.type,
+      targetId: input.target.id,
+      targetName: input.target.name,
+      outcome: input.outcome ?? 'SUCCESS',
+      severity: input.severity ?? 'info',
+      metadata: sanitize(input.metadata ?? {}),
+      correlationId: input.correlationId ?? newCorrelationId(),
+      createdAt: new Date().toISOString(),
+    },
+    ex,
+  );
 }
 
-export function recordAccessRequest(req: AccessRequest): AccessRequest {
-  const frozen = Object.freeze(sanitize(req));
-  db.accessRequests.unshift(frozen);
-  return frozen;
+export async function recordAccessRequest(req: AccessRequest, ex: Executor = db): Promise<AccessRequest> {
+  return auditRepo.insertAccessRequest(sanitize(req), ex);
 }

@@ -10,7 +10,9 @@ import {
 import { config } from '../../config';
 import { parseAgentCredential, verifySecret } from '../../lib/crypto';
 import { correlationId as newCorrelationId, nonce, requestId as newRequestId } from '../../lib/ids';
-import { db, type AgentRecord, type GrantRecord, type IntegrationRecord } from '../../store/db';
+import { transaction } from '../../db/client';
+import { agentRepo, auditRepo, grantRepo, integrationRepo, orgRepo, policyRepo, webhookRepo } from '../../store/repos';
+import type { AgentRecord, GrantRecord, IntegrationRecord } from '../../store/types';
 import { recordAccessRequest, recordEvent } from '../audit/audit.service';
 import { CHECK_NAMES, evaluate, skippedChecks } from '../policy-engine/engine';
 import { WebhookUnavailableError, callWebhook } from '../webhooks/webhook.client';
@@ -65,7 +67,7 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
   const requestId = newRequestId();
   const correlationId = newCorrelationId();
 
-  const respond = (args: {
+  const respond = async (args: {
     status: number;
     orgId: string | null;
     agent: AgentRecord | null;
@@ -107,42 +109,46 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
     };
     // Every decision is audited (when the organization can be attributed).
     if (args.orgId) {
-      recordAccessRequest({
-        id: requestId,
-        organizationId: args.orgId,
-        agentId: args.agent?.id ?? null,
-        agentName: args.agent?.name ?? 'Unknown agent',
-        integrationId: args.integration?.id ?? null,
-        integrationName: args.integration?.displayName ?? '—',
-        grantId: args.grant?.id ?? null,
-        grantName: args.grant?.name ?? null,
-        operation: args.operation,
-        resource: args.resource,
-        decision: args.decision,
-        decisionCode: args.code,
-        decisionReason: args.reason,
-        matchedRule: args.matchedRule,
-        executionStatus: args.executionStatus,
-        upstreamStatusCode: args.upstreamStatus,
-        webhookStatus: args.webhookStatus,
-        durationMs,
-        correlationId,
-        sourceIp: ctx.sourceIp,
-        source: ctx.source,
-        idempotencyKey: args.idempotencyKey,
-        checks: args.checks,
-        createdAt: new Date().toISOString(),
-      });
+      const orgId = args.orgId;
       const failed = args.executionStatus === 'FAILED';
-      recordEvent({
-        orgId: args.orgId,
-        actor: args.agent ? { type: 'AGENT', id: args.agent.id, name: args.agent.name } : { type: 'AGENT', id: 'unknown', name: 'Unknown agent' },
-        eventType: args.decision === 'DENY' ? 'access.denied' : failed ? 'access.execution_failed' : 'access.allowed',
-        target: args.integration ? { type: 'integration', id: args.integration.id, name: args.integration.displayName } : { type: 'integration', id: 'unknown', name: '—' },
-        outcome: args.decision === 'DENY' ? 'DENIED' : failed ? 'FAILURE' : 'SUCCESS',
-        severity: args.decision === 'ALLOW' && !failed ? 'info' : ['AGENT_UNAUTHENTICATED', 'POLICY_DENIED', 'AGENT_DISABLED', 'GRANT_REVOKED'].includes(args.code) ? 'critical' : 'warning',
-        metadata: { requestId, operation: args.operation, ...args.resource, decisionCode: args.code, grantId: args.grant?.id ?? null, upstreamStatus: args.upstreamStatus },
-        correlationId,
+      // The access record and its audit event are committed together.
+      await transaction(async (tx) => {
+        await recordAccessRequest({
+          id: requestId,
+          organizationId: orgId,
+          agentId: args.agent?.id ?? null,
+          agentName: args.agent?.name ?? 'Unknown agent',
+          integrationId: args.integration?.id ?? null,
+          integrationName: args.integration?.displayName ?? '—',
+          grantId: args.grant?.id ?? null,
+          grantName: args.grant?.name ?? null,
+          operation: args.operation,
+          resource: args.resource,
+          decision: args.decision,
+          decisionCode: args.code,
+          decisionReason: args.reason,
+          matchedRule: args.matchedRule,
+          executionStatus: args.executionStatus,
+          upstreamStatusCode: args.upstreamStatus,
+          webhookStatus: args.webhookStatus,
+          durationMs,
+          correlationId,
+          sourceIp: ctx.sourceIp,
+          source: ctx.source,
+          idempotencyKey: args.idempotencyKey,
+          checks: args.checks,
+          createdAt: new Date().toISOString(),
+        }, tx);
+        await recordEvent({
+          orgId,
+          actor: args.agent ? { type: 'AGENT', id: args.agent.id, name: args.agent.name } : { type: 'AGENT', id: 'unknown', name: 'Unknown agent' },
+          eventType: args.decision === 'DENY' ? 'access.denied' : failed ? 'access.execution_failed' : 'access.allowed',
+          target: args.integration ? { type: 'integration', id: args.integration.id, name: args.integration.displayName } : { type: 'integration', id: 'unknown', name: '—' },
+          outcome: args.decision === 'DENY' ? 'DENIED' : failed ? 'FAILURE' : 'SUCCESS',
+          severity: args.decision === 'ALLOW' && !failed ? 'info' : ['AGENT_UNAUTHENTICATED', 'POLICY_DENIED', 'AGENT_DISABLED', 'GRANT_REVOKED'].includes(args.code) ? 'critical' : 'warning',
+          metadata: { requestId, operation: args.operation, ...args.resource, decisionCode: args.code, grantId: args.grant?.id ?? null, upstreamStatus: args.upstreamStatus },
+          correlationId,
+        }, tx);
       });
     }
     return { status: args.status, body };
@@ -156,11 +162,11 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
   // ---- Step 1: authenticate the caller from its credential (never from a caller-supplied agent id)
   const token = /^Bearer\s+(\S+)$/i.exec(ctx.authorization ?? '')?.[1] ?? '';
   const parsed = parseAgentCredential(token);
-  const agent = parsed ? db.agents.find((a) => a.credentialKeyId === parsed.keyId) ?? null : null;
+  const agent = parsed ? await agentRepo.findAgentByKeyId(parsed.keyId) : null;
   const authenticated = !!agent && verifySecret(token, agent.credentialHash);
   if (!authenticated) {
     // Attribute to an org only for audit visibility: the key's org if the key id is known, else the non-authoritative hint.
-    const orgId = agent?.organizationId ?? db.organizations.find((o) => o.slug === ctx.orgHint)?.id ?? null;
+    const orgId = agent?.organizationId ?? (ctx.orgHint ? (await orgRepo.findOrganizationBySlug(ctx.orgHint))?.id ?? null : null);
     const reason = !token ? 'Missing agent credential (Authorization: Bearer tvak_...).' : 'Agent credential is invalid, rotated or unknown.';
     return respond({
       ...base,
@@ -176,7 +182,7 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
       checks: [{ step: 1, name: CHECK_NAMES[0], passed: false, detail: reason }, ...skippedChecks(2)],
     });
   }
-  agent.lastAccessAt = new Date().toISOString();
+  await agentRepo.updateAgent(agent.id, { lastAccessAt: new Date().toISOString() });
   const orgId = agent.organizationId;
   const authCheck: DecisionCheck = { step: 1, name: CHECK_NAMES[0], passed: true, detail: `Authenticated as ${agent.name} (${agent.id}) from credential` };
 
@@ -200,17 +206,19 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
   }
 
   // Integration lookup is org-scoped: an agent can never address another organization's integration.
-  const integration = db.integrations.find((i) => i.id === req.integration_id && i.organizationId === orgId) ?? null;
+  const integration = await integrationRepo.getIntegration(orgId, req.integration_id);
   if (!integration) {
     return respond({ ...base, status: 404, orgId, agent, integration: null, operation: operation.id, resource, decision: 'DENY', code: DECISION_CODES.INTEGRATION_NOT_FOUND, reason: `Integration "${req.integration_id}" does not exist in this organization.`, checks: [authCheck, ...skippedChecks(2)] });
   }
 
   // ---- Steps 2-10: deterministic policy evaluation (current state, every request)
+  // Fresh reads on every request: revocation, expiry and policy edits apply immediately.
+  const [pairGrants, orgPolicies] = await Promise.all([grantRepo.grantsForPair(orgId, agent.id, integration.id), policyRepo.listPolicies(orgId)]);
   const evaluation = evaluate({
     agent,
     integration,
-    grants: db.grants.filter((g) => g.organizationId === orgId && g.agentId === agent.id && g.integrationId === integration.id),
-    policies: db.policies.filter((p) => p.organizationId === orgId),
+    grants: pairGrants,
+    policies: orgPolicies,
     operation,
     resource: req.resource,
     sourceIp: ctx.sourceIp,
@@ -226,8 +234,7 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
 
   const grant = evaluation.grant!;
   recordHit(grant.id);
-  grant.lastUsedAt = new Date().toISOString();
-  grant.usageCount += 1;
+  await grantRepo.recordGrantUse(grant.id);
 
   // Idempotency is honoured only AFTER authorization, so a revoked grant cannot replay a cached success.
   if (req.idempotency_key) {
@@ -240,7 +247,7 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
   const allowArgs = { orgId, agent, integration, grant, operation: operation.id, resource, decision: 'ALLOW' as const, matchedRule: evaluation.matchedRule, checks: evaluation.checks, idempotencyKey: req.idempotency_key ?? null };
 
   // ---- Broker: signed, short-lived execution request to the customer webhook
-  const webhook = db.webhooks.find((w) => w.id === integration.webhookId && w.organizationId === orgId);
+  const webhook = await webhookRepo.getWebhook(orgId, integration.webhookId);
   if (!webhook || !webhook.instanceId) {
     return respond({ ...allowArgs, status: 503, code: DECISION_CODES.WEBHOOK_UNAVAILABLE, reason: 'Authorized, but no verified customer webhook is configured for this integration. No credential was used.', executionStatus: 'FAILED', webhookStatus: 'NOT_CONFIGURED', upstreamStatus: null, result: null });
   }
@@ -292,12 +299,12 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
 }
 
 /** Agents may look up only their own requests. */
-export function getOwnRequest(authorization: string | undefined, id: string) {
+export async function getOwnRequest(authorization: string | undefined, id: string) {
   const token = /^Bearer\s+(\S+)$/i.exec(authorization ?? '')?.[1] ?? '';
   const parsed = parseAgentCredential(token);
-  const agent = parsed ? db.agents.find((a) => a.credentialKeyId === parsed.keyId) : undefined;
+  const agent = parsed ? await agentRepo.findAgentByKeyId(parsed.keyId) : null;
   if (!agent || !verifySecret(token, agent.credentialHash)) return { status: 401 as const };
-  const r = db.accessRequests.find((x) => x.id === id && x.agentId === agent.id);
+  const r = await auditRepo.getAccessRequestForAgent(agent.id, id);
   if (!r) return { status: 404 as const };
   const { checks, ...rest } = r;
   return { status: 200 as const, body: { ...rest, checks } };

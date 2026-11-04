@@ -1,14 +1,16 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { PERMISSIONS, roleHas, type ApiClient, type IssuedCredential } from '@token-vault/shared';
+import { transaction } from '../../db/client';
 import { generateAgentCredential, maskAgentKey } from '../../lib/crypto';
 import { conflict, forbidden, notFound } from '../../lib/errors';
 import { newId } from '../../lib/ids';
 import { isValidCidr } from '../../lib/net';
 import { parse } from '../../lib/validate';
 import { orgCtx, requirePermission } from '../../middleware/auth';
-import { db, findInOrg, inOrg, type AgentRecord } from '../../store/db';
-import { effectiveGrantStatus, toAgent, toGrant } from '../../store/views';
+import { agentRepo, auditRepo, grantRepo } from '../../store/repos';
+import type { AgentRecord } from '../../store/types';
+import { agentView, effectiveGrantStatus, loadLookups, toAgent, toGrant } from '../../store/views';
 import type { AdminContext } from '../../types/express';
 import { recordEvent, userActor } from '../audit/audit.service';
 
@@ -26,8 +28,8 @@ const agentSchema = z.object({
   allowedCidrs: cidrList,
 });
 
-function getAgent(orgId: string, id: string): AgentRecord {
-  const a = findInOrg(db.agents, orgId, id);
+async function getAgent(orgId: string, id: string): Promise<AgentRecord> {
+  const a = await agentRepo.getAgent(orgId, id);
   if (!a) throw notFound('Agent');
   return a;
 }
@@ -38,102 +40,104 @@ function assertCanManage(ctx: AdminContext, agent: AgentRecord) {
   if (agent.ownerUserId !== ctx.user.id) throw forbidden('Developers can only manage agents they own');
 }
 
-function issue(agent: AgentRecord): IssuedCredential {
+/** New API credential: the plaintext is returned once; only the scrypt hash is persisted. */
+function issueCredential() {
   const cred = generateAgentCredential();
-  agent.credentialKeyId = cred.keyId;
-  agent.credentialHash = cred.hash; // only the scrypt hash is stored
-  agent.credentialIssuedAt = new Date().toISOString();
-  return { apiKey: cred.apiKey, keyId: cred.keyId, issuedAt: agent.credentialIssuedAt };
+  const issuedAt = new Date().toISOString();
+  return {
+    patch: { credentialKeyId: cred.keyId, credentialHash: cred.hash, credentialIssuedAt: issuedAt },
+    credential: { apiKey: cred.apiKey, keyId: cred.keyId, issuedAt } satisfies IssuedCredential,
+  };
 }
 
-agentsRouter.get('/agents', (req, res) => {
+agentsRouter.get('/agents', async (req, res) => {
   const { org } = orgCtx(req);
-  res.json({ items: inOrg(db.agents, org.id).map(toAgent) });
+  const [list, lookups] = await Promise.all([agentRepo.listAgents(org.id), loadLookups(org.id)]);
+  res.json({ items: list.map((a) => toAgent(a, lookups)) });
 });
 
-agentsRouter.get('/agents/:id', (req, res) => {
+agentsRouter.get('/agents/:id', async (req, res) => {
   const { org } = orgCtx(req);
-  const a = getAgent(org.id, String(req.params.id));
-  const grants = db.grants.filter((g) => g.agentId === a.id).map(toGrant);
-  const activity = db.accessRequests.filter((r) => r.agentId === a.id).slice(0, 25);
-  res.json({ ...toAgent(a), grants, activity, maskedKey: maskAgentKey(a.credentialKeyId) });
+  const a = await getAgent(org.id, String(req.params.id));
+  const [grants, activity, lookups] = await Promise.all([grantRepo.listGrants(org.id, { agentId: a.id }), auditRepo.accessRequestsForAgent(a.id, 25), loadLookups(org.id)]);
+  res.json({ ...toAgent(a, lookups), grants: grants.map((g) => toGrant(g, lookups)), activity, maskedKey: maskAgentKey(a.credentialKeyId) });
 });
 
-agentsRouter.post('/agents', requirePermission(PERMISSIONS.AGENT_MANAGE), (req, res) => {
+agentsRouter.post('/agents', requirePermission(PERMISSIONS.AGENT_MANAGE), async (req, res) => {
   const ctx = orgCtx(req);
   const body = parse(agentSchema, req.body);
-  if (inOrg(db.agents, ctx.org.id).some((a) => a.name.toLowerCase() === body.name.toLowerCase())) throw conflict('An agent with that name already exists');
-  const now = new Date().toISOString();
-  const agent: AgentRecord = {
-    id: newId('agt'),
-    organizationId: ctx.org.id,
-    ...body,
-    ownerUserId: ctx.user.id,
-    credentialKeyId: '',
-    credentialHash: '',
-    credentialIssuedAt: now,
-    status: 'ACTIVE',
-    lastAccessAt: null,
-    createdAt: now,
-  };
-  const credential = issue(agent);
-  db.agents.push(agent);
-  recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: 'agent.registered', target: { type: 'agent', id: agent.id, name: agent.name }, metadata: { agentType: agent.agentType, environment: agent.environment, keyId: credential.keyId } });
-  res.status(201).json({ agent: toAgent(agent), credential });
+  const { patch, credential } = issueCredential();
+  const agent = await transaction(async (tx) => {
+    if ((await agentRepo.listAgents(ctx.org.id, tx)).some((a) => a.name.toLowerCase() === body.name.toLowerCase())) throw conflict('An agent with that name already exists');
+    const now = new Date().toISOString();
+    const created = await agentRepo.insertAgent({ id: newId('agt'), organizationId: ctx.org.id, ...body, ownerUserId: ctx.user.id, ...patch, status: 'ACTIVE', lastAccessAt: null, createdAt: now }, tx);
+    await recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: 'agent.registered', target: { type: 'agent', id: created.id, name: created.name }, metadata: { agentType: created.agentType, environment: created.environment, keyId: credential.keyId } }, tx);
+    return created;
+  });
+  res.status(201).json({ agent: await agentView(agent), credential });
 });
 
-agentsRouter.patch('/agents/:id', requirePermission(PERMISSIONS.AGENT_MANAGE), (req, res) => {
+agentsRouter.patch('/agents/:id', requirePermission(PERMISSIONS.AGENT_MANAGE), async (req, res) => {
   const ctx = orgCtx(req);
-  const a = getAgent(ctx.org.id, String(req.params.id));
+  const a = await getAgent(ctx.org.id, String(req.params.id));
   assertCanManage(ctx, a);
   const body = parse(agentSchema.omit({ agentType: true }), req.body);
-  Object.assign(a, body);
-  recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: 'agent.updated', target: { type: 'agent', id: a.id, name: a.name }, metadata: body });
-  res.json(toAgent(a));
+  const updated = await transaction(async (tx) => {
+    const u = await agentRepo.updateAgent(a.id, body, tx);
+    await recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: 'agent.updated', target: { type: 'agent', id: a.id, name: u.name }, metadata: body }, tx);
+    return u;
+  });
+  res.json(await agentView(updated));
 });
 
-agentsRouter.post('/agents/:id/rotate-credential', requirePermission(PERMISSIONS.AGENT_MANAGE), (req, res) => {
+agentsRouter.post('/agents/:id/rotate-credential', requirePermission(PERMISSIONS.AGENT_MANAGE), async (req, res) => {
   const ctx = orgCtx(req);
-  const a = getAgent(ctx.org.id, String(req.params.id));
+  const a = await getAgent(ctx.org.id, String(req.params.id));
   assertCanManage(ctx, a);
-  const previousKeyId = a.credentialKeyId;
-  const credential = issue(a);
-  recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: 'agent.credential_rotated', target: { type: 'agent', id: a.id, name: a.name }, severity: 'warning', metadata: { previousKeyId, keyId: credential.keyId } });
-  res.json({ agent: toAgent(a), credential });
+  const { patch, credential } = issueCredential();
+  const updated = await transaction(async (tx) => {
+    const u = await agentRepo.updateAgent(a.id, patch, tx);
+    await recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: 'agent.credential_rotated', target: { type: 'agent', id: a.id, name: a.name }, severity: 'warning', metadata: { previousKeyId: a.credentialKeyId, keyId: credential.keyId } }, tx);
+    return u;
+  });
+  res.json({ agent: await agentView(updated), credential });
 });
 
-agentsRouter.post('/agents/:id/disable', requirePermission(PERMISSIONS.AGENT_MANAGE), (req, res) => {
+async function setAgentStatus(req: import('express').Request, status: 'ACTIVE' | 'DISABLED') {
   const ctx = orgCtx(req);
-  const a = getAgent(ctx.org.id, String(req.params.id));
+  const a = await getAgent(ctx.org.id, String(req.params.id));
   assertCanManage(ctx, a);
-  a.status = 'DISABLED';
-  recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: 'agent.disabled', target: { type: 'agent', id: a.id, name: a.name }, severity: 'warning' });
-  res.json(toAgent(a));
+  return transaction(async (tx) => {
+    const u = await agentRepo.updateAgent(a.id, { status }, tx);
+    await recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: status === 'DISABLED' ? 'agent.disabled' : 'agent.enabled', target: { type: 'agent', id: a.id, name: a.name }, severity: status === 'DISABLED' ? 'warning' : 'info' }, tx);
+    return u;
+  });
+}
+
+agentsRouter.post('/agents/:id/disable', requirePermission(PERMISSIONS.AGENT_MANAGE), async (req, res) => {
+  res.json(await agentView(await setAgentStatus(req, 'DISABLED')));
 });
 
-agentsRouter.post('/agents/:id/enable', requirePermission(PERMISSIONS.AGENT_MANAGE), (req, res) => {
-  const ctx = orgCtx(req);
-  const a = getAgent(ctx.org.id, String(req.params.id));
-  assertCanManage(ctx, a);
-  a.status = 'ACTIVE';
-  recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: 'agent.enabled', target: { type: 'agent', id: a.id, name: a.name } });
-  res.json(toAgent(a));
+agentsRouter.post('/agents/:id/enable', requirePermission(PERMISSIONS.AGENT_MANAGE), async (req, res) => {
+  res.json(await agentView(await setAgentStatus(req, 'ACTIVE')));
 });
 
-agentsRouter.post('/agents/:id/revoke-grants', requirePermission(PERMISSIONS.GRANT_REVOKE), (req, res) => {
+agentsRouter.post('/agents/:id/revoke-grants', requirePermission(PERMISSIONS.GRANT_REVOKE), async (req, res) => {
   const ctx = orgCtx(req);
-  const a = getAgent(ctx.org.id, String(req.params.id));
-  const now = new Date().toISOString();
-  const affected = db.grants.filter((g) => g.agentId === a.id && ['ACTIVE', 'PENDING_APPROVAL', 'SCHEDULED'].includes(effectiveGrantStatus(g)));
-  for (const g of affected) Object.assign(g, { storedStatus: 'REVOKED', revokedAt: now, revokedBy: ctx.user.id, revocationReason: 'All grants revoked for agent' });
-  recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: 'agent.grants_revoked', target: { type: 'agent', id: a.id, name: a.name }, severity: 'critical', metadata: { grantIds: affected.map((g) => g.id) } });
-  res.json({ revoked: affected.length, agent: toAgent(a) });
+  const a = await getAgent(ctx.org.id, String(req.params.id));
+  const revoked = await transaction(async (tx) => {
+    const affected = (await grantRepo.listGrants(ctx.org.id, { agentId: a.id }, tx)).filter((g) => ['ACTIVE', 'PENDING_APPROVAL', 'SCHEDULED'].includes(effectiveGrantStatus(g)));
+    await grantRepo.revokeGrants(affected.map((g) => g.id), ctx.user.id, 'All grants revoked for agent', tx);
+    await recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: 'agent.grants_revoked', target: { type: 'agent', id: a.id, name: a.name }, severity: 'critical', metadata: { grantIds: affected.map((g) => g.id) } }, tx);
+    return affected.length;
+  });
+  res.json({ revoked, agent: await agentView(a) });
 });
 
 /** API Clients: metadata about issued agent credentials (never the secret). */
-agentsRouter.get('/api-clients', (req, res) => {
+agentsRouter.get('/api-clients', async (req, res) => {
   const { org } = orgCtx(req);
-  const items: ApiClient[] = inOrg(db.agents, org.id).map((a) => ({
+  const items: ApiClient[] = (await agentRepo.listAgents(org.id)).map((a) => ({
     keyId: a.credentialKeyId,
     maskedKey: maskAgentKey(a.credentialKeyId),
     agentId: a.id,

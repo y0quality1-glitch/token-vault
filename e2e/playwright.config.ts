@@ -12,6 +12,8 @@ import { resolve } from 'node:path';
  */
 process.env.WEBHOOK_SIGNING_SECRET ??= randomBytes(32).toString('base64url');
 process.env.VAULT_ENCRYPTION_KEY ??= randomBytes(32).toString('base64');
+// Dedicated database, wiped and reseeded when the control plane starts (SEED_MODE=reset).
+const databaseUrl = process.env.E2E_DATABASE_URL ?? 'postgres://token_vault:token_vault@localhost:5432/token_vault_e2e';
 
 const root = resolve(import.meta.dirname, '..');
 export const LOG_DIR = resolve(import.meta.dirname, '.logs');
@@ -67,6 +69,8 @@ export default defineConfig({
         PORT: '4000',
         WEBHOOK_SIGNING_SECRET: process.env.WEBHOOK_SIGNING_SECRET,
         DEFAULT_WEBHOOK_URL: 'http://localhost:4100',
+        DATABASE_URL: databaseUrl,
+        SEED_MODE: 'reset',
         HEARTBEAT_INTERVAL_MS: '30000',
         VAULT_ENCRYPTION_KEY: '',
       },

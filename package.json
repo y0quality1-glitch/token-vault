@@ -16,9 +16,14 @@
     "build": "npm run build -w client",
     "typecheck": "npm run typecheck -w shared && npm run typecheck -w server && npm run typecheck -w webhook && npm run typecheck -w client && npm run typecheck -w e2e",
     "test": "npm run test -w server && npm run test -w webhook",
-    "test:e2e": "npm test -w e2e"
+    "test:e2e": "npm test -w e2e",
+    "db:up": "docker compose up -d --wait postgres",
+    "db:down": "docker compose down",
+    "db:migrate": "npm run db:migrate -w server",
+    "db:generate": "npm run db:generate -w server"
   },
   "devDependencies": {
-    "concurrently": "^9.1.2"
+    "concurrently": "^9.1.2",
+    "drizzle-orm": "^0.45.4"
   }
 }

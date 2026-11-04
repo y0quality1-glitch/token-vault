@@ -1,22 +1,26 @@
 import { Router } from 'express';
 import type { DashboardSummary } from '@token-vault/shared';
 import { orgCtx } from '../../middleware/auth';
-import { db, inOrg } from '../../store/db';
-import { effectiveGrantStatus, toGrant } from '../../store/views';
+import { agentRepo, auditRepo, grantRepo, integrationRepo, webhookRepo } from '../../store/repos';
+import { effectiveGrantStatus, loadLookups, toGrant } from '../../store/views';
 
 export const dashboardRouter = Router();
 
-dashboardRouter.get('/dashboard', (req, res) => {
+dashboardRouter.get('/dashboard', async (req, res) => {
   const { org } = orgCtx(req);
   const now = Date.now();
   const since = now - 86400e3;
 
-  const integrations = inOrg(db.integrations, org.id);
-  const agents = inOrg(db.agents, org.id);
-  const grants = inOrg(db.grants, org.id);
-  const webhooks = inOrg(db.webhooks, org.id);
-  const requests = inOrg(db.accessRequests, org.id);
-  const recent = requests.filter((r) => new Date(r.createdAt).getTime() > since);
+  const [integrations, agents, grants, webhooks, recent, latest, anyRequests, lookups] = await Promise.all([
+    integrationRepo.listIntegrations(org.id),
+    agentRepo.listAgents(org.id),
+    grantRepo.listGrants(org.id),
+    webhookRepo.listWebhooks(org.id),
+    auditRepo.accessRequestsSince(org.id, new Date(since).toISOString()),
+    auditRepo.latestAccessRequests(org.id, 8),
+    auditRepo.hasAccessRequests(org.id),
+    loadLookups(org.id),
+  ]);
 
   const primary = webhooks.find((w) => w.status === 'CONNECTED') ?? webhooks[0];
 
@@ -56,7 +60,7 @@ dashboardRouter.get('/dashboard', (req, res) => {
     },
     webhook: { status: primary?.status ?? 'NOT_CONFIGURED', name: primary?.name ?? null, lastHeartbeatAt: primary?.lastHeartbeatAt ?? null, count: webhooks.length },
     hourly,
-    recentActivity: requests.slice(0, 8),
+    recentActivity: latest,
     integrations: integrations.map((i) => ({ id: i.id, displayName: i.displayName, provider: i.provider, credentialStatus: i.credentialStatus, environment: i.environment, lastValidatedAt: i.lastValidatedAt })),
     agentActivity: agents.map((a) => {
       const mine = recent.filter((r) => r.agentId === a.id);
@@ -64,7 +68,7 @@ dashboardRouter.get('/dashboard', (req, res) => {
     }),
     alerts: alerts.sort((a, b) => b.at.localeCompare(a.at)).slice(0, 6),
     expiringGrants: grants
-      .map(toGrant)
+      .map((g) => toGrant(g, lookups))
       .filter((g) => (g.status === 'ACTIVE' || g.status === 'PENDING_APPROVAL') && new Date(g.expiresAt).getTime() - now < 7 * 86400e3 + 3600e3)
       .sort((a, b) => a.expiresAt.localeCompare(b.expiresAt))
       .map((g) => ({ id: g.id, name: g.name, agentName: g.agentName, integrationName: g.integrationName, expiresAt: g.expiresAt, status: g.status })),
@@ -73,7 +77,7 @@ dashboardRouter.get('/dashboard', (req, res) => {
       integration: integrations.length > 0,
       agent: agents.length > 0,
       grant: grants.length > 0,
-      request: requests.length > 0,
+      request: anyRequests,
     },
   };
   res.json(summary);

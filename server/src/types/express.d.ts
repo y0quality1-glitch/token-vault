@@ -1,5 +1,5 @@
 import type { Organization, Role } from '@token-vault/shared';
-import type { SessionRecord, UserRecord } from '../store/db';
+import type { SessionRecord, UserRecord } from '../store/types';
 
 export interface AdminContext {
   session: SessionRecord;
