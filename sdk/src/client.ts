@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { AgentCapabilitiesBody, ExecuteRequestBody, ExecuteResponseBody } from '@token-vault/shared';
+import type { AgentAccessRequestBody, AgentCapabilitiesBody, ExecuteRequestBody, ExecuteResponseBody } from '@token-vault/shared';
 import { AccessDeniedError, AuthenticationError, ExecutionFailedError, TokenVaultError } from './errors';
 
 export type GitHubOperation = 'github.repositories.read' | 'github.contents.read' | 'github.issues.list' | 'github.issues.create';
@@ -25,6 +25,20 @@ export interface ExecuteOptions {
   /** Makes retries of creating operations safe. Generated automatically when omitted. */
   idempotencyKey?: string;
 }
+
+export interface RequestAccessOptions {
+  integrationId: string;
+  operations: (GitHubOperation | (string & {}))[];
+  repositories?: string[];
+  /** Why the agent needs access. Shown to the approving human (10–500 characters). */
+  justification: string;
+  /** Requested grant lifetime, 15–480 minutes (default 60). Approvers may shorten it. */
+  durationMinutes?: number;
+  /** Request ID of the denial that prompted this request, for the approver's context. */
+  deniedRequestId?: string;
+}
+
+export type AccessRequestResult = AgentAccessRequestBody & { duplicate?: boolean; message?: string };
 
 export interface ExecuteResult<T = unknown> {
   /** Sanitized upstream response (never contains the provider credential). */
@@ -125,6 +139,35 @@ export class TokenVault {
     if (res.status === 401) throw new AuthenticationError('Agent credential is invalid, rotated or unknown', { code: 'AGENT_UNAUTHENTICATED', httpStatus: 401 });
     if (!res.ok) throw new TokenVaultError(`Capabilities request failed (HTTP ${res.status})`, { code: 'UNEXPECTED_RESPONSE', httpStatus: res.status });
     return body as AgentCapabilitiesBody;
+  }
+
+  /**
+   * Asks a human for time-limited access (just-in-time). Resolves with the PENDING request;
+   * an identical pending request is returned instead of creating a duplicate.
+   */
+  async requestAccess(options: RequestAccessOptions): Promise<AccessRequestResult> {
+    const res = await this.#request('POST', '/agent/v1/access-requests', {
+      integration_id: options.integrationId,
+      operations: options.operations,
+      repositories: options.repositories ?? [],
+      justification: options.justification,
+      duration_minutes: options.durationMinutes ?? 60,
+      ...(options.deniedRequestId ? { denied_request_id: options.deniedRequestId } : {}),
+    });
+    const body = (await this.#json(res)) as (AccessRequestResult & { error?: { code: string; message: string } }) | null;
+    if (res.status === 401) throw new AuthenticationError('Agent credential is invalid, rotated or unknown', { code: 'AGENT_UNAUTHENTICATED', httpStatus: 401 });
+    if (!res.ok || !body) throw new TokenVaultError(body?.error?.message ?? `Access request failed (HTTP ${res.status})`, { code: body?.error?.code ?? 'UNEXPECTED_RESPONSE', httpStatus: res.status });
+    return body;
+  }
+
+  /** Status of one of this agent's own access requests (PENDING, APPROVED, REJECTED, EXPIRED). */
+  async getAccessRequest(id: string): Promise<AgentAccessRequestBody> {
+    const res = await this.#request('GET', `/agent/v1/access-requests/${encodeURIComponent(id)}`);
+    const body = await this.#json(res);
+    if (res.status === 401) throw new AuthenticationError('Agent credential is invalid, rotated or unknown', { code: 'AGENT_UNAUTHENTICATED', httpStatus: 401 });
+    if (res.status === 404) throw new TokenVaultError(`Access request ${id} not found`, { code: 'NOT_FOUND', httpStatus: 404 });
+    if (!res.ok) throw new TokenVaultError(`Access request lookup failed (HTTP ${res.status})`, { code: 'UNEXPECTED_RESPONSE', httpStatus: res.status });
+    return body as AgentAccessRequestBody;
   }
 
   /** One of this agent's own past requests, by request ID. */

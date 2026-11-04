@@ -381,3 +381,47 @@ export interface AgentCapabilitiesBody {
     expires_at: ISODate;
   }[];
 }
+
+// ---------------------------------------------------------------- Just-in-time access requests
+export type GrantRequestStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'EXPIRED';
+
+export interface GrantRequest {
+  id: string;
+  organizationId: string;
+  agentId: string;
+  agentName: string;
+  agentOwnerUserId: string;
+  integrationId: string;
+  integrationName: string;
+  operations: string[];
+  repositories: string[];
+  /** Written by the agent: untrusted text. */
+  justification: string;
+  requestedDurationMinutes: number;
+  deniedRequestId: string | null;
+  status: GrantRequestStatus;
+  createdAt: ISODate;
+  expiresAt: ISODate;
+  decidedBy: string | null;
+  decidedByName: string | null;
+  decidedAt: ISODate | null;
+  decisionNote: string | null;
+  approvedDurationMinutes: number | null;
+  grantId: string | null;
+}
+
+/** Agent API view of its own access request. */
+export interface AgentAccessRequestBody {
+  access_request_id: string;
+  status: GrantRequestStatus;
+  integration_id: string;
+  operations: string[];
+  repositories: string[];
+  requested_duration_minutes: number;
+  created_at: ISODate;
+  expires_at: ISODate;
+  decided_at: ISODate | null;
+  decision_note: string | null;
+  grant_id: string | null;
+  grant_expires_at: ISODate | null;
+}

@@ -52,6 +52,9 @@ Errors use one shape: `{ "error": { "code": "…", "message": "…", "details": 
 | POST | `/policies` · PUT `/policies/:id` | `policy:manage` | |
 | GET | `/access-requests` · `/access-requests/:id` | `audit:read` | filters: `agentId, integrationId, grantId, decision, operation, from, to, search` |
 | GET | `/audit-events` · `/audit-events/:id` | `audit:read` | filters: `eventType, outcome, actorType, search, category=security` |
+| GET | `/grant-requests` · `/grant-requests/:id` | any role | just-in-time access requests (`?status=PENDING`); includes the `pending` count |
+| POST | `/grant-requests/:id/approve` | `grant:approve` | `{durationMinutes, operations?, repositories?, rateLimitPerMinute?, note?}`; may narrow but not widen the request; the agent's owner cannot approve it; creates an expiring grant |
+| POST | `/grant-requests/:id/reject` | `grant:approve` | `{note?}` |
 | POST | `/demo/reset` | `demo:reset` | |
 
 ## Agent API: `/agent/v1`
@@ -90,6 +93,8 @@ Response (the same shape for allow and deny):
 HTTP status codes: 200 allowed · 400 malformed or unknown operation · 401 unauthenticated · 403 denied · 404 unknown integration · 429 rate limited · 502 upstream error · 503 webhook unavailable.
 
 `GET /agent/v1/requests/:id` returns one of the calling agent's own requests.
+
+`POST /agent/v1/access-requests` submits a just-in-time access request: `{integration_id, operations[], repositories[], justification, duration_minutes, denied_request_id?}`. It returns 201 with a `PENDING` request, 200 with `duplicate: true` if an identical request is already pending, 400 for destructive or unknown operations, and 429 once the agent has 3 pending requests. `GET /agent/v1/access-requests/:id` returns the status of one of the agent's own requests, including `grant_id` and `grant_expires_at` once approved.
 
 `GET /agent/v1/capabilities` returns the calling agent's own grants: integration, operations, repositories, status and expiry. Revoked and expired grants are listed with their status, and superseded versions are omitted. Agent tooling uses it to pick an integration and to show the model what it may do. Authorization is still decided per request by `/execute`. See [AGENTS.md](AGENTS.md) for the SDK and MCP server.
 

@@ -11,3 +11,4 @@ export * as agentRepo from './agents';
 export * as grantRepo from './grants';
 export * as policyRepo from './policies';
 export * as auditRepo from './audit';
+export * as grantRequestRepo from './grant-requests';

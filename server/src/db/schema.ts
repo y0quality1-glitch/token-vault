@@ -297,3 +297,41 @@ export const auditEvents = pgTable(
   },
   (t) => [index('audit_events_org_created_idx').on(t.organizationId, t.createdAt), index('audit_events_correlation_idx').on(t.correlationId)],
 );
+
+/**
+ * Just-in-time access requests: an agent asks for a time-limited grant; a human approves
+ * (creating the grant) or rejects it. EXPIRED is computed at read time from expires_at.
+ */
+export const grantRequests = pgTable(
+  'grant_requests',
+  {
+    id: text('id').primaryKey(),
+    organizationId: text('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
+    agentId: text('agent_id')
+      .notNull()
+      .references(() => agents.id),
+    integrationId: text('integration_id')
+      .notNull()
+      .references(() => integrations.id),
+    operations: jsonb('operations').$type<string[]>().notNull(),
+    repositories: jsonb('repositories').$type<string[]>().notNull().default([]),
+    /** Written by the agent: untrusted text, shown to approvers as a quote. */
+    justification: text('justification').notNull(),
+    requestedDurationMinutes: integer('requested_duration_minutes').notNull(),
+    /** The denied access request (audit record) that prompted this, if any. */
+    deniedRequestId: text('denied_request_id'),
+    status: text('status').$type<'PENDING' | 'APPROVED' | 'REJECTED'>().notNull(),
+    createdAt: ts('created_at').notNull(),
+    /** A pending request lapses after this time. */
+    expiresAt: ts('expires_at').notNull(),
+    decidedBy: text('decided_by'),
+    decidedAt: ts('decided_at'),
+    decisionNote: text('decision_note'),
+    approvedDurationMinutes: integer('approved_duration_minutes'),
+    /** The grant created on approval. */
+    grantId: text('grant_id'),
+  },
+  (t) => [index('grant_requests_org_status_idx').on(t.organizationId, t.status), index('grant_requests_agent_idx').on(t.agentId)],
+);

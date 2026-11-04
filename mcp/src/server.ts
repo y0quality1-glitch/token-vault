@@ -16,6 +16,10 @@ const integration = z
   .optional()
   .describe('Token Vault integration ID or name. Optional when this agent has only one GitHub integration (see token_vault_list_access).');
 
+/** Denials a human can resolve with a just-in-time grant (not revocations, policies, disabled agents, …). */
+const REQUESTABLE = new Set(['GRANT_MISSING', 'SCOPE_DENIED', 'RESOURCE_DENIED', 'GRANT_EXPIRED']);
+const GRANTABLE = ['github.repositories.read', 'github.contents.read', 'github.issues.list', 'github.issues.create'] as const;
+
 const text = (t: string, isError = false): CallToolResult => ({ content: [{ type: 'text', text: t }], ...(isError ? { isError: true } : {}) });
 
 /**
@@ -27,7 +31,9 @@ export function createServer(tv: TokenVault): McpServer {
   const server = new McpServer(SERVER_INFO, {
     instructions:
       'GitHub access brokered by Token Vault. Call token_vault_list_access first to see which repositories and operations this agent is granted. ' +
-      'If a call is denied, do not try other repositories or operations to work around it: report the denial and its request ID to the user, who can ask an administrator for access.',
+      'If a call is denied, do not try other repositories or operations to work around it. When the denial says access can be requested, you may call ' +
+      'token_vault_request_access once, with a concrete justification for the specific task; a human decides. Do not resubmit or rephrase requests to get a different answer. ' +
+      'Report denials and request IDs to the user.',
   });
 
   async function run(operation: GitHubOperation, args: { repository: string; integration?: string; path?: string }, input: Record<string, unknown> = {}): Promise<CallToolResult> {
@@ -48,11 +54,10 @@ export function createServer(tv: TokenVault): McpServer {
         };
       }
       if (body.decision === 'DENY') {
-        return text(
-          `Access denied by Token Vault: ${label} (${body.decision_code}, HTTP ${httpStatus}).\n${body.reason}\nRequest ID: ${body.request_id}. ` +
-            'Do not retry with a different repository or operation to work around this; ask the user to request access from a Token Vault administrator.',
-          true,
-        );
+        const next = REQUESTABLE.has(body.decision_code)
+          ? `If this access is genuinely needed for the user's task, you may ask a human for it once with token_vault_request_access (operations: ["${operation}"], repository: "${args.repository}", denied_request_id: "${body.request_id}"). Until a human approves, it stays denied.`
+          : 'This denial cannot be resolved by requesting access. Do not retry with a different repository or operation; report it to the user.';
+        return text(`Access denied by Token Vault: ${label} (${body.decision_code}, HTTP ${httpStatus}).\n${body.reason}\nRequest ID: ${body.request_id}.\n${next}`, true);
       }
       return text(`Authorized, but the operation failed: ${label} (${body.decision_code}).\n${body.reason}\nRequest ID: ${body.request_id}.`, true);
     } catch (e) {
@@ -138,6 +143,72 @@ export function createServer(tv: TokenVault): McpServer {
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
     ({ title, body, ...args }) => run('github.issues.create', args, { title, body: body ?? '' }),
+  );
+
+  server.registerTool(
+    'token_vault_request_access',
+    {
+      title: 'Request access from a human (just-in-time)',
+      description:
+        'Asks a Token Vault administrator for time-limited access the agent was denied. A human must approve; nothing changes until then. ' +
+        'Use at most once per need, with a specific justification tied to the user’s task. Identical pending requests are not duplicated.',
+      inputSchema: {
+        operations: z.array(z.enum(GRANTABLE)).min(1).max(4).describe('Operations needed, e.g. ["github.issues.create"]'),
+        repository: repository.optional().describe('Repository the access is for (recommended: keeps the grant narrow)'),
+        justification: z.string().min(10).max(500).describe('Why this access is needed for the current task; shown to the approver'),
+        duration_minutes: z.number().int().min(15).max(480).default(60).describe('How long the access is needed (15–480 minutes)'),
+        denied_request_id: z.string().optional().describe('Request ID from the denial, if any'),
+        integration,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (args) => {
+      try {
+        const caps = await tv.capabilities();
+        const target = resolveIntegration(caps, { provider: 'github', operation: args.operations[0]!, repository: args.repository, integration: args.integration });
+        if (!target.ok) return text(`${target.message} If this agent has no grants yet, ask the user for the Token Vault integration ID and pass it as "integration".`, true);
+        const r = await tv.requestAccess({
+          integrationId: target.integrationId,
+          operations: args.operations,
+          repositories: args.repository ? [args.repository] : [],
+          justification: args.justification,
+          durationMinutes: args.duration_minutes,
+          deniedRequestId: args.denied_request_id,
+        });
+        return {
+          content: [{ type: 'text', text: `Access request ${r.access_request_id} is ${r.status}${r.duplicate ? ' (an identical request was already pending)' : ''}. A human administrator must approve it; check later with token_vault_check_access_request. It lapses at ${r.expires_at} if nobody decides.` }],
+          structuredContent: r as unknown as Record<string, unknown>,
+        };
+      } catch (e) {
+        return text(e instanceof TokenVaultError ? `Token Vault refused the access request (${e.code}): ${e.message}` : 'Unexpected error while calling Token Vault.', true);
+      }
+    },
+  );
+
+  server.registerTool(
+    'token_vault_check_access_request',
+    {
+      title: 'Check an access request',
+      description: 'Returns the status of an access request this agent submitted: PENDING, APPROVED (with grant expiry), REJECTED (with the approver’s note) or EXPIRED.',
+      inputSchema: { access_request_id: z.string().min(1).max(64) },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ access_request_id }) => {
+      try {
+        const r = await tv.getAccessRequest(access_request_id);
+        const detail =
+          r.status === 'APPROVED'
+            ? ` Granted until ${r.grant_expires_at}; retry the original operation now.`
+            : r.status === 'REJECTED'
+              ? ` Rejected${r.decision_note ? `: "${r.decision_note}"` : ''}. Do not resubmit the same request; tell the user.`
+              : r.status === 'EXPIRED'
+                ? ' Nobody decided in time.'
+                : ' Still waiting for a human.';
+        return { content: [{ type: 'text', text: `Access request ${r.access_request_id}: ${r.status}.${detail}` }], structuredContent: r as unknown as Record<string, unknown> };
+      } catch (e) {
+        return text(e instanceof TokenVaultError ? `Token Vault error (${e.code}): ${e.message}` : 'Unexpected error while calling Token Vault.', true);
+      }
+    },
   );
 
   return server;

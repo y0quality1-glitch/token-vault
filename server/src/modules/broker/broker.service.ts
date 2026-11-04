@@ -301,7 +301,7 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
 }
 
 /** Resolves the agent from its own credential (the only source of agent identity). */
-async function authenticate(authorization: string | undefined): Promise<AgentRecord | null> {
+export async function authenticate(authorization: string | undefined): Promise<AgentRecord | null> {
   const token = /^Bearer\s+(\S+)$/i.exec(authorization ?? '')?.[1] ?? '';
   const parsed = parseAgentCredential(token);
   const agent = parsed ? await agentRepo.findAgentByKeyId(parsed.keyId) : null;

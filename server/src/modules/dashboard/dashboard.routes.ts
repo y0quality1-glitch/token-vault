@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import type { DashboardSummary } from '@token-vault/shared';
 import { orgCtx } from '../../middleware/auth';
-import { agentRepo, auditRepo, grantRepo, integrationRepo, webhookRepo } from '../../store/repos';
+import { agentRepo, auditRepo, grantRepo, grantRequestRepo, integrationRepo, webhookRepo } from '../../store/repos';
+import { effectiveStatus as requestStatus } from '../grant-requests/grant-requests.service';
 import { effectiveGrantStatus, loadLookups, toGrant } from '../../store/views';
 
 export const dashboardRouter = Router();
@@ -11,7 +12,7 @@ dashboardRouter.get('/dashboard', async (req, res) => {
   const now = Date.now();
   const since = now - 86400e3;
 
-  const [integrations, agents, grants, webhooks, recent, latest, anyRequests, lookups] = await Promise.all([
+  const [integrations, agents, grants, webhooks, recent, latest, anyRequests, lookups, grantRequests] = await Promise.all([
     integrationRepo.listIntegrations(org.id),
     agentRepo.listAgents(org.id),
     grantRepo.listGrants(org.id),
@@ -20,6 +21,7 @@ dashboardRouter.get('/dashboard', async (req, res) => {
     auditRepo.latestAccessRequests(org.id, 8),
     auditRepo.hasAccessRequests(org.id),
     loadLookups(org.id),
+    grantRequestRepo.listGrantRequests(org.id),
   ]);
 
   const primary = webhooks.find((w) => w.status === 'CONNECTED') ?? webhooks[0];
@@ -41,6 +43,18 @@ dashboardRouter.get('/dashboard', async (req, res) => {
   }
   for (const i of integrations.filter((x) => x.credentialStatus === 'INVALID' || x.credentialStatus === 'DISABLED')) {
     alerts.push({ id: `int-${i.id}`, severity: 'warning', title: `Integration "${i.displayName}" is ${i.credentialStatus.toLowerCase()}`, detail: 'Agents cannot use this integration until it is re-enabled or rotated.', link: `/integrations/${i.id}`, at: i.updatedAt });
+  }
+  const pendingRequests = grantRequests.filter((r) => requestStatus(r) === 'PENDING');
+  if (pendingRequests.length) {
+    const names = [...new Set(pendingRequests.map((r) => lookups.agents.get(r.agentId) ?? 'An agent'))];
+    alerts.push({
+      id: 'grant-requests',
+      severity: 'warning',
+      title: `${pendingRequests.length} agent access request${pendingRequests.length > 1 ? 's' : ''} awaiting approval`,
+      detail: `From ${names.join(', ')}. Requests lapse after 24 hours.`,
+      link: '/access/requests',
+      at: pendingRequests[0]!.createdAt,
+    });
   }
   for (const g of grants.filter((x) => effectiveGrantStatus(x) === 'PENDING_APPROVAL')) {
     alerts.push({ id: `grt-${g.id}`, severity: 'info', title: `Grant "${g.name}" awaits approval`, detail: 'A Security Administrator must approve this grant before it becomes active.', link: `/access/grants/${g.id}`, at: g.createdAt });

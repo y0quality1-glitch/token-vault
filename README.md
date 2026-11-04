@@ -94,7 +94,7 @@ Token Vault ships an **MCP server** (`mcp/`) and a **TypeScript SDK** (`sdk/`), 
 npm run mcp:config
 ```
 
-This prints ready-to-paste configuration for Claude Code and Claude Desktop. Revoke the grant and the agent's next tool call is denied. See [docs/AGENTS.md](docs/AGENTS.md).
+This prints ready-to-paste configuration for Claude Code and Claude Desktop. Revoke the grant and the agent's next tool call is denied. When an agent is denied, it can **request time-limited access**. A Security Administrator approves or rejects the request under **Access Management → Access Requests**, and an approval becomes an expiring grant. See [docs/AGENTS.md](docs/AGENTS.md).
 
 ## Demo script (5–8 minutes)
 
