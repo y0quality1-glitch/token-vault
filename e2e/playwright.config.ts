@@ -1,10 +1,10 @@
 import { defineConfig, devices } from '@playwright/test';
-import { randomBytes } from 'node:crypto';
+import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 /**
- * Starts the full stack (control plane, customer webhook, client) with secrets passed
+ * Starts the full stack (control plane, customer webhook, console, provider CMS) with secrets passed
  * as runtime environment variables only, then drives the admin console in Chromium.
  *
  * Secrets are generated per run unless provided. They are written back to process.env so
@@ -13,10 +13,15 @@ import { resolve } from 'node:path';
 process.env.WEBHOOK_SIGNING_SECRET ??= randomBytes(32).toString('base64url');
 process.env.VAULT_ENCRYPTION_KEY ??= randomBytes(32).toString('base64');
 process.env.AUDIT_SIGNING_KEY ??= randomBytes(32).toString('base64url');
+// The CMS signs published definitions with an Ed25519 key generated for this run.
+process.env.CMS_SIGNING_PRIVATE_KEY ??= generateKeyPairSync('ed25519').privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
 // Dedicated database, wiped and reseeded when the control plane starts (SEED_MODE=reset).
 const databaseUrl = process.env.E2E_DATABASE_URL ?? 'postgres://token_vault:token_vault@localhost:5432/token_vault_e2e';
 // Customer-zone database for the webhook (separate role), also wiped on start.
 const webhookDatabaseUrl = process.env.E2E_WEBHOOK_DATABASE_URL ?? 'postgres://token_vault_customer:token_vault_customer@localhost:5432/token_vault_customer_e2e';
+
+// Provider CMS database (its own role), wiped and reseeded on start.
+const cmsDatabaseUrl = process.env.E2E_CMS_DATABASE_URL ?? 'postgres://token_vault_cms:token_vault_cms@localhost:5432/token_vault_cms_e2e';
 
 const root = resolve(import.meta.dirname, '..');
 export const LOG_DIR = resolve(import.meta.dirname, '.logs');
@@ -81,6 +86,28 @@ export default defineConfig({
         HEARTBEAT_INTERVAL_MS: '30000',
         VAULT_ENCRYPTION_KEY: '',
       },
+    },
+    {
+      name: 'cms-api',
+      command: `npm run start -w cms/api 2>&1 | tee "${LOG_DIR}/cms.log"`,
+      cwd: root,
+      url: 'http://localhost:4200/healthz',
+      reuseExistingServer: false,
+      timeout: 60_000,
+      env: {
+        PORT: '4200',
+        CMS_DATABASE_URL: cmsDatabaseUrl,
+        CMS_SIGNING_PRIVATE_KEY: process.env.CMS_SIGNING_PRIVATE_KEY,
+        SEED_MODE: 'reset',
+      },
+    },
+    {
+      name: 'cms-client',
+      command: 'npm run dev -w cms/client -- --port 5174 --strictPort',
+      cwd: root,
+      url: 'http://localhost:5174',
+      reuseExistingServer: false,
+      timeout: 60_000,
     },
     {
       name: 'client',

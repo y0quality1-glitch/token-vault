@@ -31,9 +31,10 @@ jobs:
     env:
       TEST_DATABASE_URL: postgres://token_vault:token_vault@localhost:5432/token_vault_test
       WEBHOOK_TEST_DATABASE_URL: postgres://token_vault_customer:token_vault_customer@localhost:5432/token_vault_customer_test
+      CMS_TEST_DATABASE_URL: postgres://token_vault_cms:token_vault_cms@localhost:5432/token_vault_cms_test
     steps:
       - uses: actions/checkout@v4
-      - name: Create customer-zone role and databases
+      - name: Create customer-zone and CMS roles and databases
         run: psql -h localhost -U token_vault -d postgres -v ON_ERROR_STOP=1 -f scripts/pg-init.sql
         env:
           PGPASSWORD: token_vault
@@ -65,9 +66,10 @@ jobs:
     env:
       E2E_DATABASE_URL: postgres://token_vault:token_vault@localhost:5432/token_vault_e2e
       E2E_WEBHOOK_DATABASE_URL: postgres://token_vault_customer:token_vault_customer@localhost:5432/token_vault_customer_e2e
+      E2E_CMS_DATABASE_URL: postgres://token_vault_cms:token_vault_cms@localhost:5432/token_vault_cms_e2e
     steps:
       - uses: actions/checkout@v4
-      - name: Create customer-zone role and databases
+      - name: Create customer-zone and CMS roles and databases
         run: psql -h localhost -U token_vault -d postgres -v ON_ERROR_STOP=1 -f scripts/pg-init.sql
         env:
           PGPASSWORD: token_vault
