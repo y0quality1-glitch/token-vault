@@ -362,3 +362,22 @@ export interface Paginated<T> {
   items: T[];
   total: number;
 }
+
+/** GET /agent/v1/capabilities: the calling agent's own grants and their current status (superseded versions omitted). */
+export interface AgentCapabilitiesBody {
+  agent: { id: string; name: string; status: 'ACTIVE' | 'DISABLED'; organization: string };
+  grants: {
+    grant_id: string;
+    name: string;
+    status: GrantStatus;
+    integration_id: string;
+    integration_name: string;
+    provider: ProviderId;
+    integration_available: boolean;
+    operations: string[];
+    repositories: string[];
+    rate_limit_per_minute: number;
+    valid_from: ISODate;
+    expires_at: ISODate;
+  }[];
+}

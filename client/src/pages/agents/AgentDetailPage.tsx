@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Ban, KeyRound, Power, RefreshCw, ShieldOff } from 'lucide-react';
+import { Ban, Bot, KeyRound, Power, RefreshCw, ShieldOff } from 'lucide-react';
 import { PERMISSIONS, operationLabel, type AccessRequest, type Agent, type Grant, type IssuedCredential } from '@token-vault/shared';
 import { useApi, useMutation } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
@@ -138,6 +138,28 @@ export function AgentDetailPage() {
                 ]}
               />
               <Callout tone="security">Only a scrypt hash is stored. The full credential was shown once at issuance; rotate to issue a new one (the old one stops working immediately).</Callout>
+            </CardBody>
+          </Card>
+          <Card className="xl:col-span-3">
+            <CardHeader title="Connect an AI agent (MCP)" description="Let Claude or any MCP client use this agent's grants. The GitHub credential never reaches the agent." icon={<Bot className="h-4 w-4" />} />
+            <CardBody className="grid gap-4 lg:grid-cols-3">
+              <div className="space-y-2 text-sm text-slate-600">
+                <p className="font-medium text-slate-800">1. Get this agent's credential</p>
+                <p>
+                  Use <strong>Rotate API credential</strong> above. It is shown once; give it to the agent as the <code className="font-mono text-xs">TOKEN_VAULT_API_KEY</code> environment variable, never as a command-line argument.
+                </p>
+              </div>
+              <div className="space-y-2 text-sm text-slate-600">
+                <p className="font-medium text-slate-800">2. Print the client configuration</p>
+                <p>From the Token Vault checkout, run:</p>
+                <pre className="rounded-md bg-slate-950 px-3 py-2 font-mono text-xs text-slate-100">npm run mcp:config</pre>
+                <p>It prints config for Claude Code and Claude Desktop with this machine's paths.</p>
+              </div>
+              <div className="space-y-2 text-sm text-slate-600">
+                <p className="font-medium text-slate-800">3. Tools the agent gets</p>
+                <p className="font-mono text-xs leading-relaxed text-slate-700">token_vault_list_access · github_get_repository · github_read_file · github_list_issues · github_create_issue</p>
+                <p>Each call is authorized against this agent's grants and recorded in Access Logs. Revoking a grant applies to the agent's next call.</p>
+              </div>
             </CardBody>
           </Card>
         </div>

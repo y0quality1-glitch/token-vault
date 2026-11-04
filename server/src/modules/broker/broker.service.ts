@@ -4,6 +4,7 @@ import {
   getOperation,
   type AccessRequest,
   type DecisionCheck,
+  type AgentCapabilitiesBody,
   type ExecuteResponseBody,
   type MatchedRule,
 } from '@token-vault/shared';
@@ -13,6 +14,7 @@ import { correlationId as newCorrelationId, nonce, requestId as newRequestId } f
 import { transaction } from '../../db/client';
 import { agentRepo, auditRepo, grantRepo, integrationRepo, orgRepo, policyRepo, webhookRepo } from '../../store/repos';
 import type { AgentRecord, GrantRecord, IntegrationRecord } from '../../store/types';
+import { effectiveGrantStatus } from '../../store/views';
 import { recordAccessRequest, recordEvent } from '../audit/audit.service';
 import { CHECK_NAMES, evaluate, skippedChecks } from '../policy-engine/engine';
 import { WebhookUnavailableError, callWebhook } from '../webhooks/webhook.client';
@@ -298,14 +300,61 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
   return out;
 }
 
-/** Agents may look up only their own requests. */
-export async function getOwnRequest(authorization: string | undefined, id: string) {
+/** Resolves the agent from its own credential (the only source of agent identity). */
+async function authenticate(authorization: string | undefined): Promise<AgentRecord | null> {
   const token = /^Bearer\s+(\S+)$/i.exec(authorization ?? '')?.[1] ?? '';
   const parsed = parseAgentCredential(token);
   const agent = parsed ? await agentRepo.findAgentByKeyId(parsed.keyId) : null;
-  if (!agent || !verifySecret(token, agent.credentialHash)) return { status: 401 as const };
+  return agent && verifySecret(token, agent.credentialHash) ? agent : null;
+}
+
+/** Agents may look up only their own requests. */
+export async function getOwnRequest(authorization: string | undefined, id: string) {
+  const agent = await authenticate(authorization);
+  if (!agent) return { status: 401 as const };
   const r = await auditRepo.getAccessRequestForAgent(agent.id, id);
   if (!r) return { status: 404 as const };
-  const { checks, ...rest } = r;
-  return { status: 200 as const, body: { ...rest, checks } };
+  return { status: 200 as const, body: r };
+}
+
+/**
+ * The calling agent's own grants, with their current status (superseded versions omitted),
+ * so agent tooling can tell a model which integrations, operations and repositories it
+ * may use. Revoked and expired grants stay listed: tooling then still sends the request,
+ * and /execute returns (and audits) the authoritative denial. Read-only; reveals nothing
+ * about other agents.
+ */
+export async function getCapabilities(authorization: string | undefined): Promise<{ status: 200; body: AgentCapabilitiesBody } | { status: 401 }> {
+  const agent = await authenticate(authorization);
+  if (!agent) return { status: 401 };
+  const [org, grants, integrations] = await Promise.all([
+    orgRepo.getOrganization(agent.organizationId),
+    grantRepo.listGrants(agent.organizationId, { agentId: agent.id }),
+    integrationRepo.listIntegrations(agent.organizationId),
+  ]);
+  const byId = new Map(integrations.map((i) => [i.id, i]));
+  const visible = grants.filter((g) => g.storedStatus !== 'SUPERSEDED' && byId.has(g.integrationId));
+  return {
+    status: 200,
+    body: {
+      agent: { id: agent.id, name: agent.name, status: agent.status, organization: org?.slug ?? '' },
+      grants: visible.map((g) => {
+        const i = byId.get(g.integrationId)!;
+        return {
+          grant_id: g.id,
+          name: g.name,
+          status: effectiveGrantStatus(g),
+          integration_id: i.id,
+          integration_name: i.displayName,
+          provider: i.provider,
+          integration_available: i.credentialStatus === 'CONNECTED',
+          operations: g.scopes,
+          repositories: g.resourceConstraints.repositories,
+          rate_limit_per_minute: g.rateLimitPerMinute,
+          valid_from: g.validFrom,
+          expires_at: g.expiresAt,
+        };
+      }),
+    },
+  };
 }

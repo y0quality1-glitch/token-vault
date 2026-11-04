@@ -11,6 +11,7 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@playwright/test": "1.63.0",
     "@types/node": "^22.15.0",
     "typescript": "^5.8.3"
