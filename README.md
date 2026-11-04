@@ -56,6 +56,18 @@ npm test            # policy engine, sanitizer, CIDR, AES-GCM and request-signat
 npm run build       # production build of the client
 ```
 
+```bash
+npm run test:e2e    # Playwright: full demo script + scenarios in Chromium
+```
+
+The end-to-end suite starts all three services itself (ports 4000, 4100 and 5173 must be free), so stop `npm run dev` first. It generates throwaway secrets per run, passes them as environment variables, and uses its own webhook store in `e2e/.logs/`, so your local dev data is untouched. After the run, it fails if any token, agent credential, signing secret or encryption key appears in the server or webhook logs. If Chromium is not installed yet, run `npx -w e2e playwright install chromium` once. The HTML report is in `e2e/playwright-report/`.
+
+CI (`.github/workflows/ci.yml`) runs typecheck, unit tests and the build on every push to `main` and every pull request, then the end-to-end suite. On failure, the Playwright report and service logs are uploaded as an artifact.
+
+### Secrets at runtime only
+
+If `WEBHOOK_SIGNING_SECRET` and `VAULT_ENCRYPTION_KEY` are already set in the environment, `npm run setup` (and therefore `npm run dev`) writes no `.env` files. Variables set in the environment also take precedence over any existing `.env` values. Give the webhook both variables and the control plane only `WEBHOOK_SIGNING_SECRET`.
+
 To run the processes one at a time: `npm run dev -w server`, `npm run dev -w webhook`, `npm run dev -w client`.
 
 ---

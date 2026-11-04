@@ -5,3 +5,8 @@ dist
 !.env.example
 webhook/data/
 *.log
+
+# Playwright
+e2e/.logs/
+e2e/test-results/
+e2e/playwright-report/
