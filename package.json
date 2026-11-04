@@ -1,0 +1,17 @@
+{
+  "name": "token-vault-poc",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Token Vault POC: identity-aware credential authorization and brokering for applications and AI agents",
+  "workspaces": ["shared", "server", "webhook", "client"],
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "dev": "node scripts/setup.mjs && concurrently -k -n api,vault,web -c blue,magenta,green \"npm run dev -w server\" \"npm run dev -w webhook\" \"npm run dev -w client\"",
+    "build": "npm run build -w client",
+    "typecheck": "npm run typecheck -w shared && npm run typecheck -w server && npm run typecheck -w webhook && npm run typecheck -w client",
+    "test": "npm run test -w server && npm run test -w webhook"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

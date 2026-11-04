@@ -1,0 +1,77 @@
+import { useState } from 'react';
+import { Link } from 'react-router-dom';
+import { KeyRound, RefreshCw } from 'lucide-react';
+import { PERMISSIONS, type Integration } from '@token-vault/shared';
+import { useApi } from '@/hooks/useApi';
+import { useAuth } from '@/context/AuthContext';
+import { api } from '@/lib/api';
+import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
+import { StatusBadge } from '@/components/ui/badge';
+import { DataTable } from '@/components/ui/table';
+import { Callout, EmptyState, ErrorState } from '@/components/ui/feedback';
+import { PageHeader } from '@/components/ui/navigation';
+import { Mono } from '@/components/ui/secret';
+import { useToast } from '@/components/ui/toast';
+import { formatDateTime, relativeTime } from '@/lib/utils';
+
+export function CredentialStatusPage() {
+  const { can } = useAuth();
+  const toast = useToast();
+  const { data, error, loading, reload } = useApi<{ items: Integration[] }>('/integrations');
+  const [testing, setTesting] = useState<string | null>(null);
+
+  async function test(i: Integration) {
+    setTesting(i.id);
+    try {
+      const r = await api.post<{ valid: boolean; upstreamStatus: number | null }>(`/integrations/${i.id}/test`);
+      if (r.valid) toast.success(`${i.displayName}: credential valid`, `Upstream responded ${r.upstreamStatus} (simulated).`);
+      else toast.error(`${i.displayName}: credential invalid`, `Upstream responded ${r.upstreamStatus ?? 'n/a'}.`);
+      await reload();
+    } catch (e) {
+      toast.error('Test failed', (e as Error).message);
+    } finally {
+      setTesting(null);
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <PageHeader title="Credential Status" description="Lifecycle and validation state of every credential held by your customer webhook." breadcrumbs={[{ label: 'Integrations' }, { label: 'Credential Status' }]} />
+      <Callout tone="security" title="What you are looking at">
+        Token Vault never holds the secret value. The <strong>credential reference</strong> points to an AES-256-GCM encrypted record inside the customer webhook; the <strong>fingerprint</strong> is a keyed HMAC computed by the webhook so you can detect changes without seeing the secret.
+      </Callout>
+      {error ? (
+        <ErrorState error={error} onRetry={reload} />
+      ) : (
+        <Card>
+          <DataTable
+            rows={data?.items}
+            loading={loading}
+            rowKey={(i) => i.id}
+            empty={<EmptyState icon={<KeyRound className="h-5 w-5" />} title="No credentials registered" />}
+            columns={[
+              { key: 'name', header: 'Integration', cell: (i) => <Link to={`/integrations/${i.id}`} className="font-medium text-slate-900 hover:text-brand-700">{i.displayName}</Link> },
+              { key: 'ref', header: 'Reference', cell: (i) => <Mono>{i.credentialReference}</Mono> },
+              { key: 'fp', header: 'Fingerprint', cell: (i) => <span className="font-mono text-xs text-slate-500">{i.credentialFingerprint || '—'}</span>, hideBelow: 'lg' },
+              { key: 'masked', header: 'Masked', cell: (i) => <span className="font-mono text-xs">{i.maskedIdentifier || '—'}</span>, hideBelow: 'md' },
+              { key: 'status', header: 'Status', cell: (i) => <StatusBadge status={i.credentialStatus} /> },
+              { key: 'validated', header: 'Last validated', cell: (i) => <span title={formatDateTime(i.lastValidatedAt)} className="text-slate-500">{relativeTime(i.lastValidatedAt)}</span>, hideBelow: 'md' },
+              { key: 'rotated', header: 'Rotated', cell: (i) => <span className="text-slate-500">{i.rotatedAt ? relativeTime(i.rotatedAt) : 'Never'}</span>, hideBelow: 'xl' },
+              {
+                key: 'actions',
+                header: '',
+                cell: (i) =>
+                  can(PERMISSIONS.INTEGRATION_MANAGE) && (
+                    <Button size="sm" variant="outline" loading={testing === i.id} onClick={() => test(i)}>
+                      <RefreshCw className="h-3.5 w-3.5" /> Test
+                    </Button>
+                  ),
+              },
+            ]}
+          />
+        </Card>
+      )}
+    </div>
+  );
+}
