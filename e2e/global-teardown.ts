@@ -22,7 +22,7 @@ export default function globalTeardown() {
     for (const [label, re] of SECRET_PATTERNS) if (re.test(text)) findings.push(`${name}: ${label}`);
   }
   // The signing secret and encryption key must never be printed either.
-  for (const v of ['WEBHOOK_SIGNING_SECRET', 'VAULT_ENCRYPTION_KEY']) {
+  for (const v of ['WEBHOOK_SIGNING_SECRET', 'VAULT_ENCRYPTION_KEY', 'AUDIT_SIGNING_KEY']) {
     const value = process.env[v];
     if (!value) continue;
     for (const name of ['server.log', 'webhook.log']) {

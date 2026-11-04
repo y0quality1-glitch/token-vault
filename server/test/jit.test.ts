@@ -44,6 +44,7 @@ suite('just-in-time access requests', () => {
   beforeAll(async () => {
     process.env.DATABASE_URL = url;
     process.env.WEBHOOK_SIGNING_SECRET ??= randomBytes(32).toString('base64url');
+    process.env.AUDIT_SIGNING_KEY ??= randomBytes(32).toString('base64url');
     process.env.DB_POOL_MAX = '4';
     m = {
       client: await import('../src/db/client'),

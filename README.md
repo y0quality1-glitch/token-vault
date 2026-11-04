@@ -80,7 +80,7 @@ CI (`.github/workflows/ci.yml`) runs typecheck, unit tests and the build on ever
 
 ### Secrets at runtime only
 
-If `WEBHOOK_SIGNING_SECRET` and `VAULT_ENCRYPTION_KEY` are already set in the environment, `npm run setup` (and therefore `npm run dev`) writes no `.env` files. Variables set in the environment also take precedence over any existing `.env` values. Give the webhook both variables and the control plane only `WEBHOOK_SIGNING_SECRET`.
+If `WEBHOOK_SIGNING_SECRET` and `VAULT_ENCRYPTION_KEY` are already set in the environment, `npm run setup` (and therefore `npm run dev`) writes no `.env` files. Variables set in the environment also take precedence over any existing `.env` values. Give the webhook both variables and the control plane only `WEBHOOK_SIGNING_SECRET`. The control plane also needs `AUDIT_SIGNING_KEY` (32+ characters) in that mode.
 
 To run the processes one at a time: `npm run dev -w server`, `npm run dev -w webhook`, `npm run dev -w client`.
 
@@ -242,6 +242,8 @@ token-vault/
 | Admin sessions | Opaque token in an **httpOnly, SameSite=Strict** cookie. Nothing is kept in `localStorage`. | Enterprise SSO (out of scope) |
 | Playground agent key | React state only. Lost on reload. Never placed in storage or URLs. | n/a |
 | Audit | Append-only: Postgres triggers reject `UPDATE`/`DELETE` on `access_requests` and `audit_events`. A sanitizer redacts secret-looking keys and values before insert. Each access record and its audit event commit in one transaction. | Immutable store (WORM / ledger), separate DB role without TRUNCATE |
+| Audit tamper evidence | Every audit record is hash-chained per organization and HMAC-signed with `AUDIT_SIGNING_KEY`, which lives outside the database. **Security Events → Verify integrity** detects edited, deleted, reordered or forged records, even if someone bypasses the append-only triggers with database access. Removing the *newest* records is detectable only against an external copy of the chain head. Records written before the chain existed are reported as legacy. | Anchor the chain head externally (e.g. signed and published periodically); key rotation with key IDs |
+| Access reviews | Active grants must be re-certified every 30 days (**Access Management → Access Reviews**). The page shows 30-day usage so unused grants stand out; keep and revoke decisions are audited. Overview alerts for reviews due and grants expiring within 72 hours | Scheduled review campaigns with assigned reviewers and auto-revoke on missed reviews |
 | Admin sessions at rest | Stored in Postgres as the SHA-256 of the cookie token, so a database dump holds no usable session | Same |
 | Org isolation | Every query is scoped by `organizationId`. The webhook also checks `org_id` on each credential. | Same, plus row-level security |
 | Logs | Method, path, status and latency only. No bodies, headers or query strings. | Structured logging with redaction |
@@ -271,6 +273,7 @@ token-vault/
 | `WEBHOOK_SIGNING_SECRET` | HMAC secret shared with the webhook (32+ bytes) |
 | `DEFAULT_WEBHOOK_URL` | Pre-filled webhook URL and the seeded webhook endpoint |
 | `DATABASE_URL` | PostgreSQL connection string (required) |
+| `AUDIT_SIGNING_KEY` | HMAC key (32+ characters) for the audit chain signatures (required). Never stored in the database. Changing it makes existing signatures fail verification; key rotation is not supported in the POC |
 | `SEED_MODE` | `if-empty` (default): seed demo data into an empty database. `reset`: wipe and reseed on every start (used by the e2e suite) |
 | `DB_POOL_MAX` | Connection pool size (default 10) |
 | `HEARTBEAT_INTERVAL_MS` | Signed health-check interval (default 30000) |

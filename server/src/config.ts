@@ -10,6 +10,14 @@ if (signingSecret.length < 32) {
   process.exit(1);
 }
 
+// HMAC key for audit-chain signatures. Kept outside the database, so someone who can write
+// to the database cannot forge signatures for altered or inserted audit records.
+const auditSigningKey = process.env.AUDIT_SIGNING_KEY ?? '';
+if (auditSigningKey.length < 32) {
+  console.error('[api] AUDIT_SIGNING_KEY is missing or too short. Run "npm run setup" at the repo root, or export a random value of 32+ characters.');
+  process.exit(1);
+}
+
 const databaseUrl = process.env.DATABASE_URL ?? '';
 if (!/^postgres(ql)?:\/\//.test(databaseUrl)) {
   console.error('[api] DATABASE_URL is missing. Start Postgres (npm run db:up) and run "npm run setup", or export DATABASE_URL=postgres://…');
@@ -25,6 +33,7 @@ if (seedMode !== 'if-empty' && seedMode !== 'reset') {
 export const config = {
   port: Number(process.env.PORT ?? 4000),
   databaseUrl,
+  auditSigningKey,
   dbPoolMax: Number(process.env.DB_POOL_MAX ?? 10),
   /** if-empty: seed demo data only into an empty database. reset: wipe and reseed on start (tests). */
   seedMode: seedMode as 'if-empty' | 'reset',
