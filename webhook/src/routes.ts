@@ -4,7 +4,9 @@ import { describeError } from './db/client';
 import { PgNonceStore } from './security/nonce-store';
 import { hmacHex, signResponse, verifySignedRequest } from './security/signature';
 import * as store from './store/credential-store';
-import { SUPPORTED_OPERATIONS, callGitHub, type ProviderCall, type ProviderResult } from './providers/github';
+import { createHash } from 'node:crypto';
+import { PROVIDER_DEFINITIONS, getProviderDefinition, type AuthMethodDefinition, type ProviderDefinition } from '@token-vault/shared';
+import { ExecutionError, executeOperation, getExecutableOperation, injectionFor, testCredential, type ProviderCall, type ProviderResult } from './providers/executor';
 import * as app from './providers/github-app';
 
 // Shared across instances via PostgreSQL: a replayed request is rejected by any instance.
@@ -69,24 +71,57 @@ export interface CredentialUse {
   revoked: boolean;
 }
 
+/** The definition's auth method a stored (non-plugin) secret is used with. */
+function secretAuthMethod(def: ProviderDefinition, metadata: Record<string, string>): AuthMethodDefinition {
+  const methods = def.auth.filter((a) => a.kind !== 'plugin');
+  const chosen = methods.find((a) => a.id === metadata.auth_method) ?? methods[0];
+  if (!chosen) throw new ExecutionError('UNSUPPORTED_OPERATION', `${def.name} has no secret-based auth method`);
+  return chosen;
+}
+
+function definitionFor(provider: string): ProviderDefinition {
+  const def = getProviderDefinition(provider);
+  if (!def) throw new ExecutionError('UNSUPPORTED_OPERATION', `No provider definition for "${provider}"`);
+  return def;
+}
+
 /**
- * Runs one upstream call with a stored credential. A PAT is injected as-is. A GitHub App
- * credential mints an installation token narrowed to this call's repository and the
- * operation's permission, uses it once and revokes it.
+ * Runs one upstream call (or a credential test) with a stored credential, through the
+ * generic executor. A plain secret is injected as the definition's auth method says.
+ * A GitHub App credential mints an installation token narrowed to this call's
+ * repository and the operation's declared permissions, uses it once and revokes it.
  */
-async function runWithCredential(secret: string, call: ProviderCall): Promise<ProviderResult & { credential?: CredentialUse }> {
-  if (!app.isGitHubAppCredential(secret)) return callGitHub(config.githubMode, secret, call);
+async function runWithCredential(rec: store.CredentialRecord, secret: string, call: ProviderCall): Promise<ProviderResult & { credential?: CredentialUse }> {
+  const def = definitionFor(rec.provider);
+  const isTest = call.operation === 'credential.test';
+  if (!app.isGitHubAppCredential(secret)) {
+    const method = secretAuthMethod(def, rec.metadata);
+    const auth = injectionFor(method, secret);
+    return isTest ? testCredential(config.githubMode, def, method, auth) : executeOperation(config.githubMode, def, call, auth);
+  }
+  const method = def.auth.find((a) => a.kind === 'plugin' && a.plugin === 'github_app');
+  if (!method) throw new ExecutionError('UNSUPPORTED_OPERATION', `${def.name} does not support GitHub App credentials`);
+  const permissions = isTest ? app.TEST_PERMISSIONS : getExecutableOperation(def, call.operation).providerPermissions;
   const cred = JSON.parse(secret) as app.GitHubAppCredential;
   const key = app.resolvePrivateKey(cred, config.githubAppPrivateKey);
-  const minted = await app.mintInstallationToken(config.githubMode, cred, key, call.operation, call.resource.repository);
+  const repository = call.resource[def.resource.name];
+  const minted = await app.mintInstallationToken(config.githubMode, cred, key, permissions, repository);
   try {
-    const result = await callGitHub(config.githubMode, minted.token, call);
+    const auth = { kind: 'bearer' as const, secret: minted.token };
+    const result = isTest ? await testCredential(config.githubMode, def, method, auth) : await executeOperation(config.githubMode, def, call, auth);
     const revoked = await app.revokeInstallationToken(config.githubMode, minted.token);
-    return { ...result, credential: { type: 'github_app_installation_token', repositories: minted.repositories, permissions: minted.permissions as Record<string, string>, expires_at: minted.expiresAt, revoked } };
+    return { ...result, credential: { type: 'github_app_installation_token', repositories: minted.repositories, permissions: minted.permissions, expires_at: minted.expiresAt, revoked } };
   } catch (e) {
     await app.revokeInstallationToken(config.githubMode, minted.token);
     throw e;
   }
+}
+
+/** Execution errors raised before or around the upstream call (never contain secrets). */
+function executionFailure(req: SignedRequest, res: Response, e: ExecutionError) {
+  console.warn(`[vault] execution refused: ${e.code}`);
+  const status = e.code === 'UNSUPPORTED_OPERATION' || e.code === 'INVALID_REQUEST' ? 400 : 502;
+  return signedJson(req, res, status, { error: { code: e.code, message: e.message } });
 }
 
 /** Validates a GitHub App registration request and resolves its installation. */
@@ -110,6 +145,17 @@ function appFailure(req: SignedRequest, res: Response, e: unknown) {
   return credentialFailure(req, res, e, 'github app');
 }
 
+function validSecret(method: AuthMethodDefinition, secret: unknown): secret is string {
+  if (typeof secret !== 'string' || secret.length < 8 || secret.length > 4096) return false;
+  return method.secretPattern ? new RegExp(method.secretPattern).test(secret) : true;
+}
+
+function stringRecord(v: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) if (typeof x === 'string') out[k] = x;
+  return out;
+}
+
 function str(v: unknown, max = 200): string {
   return typeof v === 'string' ? v.slice(0, max) : '';
 }
@@ -131,6 +177,7 @@ export function buildRouter() {
       github_mode: config.githubMode,
       uptime_s: Math.round((Date.now() - startedAt) / 1000),
       credentials_stored: await store.countCredentials(),
+      providers: PROVIDER_DEFINITIONS.map((d) => ({ key: d.key, version: d.version, digest: createHash('sha256').update(JSON.stringify(d)).digest('hex').slice(0, 16) })),
       challenge_response: hmacHex(config.signingSecret, `health:${challenge}:${config.instanceId}`),
     });
   });
@@ -138,13 +185,15 @@ export function buildRouter() {
   // Register a credential: a PAT (encrypted immediately) or a GitHub App (App ID + private key).
   r.post('/internal/v1/credentials', requireSignature, async (req: SignedRequest, res) => {
     const { org_id, provider, secret, metadata, type } = req.json ?? {};
-    if (!str(org_id) || provider !== 'github') {
-      return signedJson(req, res, 400, { error: { code: 'INVALID_CREDENTIAL_REQUEST', message: 'org_id and provider=github are required' } });
+    const def = typeof provider === 'string' ? getProviderDefinition(provider) : undefined;
+    if (!str(org_id) || !def) {
+      return signedJson(req, res, 400, { error: { code: 'INVALID_CREDENTIAL_REQUEST', message: 'org_id and a known provider are required' } });
     }
     const safeMeta: Record<string, string> = {};
     for (const [k, v] of Object.entries(metadata ?? {})) if (typeof v === 'string') safeMeta[k.slice(0, 40)] = v.slice(0, 200);
 
     if (type === 'github_app') {
+      if (!def.auth.some((a) => a.plugin === 'github_app')) return signedJson(req, res, 400, { error: { code: 'INVALID_CREDENTIAL_REQUEST', message: `${def.name} does not support GitHub App credentials` } });
       try {
         const cred = await prepareAppCredential(req.json);
         const rec = await store.createCredential(org_id, provider, JSON.stringify(cred), { ...safeMeta, auth: 'github_app', app_id: cred.appId, installation_id: cred.installationId, account: cred.account ?? '', key_source: cred.keySource }, app.maskApp(cred));
@@ -155,10 +204,12 @@ export function buildRouter() {
       }
     }
 
-    if (typeof secret !== 'string' || secret.length < 20 || secret.length > 512) {
-      return signedJson(req, res, 400, { error: { code: 'INVALID_CREDENTIAL_REQUEST', message: 'A 20-512 character secret is required' } });
+    const method = def.auth.find((a) => a.kind !== 'plugin' && (!req.json?.auth_method || a.id === req.json.auth_method));
+    if (!method) return signedJson(req, res, 400, { error: { code: 'INVALID_CREDENTIAL_REQUEST', message: 'Unknown auth method for this provider' } });
+    if (!validSecret(method, secret)) {
+      return signedJson(req, res, 400, { error: { code: 'INVALID_CREDENTIAL_REQUEST', message: method.secretHint ? `Invalid secret: ${method.secretHint}` : 'A 20-512 character secret is required' } });
     }
-    const rec = await store.createCredential(org_id, provider, secret, { ...safeMeta, auth: 'pat' });
+    const rec = await store.createCredential(org_id, provider, secret, { ...safeMeta, auth: method.id === 'PAT' ? 'pat' : method.id.toLowerCase(), auth_method: method.id });
     console.log(`[vault] stored credential ${rec.credentialRef} provider=${provider} (encrypted, AES-256-GCM)`);
     signedJson(req, res, 201, { ...store.publicView(rec), auth_type: 'PAT' });
   });
@@ -185,7 +236,8 @@ export function buildRouter() {
       if (e instanceof app.GitHubAppError) return appFailure(req, res, e);
       return credentialFailure(req, res, e, `rotate ${existing.credentialRef}`);
     }
-    if (typeof secret !== 'string' || secret.length < 20 || secret.length > 512) {
+    const def = getProviderDefinition(existing.provider);
+    if (!def || !validSecret(secretAuthMethod(def, existing.metadata), secret)) {
       return signedJson(req, res, 400, { error: { code: 'INVALID_CREDENTIAL_REQUEST', message: 'A 20-512 character secret is required' } });
     }
     const rec = await store.rotateCredential(existing.credentialRef, str(org_id), secret);
@@ -197,10 +249,12 @@ export function buildRouter() {
     const rec = await store.get(String(req.params.ref), str(req.json?.org_id));
     if (!rec) return signedJson(req, res, 404, { error: { code: 'CREDENTIAL_NOT_FOUND', message: 'Unknown credential reference' } });
     try {
-      const result = await store.withSecret(rec, (secret) => runWithCredential(secret, { operation: 'credential.test', resource: {}, input: {} }));
+      const result = await store.withSecret(rec, (secret) => runWithCredential(rec, secret, { operation: 'credential.test', resource: {}, input: {} }));
       signedJson(req, res, 200, { valid: result.upstreamStatus === 200, upstream_status: result.upstreamStatus, simulated: result.simulated, ...store.publicView(rec) });
     } catch (e) {
-      if (e instanceof app.GitHubAppError) return signedJson(req, res, 200, { valid: false, upstream_status: e.upstreamStatus, simulated: config.githubMode === 'mock', error_code: e.code, ...store.publicView(rec) });
+      if (e instanceof app.GitHubAppError || e instanceof ExecutionError) {
+        return signedJson(req, res, 200, { valid: false, upstream_status: e instanceof app.GitHubAppError ? e.upstreamStatus : null, simulated: config.githubMode === 'mock', error_code: e.code, ...store.publicView(rec) });
+      }
       credentialFailure(req, res, e, `test ${rec.credentialRef}`);
     }
   });
@@ -218,15 +272,19 @@ export function buildRouter() {
     if (claims.aud !== config.instanceId) return signedJson(req, res, 401, { error: { code: 'AUDIENCE_MISMATCH', message: 'Execution request not addressed to this webhook' } });
     if (typeof claims.exp !== 'number' || claims.exp < Date.now()) return signedJson(req, res, 401, { error: { code: 'EXECUTION_EXPIRED', message: 'Execution request expired' } });
     if (typeof claims.iat !== 'number' || claims.exp - claims.iat > config.maxExecutionTtlMs) return signedJson(req, res, 401, { error: { code: 'EXECUTION_TTL_TOO_LONG', message: 'Execution request validity window too long' } });
-    if (!SUPPORTED_OPERATIONS.includes(claims.operation)) return signedJson(req, res, 400, { error: { code: 'UNSUPPORTED_OPERATION', message: 'This webhook does not execute that operation' } });
 
     const rec = await store.get(str(claims.credential_ref), str(claims.org_id));
     if (!rec) return signedJson(req, res, 404, { error: { code: 'CREDENTIAL_NOT_FOUND', message: 'Credential reference cannot be resolved' } });
     if (rec.status !== 'ACTIVE') return signedJson(req, res, 409, { error: { code: 'CREDENTIAL_DISABLED', message: 'Credential is disabled' } });
+    // The operation must belong to the credential's provider definition (a GitHub token is never used for another provider's call).
+    const def = getProviderDefinition(rec.provider);
+    if (typeof claims.operation !== 'string' || !def?.operations.some((o) => o.id === claims.operation && o.risk !== 'destructive')) {
+      return signedJson(req, res, 400, { error: { code: 'UNSUPPORTED_OPERATION', message: 'This webhook does not execute that operation' } });
+    }
 
     try {
       const result = await store.withSecret(rec, (secret) =>
-        runWithCredential(secret, { operation: claims.operation, resource: claims.resource ?? {}, input: claims.input ?? {} }),
+        runWithCredential(rec, secret, { operation: claims.operation, resource: stringRecord(claims.resource), input: claims.input && typeof claims.input === 'object' ? claims.input : {} }),
       );
       console.log(`[vault] execute ${claims.request_id} op=${claims.operation} ref=${rec.credentialRef} upstream=${result.upstreamStatus}${result.credential ? ' (minted App token, revoked)' : ''}`);
       signedJson(req, res, 200, {
@@ -239,6 +297,7 @@ export function buildRouter() {
       });
     } catch (e) {
       if (e instanceof app.GitHubAppError) return appFailure(req, res, e);
+      if (e instanceof ExecutionError) return executionFailure(req, res, e);
       credentialFailure(req, res, e, `execute ${claims.request_id}`);
     }
   });

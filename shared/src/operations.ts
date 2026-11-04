@@ -1,3 +1,4 @@
+import { PROVIDER_DEFINITIONS } from './providers/registry';
 import type { ProviderId } from './types';
 
 export interface OperationDef {
@@ -10,71 +11,24 @@ export interface OperationDef {
   destructive: boolean;
   mutating: boolean;
   requiresRepository: boolean;
+  /** Anchored pattern the primary resource (e.g. "owner/repo") must match. */
+  resourcePattern: string;
 }
 
-export const OPERATIONS: OperationDef[] = [
-  {
-    id: 'github.repositories.read',
-    provider: 'github',
-    label: 'Read repository metadata',
-    description: 'GET /repos/{owner}/{repo}',
-    grantable: true,
-    destructive: false,
-    mutating: false,
-    requiresRepository: true,
-  },
-  {
-    id: 'github.contents.read',
-    provider: 'github',
-    label: 'Read repository contents',
-    description: 'GET /repos/{owner}/{repo}/contents/{path}',
-    grantable: true,
-    destructive: false,
-    mutating: false,
-    requiresRepository: true,
-  },
-  {
-    id: 'github.issues.list',
-    provider: 'github',
-    label: 'List issues',
-    description: 'GET /repos/{owner}/{repo}/issues',
-    grantable: true,
-    destructive: false,
-    mutating: false,
-    requiresRepository: true,
-  },
-  {
-    id: 'github.issues.create',
-    provider: 'github',
-    label: 'Create issue',
-    description: 'POST /repos/{owner}/{repo}/issues',
-    grantable: true,
-    destructive: false,
-    mutating: true,
-    requiresRepository: true,
-  },
-  // Recognised by the policy engine (so it can deny them explicitly) but never grantable in the POC.
-  {
-    id: 'github.repositories.delete',
-    provider: 'github',
-    label: 'Delete repository',
-    description: 'DELETE /repos/{owner}/{repo} (destructive, never grantable)',
-    grantable: false,
-    destructive: true,
-    mutating: true,
-    requiresRepository: true,
-  },
-  {
-    id: 'github.contents.write',
-    provider: 'github',
-    label: 'Write repository contents',
-    description: 'PUT /repos/{owner}/{repo}/contents/{path} (destructive, never grantable)',
-    grantable: false,
-    destructive: true,
-    mutating: true,
-    requiresRepository: true,
-  },
-];
+/** Derived from the provider definitions: adding an operation there adds it everywhere. */
+export const OPERATIONS: OperationDef[] = PROVIDER_DEFINITIONS.flatMap((d) =>
+  d.operations.map((o) => ({
+    id: o.id,
+    provider: d.key,
+    label: o.label,
+    description: o.description,
+    grantable: o.risk !== 'destructive',
+    destructive: o.risk === 'destructive',
+    mutating: o.risk !== 'read',
+    requiresRepository: o.requiresResource,
+    resourcePattern: d.resource.pattern,
+  })),
+);
 
 export const GRANTABLE_OPERATIONS = OPERATIONS.filter((o) => o.grantable);
 
@@ -87,13 +41,7 @@ export function operationLabel(id: string): string {
 }
 
 export const PROVIDER_CATALOG: { provider: ProviderId; name: string; description: string; authMethods: string[]; available: boolean }[] = [
-  {
-    provider: 'github',
-    name: 'GitHub',
-    description: 'Repositories, contents and issues via the GitHub REST API. Fully implemented POC connector.',
-    authMethods: ['GitHub App', 'Personal Access Token'],
-    available: true,
-  },
+  ...PROVIDER_DEFINITIONS.map((d) => ({ provider: d.key, name: d.name, description: d.description, authMethods: d.auth.map((a) => a.label), available: true })),
   {
     provider: 'google',
     name: 'Google Workspace',
