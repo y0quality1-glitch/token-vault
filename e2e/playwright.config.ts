@@ -14,6 +14,8 @@ process.env.WEBHOOK_SIGNING_SECRET ??= randomBytes(32).toString('base64url');
 process.env.VAULT_ENCRYPTION_KEY ??= randomBytes(32).toString('base64');
 // Dedicated database, wiped and reseeded when the control plane starts (SEED_MODE=reset).
 const databaseUrl = process.env.E2E_DATABASE_URL ?? 'postgres://token_vault:token_vault@localhost:5432/token_vault_e2e';
+// Customer-zone database for the webhook (separate role), also wiped on start.
+const webhookDatabaseUrl = process.env.E2E_WEBHOOK_DATABASE_URL ?? 'postgres://token_vault_customer:token_vault_customer@localhost:5432/token_vault_customer_e2e';
 
 const root = resolve(import.meta.dirname, '..');
 export const LOG_DIR = resolve(import.meta.dirname, '.logs');
@@ -53,7 +55,10 @@ export default defineConfig({
         WEBHOOK_SIGNING_SECRET: process.env.WEBHOOK_SIGNING_SECRET,
         VAULT_ENCRYPTION_KEY: process.env.VAULT_ENCRYPTION_KEY,
         WEBHOOK_INSTANCE_ID: 'whi_local_customer_vault',
-        WEBHOOK_DATA_FILE: resolve(LOG_DIR, 'vault-store.json'),
+        WEBHOOK_DATABASE_URL: webhookDatabaseUrl,
+        SEED_MODE: 'reset',
+        // Points the one-time legacy JSON import at a path that never exists.
+        WEBHOOK_DATA_FILE: resolve(LOG_DIR, 'no-legacy-store.json'),
         GITHUB_MODE: 'mock',
       },
     },

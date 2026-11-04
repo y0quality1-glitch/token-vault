@@ -21,7 +21,7 @@ npm install
 ```
 
 ```bash
-npm run db:up       # starts PostgreSQL 16 in Docker (docker-compose.yml)
+npm run db:up       # starts PostgreSQL 16 in Docker (docker-compose.yml) with both trust zones' databases
 ```
 
 ```bash
@@ -59,8 +59,10 @@ npm test            # policy engine, sanitizer, CIDR, AES-GCM and request-signat
 The database tests in `server/test/db.test.ts` run only when `TEST_DATABASE_URL` is set. They wipe that database, so point it at the dedicated test database:
 
 ```bash
-TEST_DATABASE_URL=postgres://token_vault:token_vault@localhost:5432/token_vault_test npm test
+TEST_DATABASE_URL=postgres://token_vault:token_vault@localhost:5432/token_vault_test WEBHOOK_TEST_DATABASE_URL=postgres://token_vault_customer:token_vault_customer@localhost:5432/token_vault_customer_test npm test
 ```
+
+`WEBHOOK_TEST_DATABASE_URL` enables the webhook's store tests (`webhook/test/store.test.ts`) the same way.
 
 Schema changes: edit `server/src/db/schema.ts`, then run `npm run db:generate` and commit the new SQL file in `server/drizzle/`. `npm run db:migrate` applies migrations without starting the API.
 
@@ -72,7 +74,7 @@ npm run build       # production build of the client
 npm run test:e2e    # Playwright: full demo script + scenarios in Chromium
 ```
 
-The end-to-end suite starts all three services itself (ports 4000, 4100 and 5173 must be free), so stop `npm run dev` first. It uses its own database, `token_vault_e2e` (created by `npm run db:up`; override with `E2E_DATABASE_URL`), which is wiped at the start of each run. It generates throwaway secrets per run, passes them as environment variables, and uses its own webhook store in `e2e/.logs/`, so your local dev data is untouched. After the run, it fails if any token, agent credential, signing secret or encryption key appears in the server or webhook logs. If Chromium is not installed yet, run `npx -w e2e playwright install chromium` once. The HTML report is in `e2e/playwright-report/`.
+The end-to-end suite starts all three services itself (ports 4000, 4100 and 5173 must be free), so stop `npm run dev` first. It uses its own databases, `token_vault_e2e` and `token_vault_customer_e2e` (created by `npm run db:up`; override with `E2E_DATABASE_URL` and `E2E_WEBHOOK_DATABASE_URL`), which are wiped at the start of each run, so your local dev data is untouched. It generates throwaway secrets per run and passes them as environment variables. After the run, it fails if any token, agent credential, signing secret or encryption key appears in the server or webhook logs. If Chromium is not installed yet, run `npx -w e2e playwright install chromium` once. The HTML report is in `e2e/playwright-report/`.
 
 CI (`.github/workflows/ci.yml`) runs typecheck, unit tests and the build on every push to `main` and every pull request, then the end-to-end suite. On failure, the Playwright report and service logs are uploaded as an artifact.
 
@@ -194,7 +196,8 @@ token-vault/
 ├── webhook/                  Customer webhook / vault runtime (separate process, customer trust zone)
 │   ├── src/
 │   │   ├── security/         HMAC verification + replay cache, AES-256-GCM sealing, masking
-│   │   ├── store/            encrypted credential store (ciphertext persisted to webhook/data/, git-ignored)
+│   │   ├── db/               customer-side schema (credentials, used_nonces), pg pool, migration runner
+│   │   ├── store/            encrypted credential store in the customer's own Postgres database
 │   │   ├── providers/        GitHub connector (mock + live), response allow-listing
 │   │   └── routes.ts         /internal/v1/{health,credentials,execute} (all signature-protected)
 │   └── test/security.test.ts
@@ -218,7 +221,8 @@ token-vault/
 | Concern | POC implementation | Production direction |
 | --- | --- | --- |
 | Provider secrets | Sent browser → control plane (TLS in prod) → webhook, **never persisted** by the control plane. They are removed from the request object after forwarding and are not logged. | Same, or direct browser → webhook upload |
-| Encryption at rest | AES-256-GCM in the webhook, with the credential ref bound as AAD. The key comes from `webhook/.env` and is never stored with the ciphertext. | KMS/HSM envelope encryption |
+| Encryption at rest | AES-256-GCM in the webhook, with the credential ref bound as AAD. Ciphertext lives in the customer's own Postgres database (`token_vault_customer`, separate role). The key comes from the environment and is never stored in the database. | KMS/HSM envelope encryption |
+| Replay protection | Nonces of signed requests are recorded in the customer database, so a replay is rejected even when it reaches a different webhook instance | Same |
 | Control plane ↔ webhook | Shared-secret HMAC-SHA256 over method, path, timestamp, nonce and body hash. Responses are signed too. 60 s skew window and a nonce replay cache. | mTLS or asymmetric signatures with rotation |
 | Webhook identity | A signed challenge/response at registration and on every heartbeat. The instance ID is pinned. | Certificate-bound identity |
 | Agent credentials | `tvak_<keyId>_<secret>`. Only a **scrypt hash** is stored. Shown once. Rotation invalidates the old key immediately. | Same, plus optional workload identity federation |
@@ -237,7 +241,7 @@ token-vault/
 - **Drizzle instead of Prisma.** The spec allows either; Drizzle keeps the schema in TypeScript, emits plain SQL migrations, and needs no engine binary.
 - **Text IDs instead of UUIDs.** Primary keys are prefixed random IDs (`agt_…`, `grt_…`), so they are recognizable in logs and audit records.
 - **Integrations are soft-deleted** (`deleted_at`), so grants and audit records keep a valid reference.
-- **The customer webhook still stores ciphertext in a JSON file** (`webhook/data/`). Moving it to its own customer-side Postgres is a separate step.
+- **One local Postgres server hosts both trust zones** for convenience, as separate databases with separate roles: the control plane's `token_vault` role cannot connect to the customer databases. In a real deployment the customer runs their own database server.
 - **Shared-secret HMAC** instead of mTLS, as the spec allows for a local POC. mTLS appears in the webhook wizard as the production design and is disabled.
 - **Redis is not used.** Rate limiting, the nonce cache and idempotency are in-process, so they reset on restart and are per instance.
 - **Explicit DENY policies are evaluated before grant checks.** This makes "explicit deny takes precedence" observable: a destructive operation reports the matched deny policy instead of a generic scope error.
@@ -266,13 +270,18 @@ token-vault/
 | `WEBHOOK_SIGNING_SECRET` | Must match the control plane |
 | `VAULT_ENCRYPTION_KEY` | Base64 of 32 random bytes. AES-256 key for the credential store |
 | `WEBHOOK_INSTANCE_ID` | Identity pinned by the control plane (signature audience) |
+| `WEBHOOK_DATABASE_URL` | Customer-side PostgreSQL connection string (required). Deliberately a different variable from the control plane's `DATABASE_URL` |
+| `SEED_MODE` | `if-missing` (default): create the demo mock credentials where absent or unreadable. `reset`: wipe the credential store on start (used by the e2e suite) |
 | `GITHUB_MODE` | `mock` (default) or `live` |
 
-If you regenerate `VAULT_ENCRYPTION_KEY`, records encrypted under the old key can no longer be decrypted and are dropped at startup. The seeded mock credentials are recreated automatically.
+If you regenerate `VAULT_ENCRYPTION_KEY`, credentials encrypted under the old key can no longer be decrypted. The webhook logs how many are affected but **never deletes them** (a misconfigured key must not destroy customer credentials); requests that use them fail with `CREDENTIAL_UNREADABLE` until the original key is restored or the credential is rotated. The seeded mock credentials are recreated automatically.
+
+**Upgrading from the JSON store:** on first start, the webhook imports any records from `webhook/data/vault-store.json` that the current key can decrypt, then renames the file to `vault-store.json.imported`. For a Docker volume created before this change, run `npm run db:init` once to create the customer role and databases.
 
 ## Troubleshooting
 
 - **Webhook shows Unhealthy / verification fails:** make sure the webhook process is running on :4100 and that `WEBHOOK_SIGNING_SECRET` is identical in both `.env` files. Delete both files and run `npm run setup` to regenerate them as a pair.
 - **Playground says "Agent credential required":** click **Get a credential**. Keys live only in page memory and are cleared on reload.
 - **"Agent credential is invalid, rotated or unknown":** the key was rotated, or the demo was reset. Issue a new one.
+- **Webhook exits with "WEBHOOK_DATABASE_URL is missing" or "permission denied to connect":** run `npm run db:init` (existing Docker volume) and `npm run setup` (adds `WEBHOOK_DATABASE_URL` to an older `webhook/.env`).
 - **API exits with "DATABASE_URL is missing" or a connection error:** start Postgres with `npm run db:up` (or point `DATABASE_URL` at your own PostgreSQL 16) and run `npm run setup` once to add `DATABASE_URL` to an older `server/.env`.

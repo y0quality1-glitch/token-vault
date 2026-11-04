@@ -103,3 +103,5 @@ Every endpoint requires a valid control-plane signature: the `x-tv-timestamp`, `
 | POST | `/internal/v1/credentials/:ref/test` | decrypt and call the provider; returns validity only |
 | POST | `/internal/v1/credentials/:ref/delete` | crypto-shred |
 | POST | `/internal/v1/execute` | validate `aud`, `exp`, TTL and org, then inject the credential and return a sanitized result |
+
+If a stored credential cannot be decrypted with the configured key, `test` and `execute` return HTTP 500 with `CREDENTIAL_UNREADABLE`. No secret material or ciphertext is included.

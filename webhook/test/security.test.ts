@@ -25,18 +25,18 @@ describe('signed request verification', () => {
     'x-tv-nonce': nonce,
     'x-tv-signature': hmacHex(secret, canonicalString('POST', '/internal/v1/execute', ts, nonce, body)),
   });
-  it('accepts a valid signature once and rejects replay', () => {
+  it('accepts a valid signature once and rejects replay', async () => {
     const nonces = new NonceCache(120_000);
     const headers = sign('{}', 'nonce_aaaaaaaaaaaaaaaa');
     const base = { secret, method: 'POST', path: '/internal/v1/execute', body: '{}', nonces, maxSkewMs: 60_000 };
-    expect(verifySignedRequest({ ...base, headers }).ok).toBe(true);
-    expect(verifySignedRequest({ ...base, headers })).toEqual({ ok: false, reason: 'replayed_nonce' });
+    expect((await verifySignedRequest({ ...base, headers })).ok).toBe(true);
+    expect(await verifySignedRequest({ ...base, headers })).toEqual({ ok: false, reason: 'replayed_nonce' });
   });
-  it('rejects tampered bodies and stale timestamps', () => {
+  it('rejects tampered bodies and stale timestamps', async () => {
     const nonces = new NonceCache(120_000);
     const base = { secret, method: 'POST', path: '/internal/v1/execute', nonces, maxSkewMs: 60_000 };
-    expect(verifySignedRequest({ ...base, body: '{"x":1}', headers: sign('{}', 'nonce_bbbbbbbbbbbbbbbb') }).ok).toBe(false);
+    expect((await verifySignedRequest({ ...base, body: '{"x":1}', headers: sign('{}', 'nonce_bbbbbbbbbbbbbbbb') })).ok).toBe(false);
     const stale = sign('{}', 'nonce_cccccccccccccccc', String(Date.now() - 120_000));
-    expect(verifySignedRequest({ ...base, body: '{}', headers: stale })).toEqual({ ok: false, reason: 'timestamp_outside_window' });
+    expect(await verifySignedRequest({ ...base, body: '{}', headers: stale })).toEqual({ ok: false, reason: 'timestamp_outside_window' });
   });
 });

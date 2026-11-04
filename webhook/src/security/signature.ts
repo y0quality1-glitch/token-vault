@@ -26,8 +26,13 @@ export function safeEqualHex(a: string, b: string): boolean {
   return ab.length === bb.length && ab.length > 0 && timingSafeEqual(ab, bb);
 }
 
-/** Bounded replay cache: nonces are remembered for twice the allowed skew window. */
-export class NonceCache {
+/** Records a nonce; resolves false if it was already used within its validity window. */
+export interface NonceStore {
+  use(nonce: string, now?: number): boolean | Promise<boolean>;
+}
+
+/** In-process replay cache (single instance; used in unit tests). The service uses PgNonceStore. */
+export class NonceCache implements NonceStore {
   private seen = new Map<string, number>();
   constructor(private ttlMs: number) {}
 
@@ -46,14 +51,14 @@ export interface VerifyInput {
   path: string;
   body: string | Buffer;
   headers: Record<string, string | string[] | undefined>;
-  nonces: NonceCache;
+  nonces: NonceStore;
   maxSkewMs: number;
   now?: number;
 }
 
 export type VerifyResult = { ok: true; nonce: string } | { ok: false; reason: string };
 
-export function verifySignedRequest(input: VerifyInput): VerifyResult {
+export async function verifySignedRequest(input: VerifyInput): Promise<VerifyResult> {
   const now = input.now ?? Date.now();
   const ts = String(input.headers['x-tv-timestamp'] ?? '');
   const nonce = String(input.headers['x-tv-nonce'] ?? '');
@@ -64,7 +69,7 @@ export function verifySignedRequest(input: VerifyInput): VerifyResult {
   const expected = hmacHex(input.secret, canonicalString(input.method, input.path, ts, nonce, input.body));
   if (!/^[0-9a-f]{64}$/.test(sig) || !safeEqualHex(expected, sig)) return { ok: false, reason: 'bad_signature' };
   // Only consume the nonce once the signature is proven, so attackers cannot burn nonces.
-  if (!input.nonces.use(nonce, now)) return { ok: false, reason: 'replayed_nonce' };
+  if (!(await input.nonces.use(nonce, now))) return { ok: false, reason: 'replayed_nonce' };
   return { ok: true, nonce };
 }
 
