@@ -21,20 +21,22 @@ npm install
 ```
 
 ```bash
-npm run db:up       # starts PostgreSQL 16 in Docker (docker-compose.yml) with both trust zones' databases
+npm run db:up       # starts PostgreSQL 16 in Docker (docker-compose.yml) with the control plane, customer and CMS databases
 ```
 
 ```bash
 npm run dev
 ```
 
-`npm run dev` first runs `npm run setup`. That generates `server/.env` and `webhook/.env` with random development secrets and a local `DATABASE_URL` (both files are git-ignored). It then starts three processes. On startup the API applies any pending database migrations and, if the database is empty, seeds the demo data:
+`npm run dev` first runs `npm run setup`. That generates `server/.env`, `webhook/.env` and `cms/api/.env` with random development secrets (including the CMS's Ed25519 signing key) and local database URLs (all git-ignored). It then starts five processes. On startup the API applies any pending database migrations and, if the database is empty, seeds the demo data:
 
 | Process | URL | Trust zone |
 | --- | --- | --- |
 | Admin console (React + Vite) | http://localhost:5173 | Browser |
 | Control plane API (Express) | http://localhost:4000 | Token Vault |
 | Customer webhook / vault runtime (Express) | http://localhost:4100 | **Customer** |
+| Provider CMS UI (React + Vite) | http://localhost:5174 | Browser |
+| Provider CMS API (Express) | http://localhost:4200 | Token Vault platform team |
 
 Open **http://localhost:5173** and sign in with a mock demo account. The password for every account is `TokenVault-Demo-2026`.
 
@@ -46,10 +48,12 @@ Open **http://localhost:5173** and sign in with a mock demo account. The passwor
 | `developer@demo.test` | Agent Developer | Own agents only; gets **permission denied** on audit pages |
 | `auditor@demo.test` | Auditor | Read-only |
 
+The **provider CMS** (http://localhost:5174) is where the platform team defines applications as data: `editor@cms.test` drafts, `publisher@cms.test` reviews and publishes (a different person must approve), `admin@cms.test` can do both and archive. Same password. See [docs/CMS.md](docs/CMS.md).
+
 Other scripts:
 
 ```bash
-npm run typecheck   # all four workspaces
+npm run typecheck   # every workspace
 ```
 
 ```bash
@@ -62,19 +66,19 @@ The database tests in `server/test/db.test.ts` run only when `TEST_DATABASE_URL`
 TEST_DATABASE_URL=postgres://token_vault:token_vault@localhost:5432/token_vault_test WEBHOOK_TEST_DATABASE_URL=postgres://token_vault_customer:token_vault_customer@localhost:5432/token_vault_customer_test npm test
 ```
 
-`WEBHOOK_TEST_DATABASE_URL` enables the webhook's store tests (`webhook/test/store.test.ts`) the same way.
+`WEBHOOK_TEST_DATABASE_URL` enables the webhook's store tests (`webhook/test/store.test.ts`) the same way, and `CMS_TEST_DATABASE_URL=postgres://token_vault_cms:token_vault_cms@localhost:5432/token_vault_cms_test` the CMS workflow tests (`cms/api/test/workflow.test.ts`).
 
 Schema changes: edit `server/src/db/schema.ts`, then run `npm run db:generate` and commit the new SQL file in `server/drizzle/`. `npm run db:migrate` applies migrations without starting the API.
 
 ```bash
-npm run build       # production build of the client
+npm run build       # production builds of the console and the CMS UI
 ```
 
 ```bash
 npm run test:e2e    # Playwright: full demo script + scenarios in Chromium
 ```
 
-The end-to-end suite starts all three services itself (ports 4000, 4100 and 5173 must be free), so stop `npm run dev` first. It uses its own databases, `token_vault_e2e` and `token_vault_customer_e2e` (created by `npm run db:up`; override with `E2E_DATABASE_URL` and `E2E_WEBHOOK_DATABASE_URL`), which are wiped at the start of each run, so your local dev data is untouched. It generates throwaway secrets per run and passes them as environment variables. After the run, it fails if any token, agent credential, signing secret or encryption key appears in the server or webhook logs. If Chromium is not installed yet, run `npx -w e2e playwright install chromium` once. The HTML report is in `e2e/playwright-report/`.
+The end-to-end suite starts all five services itself (ports 4000, 4100, 4200, 5173 and 5174 must be free), so stop `npm run dev` first. It uses its own databases, `token_vault_e2e`, `token_vault_customer_e2e` and `token_vault_cms_e2e` (created by `npm run db:up`; override with `E2E_DATABASE_URL`, `E2E_WEBHOOK_DATABASE_URL` and `E2E_CMS_DATABASE_URL`), which are wiped at the start of each run, so your local dev data is untouched. It generates throwaway secrets per run and passes them as environment variables. After the run, it fails if any token, agent credential, private key, signing secret or encryption key appears in the server, webhook or CMS logs. If Chromium is not installed yet, run `npx -w e2e playwright install chromium` once. The HTML report is in `e2e/playwright-report/`.
 
 CI (`.github/workflows/ci.yml`) runs typecheck, unit tests and the build on every push to `main` and every pull request, then the end-to-end suite. On failure, the Playwright report and service logs are uploaded as an artifact.
 
@@ -82,7 +86,7 @@ CI (`.github/workflows/ci.yml`) runs typecheck, unit tests and the build on ever
 
 If `WEBHOOK_SIGNING_SECRET` and `VAULT_ENCRYPTION_KEY` are already set in the environment, `npm run setup` (and therefore `npm run dev`) writes no `.env` files. Variables set in the environment also take precedence over any existing `.env` values. Give the webhook both variables and the control plane only `WEBHOOK_SIGNING_SECRET`. The control plane also needs `AUDIT_SIGNING_KEY` (32+ characters) in that mode.
 
-To run the processes one at a time: `npm run dev -w server`, `npm run dev -w webhook`, `npm run dev -w client`.
+To run the processes one at a time: `npm run dev -w server`, `npm run dev -w webhook`, `npm run dev -w client`, `npm run dev -w cms/api`, `npm run dev -w cms/client`. In runtime-only mode the CMS API needs `CMS_DATABASE_URL` and `CMS_SIGNING_PRIVATE_KEY` (an Ed25519 PEM) in its environment.
 
 ---
 
@@ -178,7 +182,7 @@ Revocation needs no token expiry: grant state is evaluated on every request, so 
 ```
 token-vault/
 ├── package.json              npm workspaces + root scripts
-├── scripts/setup.mjs         generates server/.env and webhook/.env (random secrets)
+├── scripts/setup.mjs         generates server/.env, webhook/.env and cms/api/.env (random secrets, CMS signing key)
 ├── shared/                   @token-vault/shared: domain types, provider definitions (GitHub), RBAC matrix, decision codes
 ├── sdk/                      @token-vault/sdk: TypeScript client for the agent API (typed errors, key never logged)
 ├── mcp/                      Token Vault MCP server (stdio): brokered GitHub tools for AI agents
@@ -221,7 +225,12 @@ token-vault/
 │       ├── hooks/useApi.ts   data fetching + mutations
 │       ├── lib/              API client, formatting utils
 │       └── pages/            one file per screen (see docs/SCREEN_MAP.md)
+├── cms/                      Provider CMS (platform team): applications as signed, versioned definitions
+│   ├── api/                  Express + Drizzle: draft/review/publish workflow, Ed25519 signing, public catalog, audit
+│   └── client/               React UI; reuses the console's UI components via the @ui alias
 └── docs/
+    ├── CMS.md                provider CMS: roles, workflow, signing and the catalog API
+    ├── PROVIDER_DEFINITIONS.md  provider definition format and safety rules
     ├── SCREEN_MAP.md         information architecture, screen map, journeys
     ├── AGENTS.md             connecting AI agents: MCP server and SDK
     └── API.md                endpoint reference
@@ -248,7 +257,7 @@ token-vault/
 | Org isolation | Every query is scoped by `organizationId`. The webhook also checks `org_id` on each credential. | Same, plus row-level security |
 | Logs | Method, path, status and latency only. No bodies, headers or query strings. | Structured logging with redaction |
 | GitHub App credentials | The webhook holds only the App's private key (encrypted in the customer store, or in its own environment via `GITHUB_APP_PRIVATE_KEY`). For each authorized request it mints an installation token **narrowed to the one repository and the one permission the operation needs** (e.g. `issues:write` for `github.issues.create`), uses it once and revokes it. The control plane and audit log only see the token's scope, never the token. See [docs/GITHUB_APP.md](docs/GITHUB_APP.md). | Same; keep the key in a KMS/HSM and sign the App JWT there |
-| Provider definitions | Applications are data, not code ([docs/PROVIDER_DEFINITIONS.md](docs/PROVIDER_DEFINITIONS.md)). The webhook builds each request from the definition, checks the host against its allow-list **before** attaching the credential, never follows redirects, and returns only allow-listed response fields. Templates cannot reference credentials | Definitions authored in a CMS and published as signed, versioned documents |
+| Provider definitions | Applications are data, not code ([docs/PROVIDER_DEFINITIONS.md](docs/PROVIDER_DEFINITIONS.md)), authored in the provider CMS with draft → review → publish, separation of duties, explicit confirmation of new API hosts, and Ed25519-signed published versions ([docs/CMS.md](docs/CMS.md)). The webhook builds each request from the definition, checks the host against its allow-list **before** attaching the credential, never follows redirects, and returns only allow-listed response fields. Templates cannot reference credentials | Consumers pull and verify the signed catalog (next step); signing key in a KMS/HSM |
 | Upstream GitHub | **Simulated** by default. Set `GITHUB_MODE=live` in `webhook/.env` to call api.github.com. In mock mode App JWTs are really signed and the simulated GitHub enforces minted-token scope. | A GitHub App installed on selected repositories of a dedicated test org (PATs remain available for demos) |
 
 ### Deviations from the specification
@@ -293,6 +302,15 @@ token-vault/
 | `GITHUB_MODE` | `mock` (default) or `live` |
 | `GITHUB_APP_PRIVATE_KEY` | Optional. GitHub App private key (PEM; `\n` escapes allowed) for integrations created with "Already configured on the webhook". Inject it as a secret; never commit it |
 | `GITHUB_APP_PRIVATE_KEY_FILE` | Optional. Path to the PEM file instead of the variable above (takes precedence) |
+
+`cms/api/.env` (provider CMS):
+
+| Variable | Purpose |
+| --- | --- |
+| `PORT` | CMS API port (4200) |
+| `CMS_DATABASE_URL` | The CMS's own PostgreSQL database (`token_vault_cms`, separate role) |
+| `CMS_SIGNING_PRIVATE_KEY` | Ed25519 private key (PEM; `\n` escapes allowed) that signs published definitions. Only the CMS holds it; consumers pin the public key from `/catalog/v1/public-key`. Rotating it means consumers must pin the new key |
+| `SEED_MODE` | `if-empty` (default): seed demo users and the GitHub definition into an empty database. `reset`: wipe and reseed on start (tests, e2e) |
 
 If you regenerate `VAULT_ENCRYPTION_KEY`, credentials encrypted under the old key can no longer be decrypted. The webhook logs how many are affected but **never deletes them** (a misconfigured key must not destroy customer credentials); requests that use them fail with `CREDENTIAL_UNREADABLE` until the original key is restored or the credential is rotated. The seeded mock credentials are recreated automatically.
 
