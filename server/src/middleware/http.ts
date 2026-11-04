@@ -1,6 +1,6 @@
 import type { NextFunction, Request, Response } from 'express';
 import { ZodError } from 'zod';
-import { HttpError } from '../lib/errors';
+import { HttpError, describeError } from '../lib/errors';
 import { sanitize } from '../lib/sanitize';
 
 /** Logs method, path, status and latency only. Bodies, headers and query strings are never logged. */
@@ -39,6 +39,6 @@ export function errorHandler(err: unknown, _req: Request, res: Response, _next: 
     res.status(400).json({ error: { code: 'MALFORMED_JSON', message: 'Request body is not valid JSON' } });
     return;
   }
-  console.error('[api] unhandled error:', (err as Error)?.name, sanitize((err as Error)?.message ?? ''));
+  console.error('[api] unhandled error:', (err as Error)?.name, sanitize(describeError(err)));
   res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'An unexpected error occurred' } });
 }

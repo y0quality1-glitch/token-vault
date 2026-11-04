@@ -10,7 +10,11 @@ import {
 import { config } from '../config';
 import { generateAgentCredential, hashSecret } from '../lib/crypto';
 import { correlationId, newId, requestId } from '../lib/ids';
-import { db, type AgentRecord, type GrantRecord, type IntegrationRecord, type MemberRecord, type UserRecord, type WebhookRecord } from './db';
+import { sql } from 'drizzle-orm';
+import type { Organization } from '@token-vault/shared';
+import { db as pg, transaction, type Executor } from '../db/client';
+import * as t from '../db/schema';
+import type { AgentRecord, GrantRecord, IntegrationRecord, MemberRecord, UserRecord, WebhookRecord } from './types';
 
 /**
  * Demonstration seed data (spec section 12). All credentials here are MOCK.
@@ -48,7 +52,24 @@ const DAY = 24 * HOUR;
 
 let cachedPasswordHash: string | null = null;
 
-export function seedDatabase() {
+/** In-memory snapshot assembled before a single transactional insert. */
+interface SeedData {
+  organizations: Organization[];
+  users: UserRecord[];
+  members: MemberRecord[];
+  webhooks: WebhookRecord[];
+  integrations: IntegrationRecord[];
+  agents: AgentRecord[];
+  grants: GrantRecord[];
+  policies: Policy[];
+  accessRequests: AccessRequest[];
+  auditEvents: AuditEvent[];
+}
+
+let db: SeedData;
+
+export function buildSeed(): SeedData {
+  db = { organizations: [], users: [], members: [], webhooks: [], integrations: [], agents: [], grants: [], policies: [], accessRequests: [], auditEvents: [] };
   const passwordHash = (cachedPasswordHash ??= hashSecret(DEMO_PASSWORD));
 
   db.organizations = [
@@ -118,6 +139,7 @@ export function seedDatabase() {
     updatedAt: iso(-createdAgo),
     lastValidatedAt: iso(-2 * HOUR),
     rotatedAt: null,
+    deletedAt: null,
   });
   db.integrations = [
     integ(IDS.intDemo, 'Demo GitHub', 'development', 'demo-org', SEED_CREDENTIAL_REFS.demoGithub.ref, ['demo-org/demo-repo', 'demo-org/other-repo', 'demo-org/docs'], 20 * DAY, 'Fine-grained PAT scoped to the demo-org test organization.'),
@@ -289,6 +311,7 @@ export function seedDatabase() {
   });
 
   seedHistory();
+  return db;
 }
 
 // ------------------------------------------------------------------ historical activity
@@ -439,4 +462,47 @@ function seedHistory() {
     latencyMs: 8 + ((i * 7) % 11),
     detail: 'Signed health challenge verified (seed)',
   }));
+}
+
+// ------------------------------------------------------------------ persistence
+const TABLES_IN_INSERT_ORDER = ['organizations', 'users', 'organization_members', 'webhooks', 'integrations', 'agents', 'grants', 'policies', 'access_requests', 'audit_events'];
+
+async function insertSeed(data: SeedData, ex: Executor) {
+  await ex.insert(t.organizations).values(data.organizations);
+  await ex.insert(t.users).values(data.users);
+  await ex.insert(t.organizationMembers).values(data.members);
+  await ex.insert(t.webhooks).values(data.webhooks);
+  await ex.insert(t.integrations).values(data.integrations);
+  await ex.insert(t.agents).values(data.agents);
+  await ex.insert(t.grants).values(data.grants);
+  await ex.insert(t.policies).values(data.policies);
+  await ex.insert(t.accessRequests).values(data.accessRequests);
+  await ex.insert(t.auditEvents).values(data.auditEvents);
+}
+
+/** Seeds demo data only when the database has no organizations yet. Returns true if it seeded. */
+export async function seedIfEmpty(): Promise<boolean> {
+  return transaction(async (tx) => {
+    // Serialize concurrent starters on one advisory lock.
+    await tx.execute(sql`select pg_advisory_xact_lock(7316001)`);
+    const existing = await tx.select({ id: t.organizations.id }).from(t.organizations).limit(1);
+    if (existing.length > 0) return false;
+    await insertSeed(buildSeed(), tx);
+    return true;
+  });
+}
+
+/**
+ * Wipes all control-plane data and restores the seeded demo state, atomically.
+ * Sessions are kept (seeded user IDs are stable), so signed-in admins stay signed in.
+ * TRUNCATE bypasses the append-only row triggers on the audit tables by design: this
+ * is the POC's demo reset, not an operation a production system would expose.
+ */
+export async function resetDatabase(ex: Executor = pg) {
+  const run = async (tx: Executor) => {
+    await tx.execute(sql.raw(`TRUNCATE ${TABLES_IN_INSERT_ORDER.join(', ')} CASCADE`));
+    await insertSeed(buildSeed(), tx);
+  };
+  if (ex === pg) await transaction(run);
+  else await run(ex);
 }

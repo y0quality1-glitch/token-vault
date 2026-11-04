@@ -2,63 +2,54 @@ import { Router } from 'express';
 import { PERMISSIONS } from '@token-vault/shared';
 import { notFound } from '../../lib/errors';
 import { orgCtx, requirePermission } from '../../middleware/auth';
-import { db, inOrg } from '../../store/db';
+import { auditRepo } from '../../store/repos';
 
 export const auditRouter = Router();
 
-function inRange(createdAt: string, from?: unknown, to?: unknown) {
-  if (typeof from === 'string' && from && createdAt < new Date(from).toISOString()) return false;
-  if (typeof to === 'string' && to && createdAt > new Date(to).toISOString()) return false;
-  return true;
-}
-
 const q = (v: unknown) => (typeof v === 'string' && v.length > 0 ? v : undefined);
+const isoOrUndefined = (v: unknown) => {
+  const s = q(v);
+  if (!s) return undefined;
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
+};
+const limitOf = (v: unknown) => Math.min(Number(v ?? 200) || 200, 500);
 
-auditRouter.get('/access-requests', requirePermission(PERMISSIONS.AUDIT_READ), (req, res) => {
+auditRouter.get('/access-requests', requirePermission(PERMISSIONS.AUDIT_READ), async (req, res) => {
   const { org } = orgCtx(req);
-  const { agentId, integrationId, decision, operation, from, to, search, grantId } = req.query;
-  let items = inOrg(db.accessRequests, org.id).filter((r) => inRange(r.createdAt, from, to));
-  if (q(agentId)) items = items.filter((r) => r.agentId === agentId);
-  if (q(integrationId)) items = items.filter((r) => r.integrationId === integrationId);
-  if (q(grantId)) items = items.filter((r) => r.grantId === grantId);
-  if (q(decision)) items = items.filter((r) => r.decision === decision);
-  if (q(operation)) items = items.filter((r) => r.operation === operation);
-  if (q(search)) {
-    const s = String(search).toLowerCase();
-    items = items.filter((r) => [r.id, r.correlationId, r.agentName, r.integrationName, r.decisionCode].some((v) => v.toLowerCase().includes(s)));
-  }
-  const limit = Math.min(Number(req.query.limit ?? 200) || 200, 500);
-  res.json({ items: items.slice(0, limit), total: items.length });
+  const f = req.query;
+  res.json(
+    await auditRepo.listAccessRequests(
+      org.id,
+      { agentId: q(f.agentId), integrationId: q(f.integrationId), grantId: q(f.grantId), decision: q(f.decision), operation: q(f.operation), from: isoOrUndefined(f.from), to: isoOrUndefined(f.to), search: q(f.search) },
+      limitOf(f.limit),
+    ),
+  );
 });
 
-auditRouter.get('/access-requests/:id', requirePermission(PERMISSIONS.AUDIT_READ), (req, res) => {
+auditRouter.get('/access-requests/:id', requirePermission(PERMISSIONS.AUDIT_READ), async (req, res) => {
   const { org } = orgCtx(req);
-  const item = db.accessRequests.find((r) => r.id === String(req.params.id) && r.organizationId === org.id);
+  const item = await auditRepo.getAccessRequest(org.id, String(req.params.id));
   if (!item) throw notFound('Access request');
-  const auditEvents = db.auditEvents.filter((e) => e.organizationId === org.id && e.correlationId === item.correlationId);
+  const auditEvents = await auditRepo.auditEventsByCorrelation(org.id, item.correlationId);
   res.json({ ...item, auditEvents });
 });
 
-auditRouter.get('/audit-events', requirePermission(PERMISSIONS.AUDIT_READ), (req, res) => {
+auditRouter.get('/audit-events', requirePermission(PERMISSIONS.AUDIT_READ), async (req, res) => {
   const { org } = orgCtx(req);
-  const { actorType, eventType, outcome, targetId, from, to, search, category } = req.query;
-  let items = inOrg(db.auditEvents, org.id).filter((e) => inRange(e.createdAt, from, to));
-  if (category === 'security') items = items.filter((e) => !e.eventType.startsWith('access.allowed'));
-  if (q(actorType)) items = items.filter((e) => e.actorType === actorType);
-  if (q(eventType)) items = items.filter((e) => e.eventType.startsWith(String(eventType)));
-  if (q(outcome)) items = items.filter((e) => e.outcome === outcome);
-  if (q(targetId)) items = items.filter((e) => e.targetId === targetId);
-  if (q(search)) {
-    const s = String(search).toLowerCase();
-    items = items.filter((e) => [e.id, e.correlationId, e.actorName, e.targetName, e.eventType].some((v) => v.toLowerCase().includes(s)));
-  }
-  const limit = Math.min(Number(req.query.limit ?? 200) || 200, 500);
-  res.json({ items: items.slice(0, limit), total: items.length });
+  const f = req.query;
+  res.json(
+    await auditRepo.listAuditEvents(
+      org.id,
+      { securityOnly: f.category === 'security', actorType: q(f.actorType), eventType: q(f.eventType), outcome: q(f.outcome), targetId: q(f.targetId), from: isoOrUndefined(f.from), to: isoOrUndefined(f.to), search: q(f.search) },
+      limitOf(f.limit),
+    ),
+  );
 });
 
-auditRouter.get('/audit-events/:id', requirePermission(PERMISSIONS.AUDIT_READ), (req, res) => {
+auditRouter.get('/audit-events/:id', requirePermission(PERMISSIONS.AUDIT_READ), async (req, res) => {
   const { org } = orgCtx(req);
-  const item = db.auditEvents.find((e) => e.id === String(req.params.id) && e.organizationId === org.id);
+  const item = await auditRepo.getAuditEvent(org.id, String(req.params.id));
   if (!item) throw notFound('Audit event');
   res.json(item);
 });

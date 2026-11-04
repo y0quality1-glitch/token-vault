@@ -14,17 +14,21 @@ It shows that an AI agent can perform an authorized GitHub operation **without e
 
 ## Quick start
 
-Requirements: **Node.js 20.11+** (tested on Node 22) and npm 10+.
+Requirements: **Node.js 20.11+** (tested on Node 22), npm 10+, and **PostgreSQL 16** (Docker Compose provides one).
 
 ```bash
 npm install
 ```
 
 ```bash
+npm run db:up       # starts PostgreSQL 16 in Docker (docker-compose.yml)
+```
+
+```bash
 npm run dev
 ```
 
-`npm run dev` first runs `npm run setup`. That generates `server/.env` and `webhook/.env` with random development secrets (both files are git-ignored). It then starts three processes:
+`npm run dev` first runs `npm run setup`. That generates `server/.env` and `webhook/.env` with random development secrets and a local `DATABASE_URL` (both files are git-ignored). It then starts three processes. On startup the API applies any pending database migrations and, if the database is empty, seeds the demo data:
 
 | Process | URL | Trust zone |
 | --- | --- | --- |
@@ -52,6 +56,14 @@ npm run typecheck   # all four workspaces
 npm test            # policy engine, sanitizer, CIDR, AES-GCM and request-signature tests (Vitest)
 ```
 
+The database tests in `server/test/db.test.ts` run only when `TEST_DATABASE_URL` is set. They wipe that database, so point it at the dedicated test database:
+
+```bash
+TEST_DATABASE_URL=postgres://token_vault:token_vault@localhost:5432/token_vault_test npm test
+```
+
+Schema changes: edit `server/src/db/schema.ts`, then run `npm run db:generate` and commit the new SQL file in `server/drizzle/`. `npm run db:migrate` applies migrations without starting the API.
+
 ```bash
 npm run build       # production build of the client
 ```
@@ -60,7 +72,7 @@ npm run build       # production build of the client
 npm run test:e2e    # Playwright: full demo script + scenarios in Chromium
 ```
 
-The end-to-end suite starts all three services itself (ports 4000, 4100 and 5173 must be free), so stop `npm run dev` first. It generates throwaway secrets per run, passes them as environment variables, and uses its own webhook store in `e2e/.logs/`, so your local dev data is untouched. After the run, it fails if any token, agent credential, signing secret or encryption key appears in the server or webhook logs. If Chromium is not installed yet, run `npx -w e2e playwright install chromium` once. The HTML report is in `e2e/playwright-report/`.
+The end-to-end suite starts all three services itself (ports 4000, 4100 and 5173 must be free), so stop `npm run dev` first. It uses its own database, `token_vault_e2e` (created by `npm run db:up`; override with `E2E_DATABASE_URL`), which is wiped at the start of each run. It generates throwaway secrets per run, passes them as environment variables, and uses its own webhook store in `e2e/.logs/`, so your local dev data is untouched. After the run, it fails if any token, agent credential, signing secret or encryption key appears in the server or webhook logs. If Chromium is not installed yet, run `npx -w e2e playwright install chromium` once. The HTML report is in `e2e/playwright-report/`.
 
 CI (`.github/workflows/ci.yml`) runs typecheck, unit tests and the build on every push to `main` and every pull request, then the end-to-end suite. On failure, the Playwright report and service logs are uploaded as an artifact.
 
@@ -106,7 +118,7 @@ Switch to **Demo Organization** for the seeded data and the remaining scenarios:
 
 > Seeded agents are created with random API keys that are discarded immediately, so nobody knows them. In the Playground, click **Get a credential**. This rotates the agent's key and loads the new key into page memory only.
 
-**Reset:** use **Settings → Organization → Reset demo data** or the button on the Demo guide (Owner only). Restarting the API also reseeds it, because control-plane data is held in memory.
+**Reset:** use **Settings → Organization → Reset demo data** or the button on the Demo guide (Owner only). Data persists in PostgreSQL across restarts; to wipe it at startup instead, run the API with `SEED_MODE=reset`.
 
 ---
 
@@ -162,7 +174,8 @@ token-vault/
 │   │   ├── config.ts
 │   │   ├── lib/              crypto (scrypt, HMAC), ids, CIDR matching, sanitizer, zod validation
 │   │   ├── middleware/       session auth + RBAC, logging (no bodies), security headers, error handler
-│   │   ├── store/            in-memory repository (mirrors the spec data model), seed data, DTO views
+│   │   ├── db/               Drizzle schema (spec data model), pg pool, migration runner
+│   │   ├── store/            repositories (only code that queries Postgres), seed, DTO views
 │   │   └── modules/
 │   │       ├── auth/             login, org selection, forgot-password placeholder
 │   │       ├── organizations/    org settings, members & roles
@@ -176,7 +189,8 @@ token-vault/
 │   │       ├── audit/            append-only access requests + audit events
 │   │       ├── dashboard/        overview aggregation
 │   │       └── demo/             reset
-│   └── test/engine.test.ts
+│   ├── drizzle/              SQL migrations (0000 schema, 0001 append-only audit triggers)
+│   └── test/                 engine.test.ts (pure), db.test.ts (needs TEST_DATABASE_URL)
 ├── webhook/                  Customer webhook / vault runtime (separate process, customer trust zone)
 │   ├── src/
 │   │   ├── security/         HMAC verification + replay cache, AES-256-GCM sealing, masking
@@ -210,7 +224,8 @@ token-vault/
 | Agent credentials | `tvak_<keyId>_<secret>`. Only a **scrypt hash** is stored. Shown once. Rotation invalidates the old key immediately. | Same, plus optional workload identity federation |
 | Admin sessions | Opaque token in an **httpOnly, SameSite=Strict** cookie. Nothing is kept in `localStorage`. | Enterprise SSO (out of scope) |
 | Playground agent key | React state only. Lost on reload. Never placed in storage or URLs. | n/a |
-| Audit | Append-only (frozen records), with a sanitizer that redacts secret-looking keys and values | Immutable store (WORM / ledger) |
+| Audit | Append-only: Postgres triggers reject `UPDATE`/`DELETE` on `access_requests` and `audit_events`. A sanitizer redacts secret-looking keys and values before insert. Each access record and its audit event commit in one transaction. | Immutable store (WORM / ledger), separate DB role without TRUNCATE |
+| Admin sessions at rest | Stored in Postgres as the SHA-256 of the cookie token, so a database dump holds no usable session | Same |
 | Org isolation | Every query is scoped by `organizationId`. The webhook also checks `org_id` on each credential. | Same, plus row-level security |
 | Logs | Method, path, status and latency only. No bodies, headers or query strings. | Structured logging with redaction |
 | Upstream GitHub | **Simulated** by default. Set `GITHUB_MODE=live` in `webhook/.env` to call api.github.com. | Use a dedicated test org and a fine-grained PAT with minimum scopes |
@@ -219,9 +234,12 @@ token-vault/
 
 - **React + Vite instead of Next.js.** You asked for React with an Express backend, so the client is a Vite SPA with React Router. Same stack otherwise: TypeScript, Tailwind, Lucide.
 - **Shadcn UI is not installed.** An equivalent component library was hand-written in `client/src/components/ui` in the same style. It has no CLI or codegen dependency.
-- **In-memory store instead of PostgreSQL/Prisma.** `server/src/store/db.ts` mirrors the spec's tables and is the only place services touch storage, so swapping in Prisma or Drizzle repositories is contained. The webhook persists ciphertext to a JSON file.
+- **Drizzle instead of Prisma.** The spec allows either; Drizzle keeps the schema in TypeScript, emits plain SQL migrations, and needs no engine binary.
+- **Text IDs instead of UUIDs.** Primary keys are prefixed random IDs (`agt_…`, `grt_…`), so they are recognizable in logs and audit records.
+- **Integrations are soft-deleted** (`deleted_at`), so grants and audit records keep a valid reference.
+- **The customer webhook still stores ciphertext in a JSON file** (`webhook/data/`). Moving it to its own customer-side Postgres is a separate step.
 - **Shared-secret HMAC** instead of mTLS, as the spec allows for a local POC. mTLS appears in the webhook wizard as the production design and is disabled.
-- **Redis is not used.** Rate limiting, the nonce cache and idempotency are in-process.
+- **Redis is not used.** Rate limiting, the nonce cache and idempotency are in-process, so they reset on restart and are per instance.
 - **Explicit DENY policies are evaluated before grant checks.** This makes "explicit deny takes precedence" observable: a destructive operation reports the matched deny policy instead of a generic scope error.
 
 ---
@@ -235,6 +253,9 @@ token-vault/
 | `PORT` | API port (4000) |
 | `WEBHOOK_SIGNING_SECRET` | HMAC secret shared with the webhook (32+ bytes) |
 | `DEFAULT_WEBHOOK_URL` | Pre-filled webhook URL and the seeded webhook endpoint |
+| `DATABASE_URL` | PostgreSQL connection string (required) |
+| `SEED_MODE` | `if-empty` (default): seed demo data into an empty database. `reset`: wipe and reseed on every start (used by the e2e suite) |
+| `DB_POOL_MAX` | Connection pool size (default 10) |
 | `HEARTBEAT_INTERVAL_MS` | Signed health-check interval (default 30000) |
 
 `webhook/.env` (customer zone):
@@ -254,3 +275,4 @@ If you regenerate `VAULT_ENCRYPTION_KEY`, records encrypted under the old key ca
 - **Webhook shows Unhealthy / verification fails:** make sure the webhook process is running on :4100 and that `WEBHOOK_SIGNING_SECRET` is identical in both `.env` files. Delete both files and run `npm run setup` to regenerate them as a pair.
 - **Playground says "Agent credential required":** click **Get a credential**. Keys live only in page memory and are cleared on reload.
 - **"Agent credential is invalid, rotated or unknown":** the key was rotated, or the demo was reset. Issue a new one.
+- **API exits with "DATABASE_URL is missing" or a connection error:** start Postgres with `npm run db:up` (or point `DATABASE_URL` at your own PostgreSQL 16) and run `npm run setup` once to add `DATABASE_URL` to an older `server/.env`.

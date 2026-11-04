@@ -13,6 +13,7 @@ if (process.env.WEBHOOK_SIGNING_SECRET && process.env.VAULT_ENCRYPTION_KEY) {
   process.exit(0);
 }
 
+const DEFAULT_DATABASE_URL = 'postgres://token_vault:token_vault@localhost:5432/token_vault';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const serverEnv = resolve(root, 'server/.env');
 const webhookEnv = resolve(root, 'webhook/.env');
@@ -37,11 +38,19 @@ if (!existsSync(serverEnv)) {
       'PORT=4000',
       `WEBHOOK_SIGNING_SECRET=${signing}`,
       'DEFAULT_WEBHOOK_URL=http://localhost:4100',
+      '# Local Postgres from docker-compose.yml (npm run db:up). Development credentials only.',
+      `DATABASE_URL=${DEFAULT_DATABASE_URL}`,
       'HEARTBEAT_INTERVAL_MS=30000',
       '',
     ].join('\n'),
   );
   console.log('[setup] created server/.env');
+}
+
+// Upgrade: server/.env files created before PostgreSQL support lack DATABASE_URL.
+if (existsSync(serverEnv) && !readVar(serverEnv, 'DATABASE_URL')) {
+  writeFileSync(serverEnv, readFileSync(serverEnv, 'utf8').trimEnd() + `\nDATABASE_URL=${DEFAULT_DATABASE_URL}\n`);
+  console.log('[setup] added DATABASE_URL to server/.env');
 }
 
 if (!existsSync(webhookEnv)) {
