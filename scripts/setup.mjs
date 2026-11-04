@@ -14,6 +14,8 @@ if (process.env.WEBHOOK_SIGNING_SECRET && process.env.VAULT_ENCRYPTION_KEY) {
 }
 
 const DEFAULT_DATABASE_URL = 'postgres://token_vault:token_vault@localhost:5432/token_vault';
+// Customer zone: separate database and role (see scripts/pg-init.sql).
+const DEFAULT_WEBHOOK_DATABASE_URL = 'postgres://token_vault_customer:token_vault_customer@localhost:5432/token_vault_customer';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const serverEnv = resolve(root, 'server/.env');
 const webhookEnv = resolve(root, 'webhook/.env');
@@ -63,10 +65,18 @@ if (!existsSync(webhookEnv)) {
       `WEBHOOK_SIGNING_SECRET=${signing}`,
       `VAULT_ENCRYPTION_KEY=${randomBytes(32).toString('base64')}`,
       'WEBHOOK_INSTANCE_ID=whi_local_customer_vault',
+      '# Customer-side Postgres (separate database and role from the control plane). Development credentials only.',
+      `WEBHOOK_DATABASE_URL=${DEFAULT_WEBHOOK_DATABASE_URL}`,
       '# mock = simulated GitHub provider (default). live = call api.github.com with the stored token.',
       'GITHUB_MODE=mock',
       '',
     ].join('\n'),
   );
   console.log('[setup] created webhook/.env');
+}
+
+// Upgrade: webhook/.env files created before the PostgreSQL credential store lack WEBHOOK_DATABASE_URL.
+if (existsSync(webhookEnv) && !readVar(webhookEnv, 'WEBHOOK_DATABASE_URL')) {
+  writeFileSync(webhookEnv, readFileSync(webhookEnv, 'utf8').trimEnd() + `\nWEBHOOK_DATABASE_URL=${DEFAULT_WEBHOOK_DATABASE_URL}\n`);
+  console.log('[setup] added WEBHOOK_DATABASE_URL to webhook/.env');
 }

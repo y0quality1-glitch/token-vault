@@ -1,3 +1,29 @@
--- Extra databases for automated tests (runs once, when the Docker volume is first created).
-CREATE DATABASE token_vault_test OWNER token_vault;
-CREATE DATABASE token_vault_e2e OWNER token_vault;
+-- Local PostgreSQL bootstrap (development only; credentials are local defaults, not secrets).
+-- Runs automatically when the Docker volume is first created. It is idempotent, so for an
+-- existing volume you can apply it with:  npm run db:init
+--
+-- Two trust zones, two roles:
+--   token_vault           control plane      -> token_vault, token_vault_test, token_vault_e2e
+--   token_vault_customer  customer webhook   -> token_vault_customer, *_test, *_e2e
+-- The control plane's role cannot connect to the customer databases.
+
+SELECT 'CREATE DATABASE token_vault_test OWNER token_vault'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'token_vault_test') \gexec
+SELECT 'CREATE DATABASE token_vault_e2e OWNER token_vault'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'token_vault_e2e') \gexec
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'token_vault_customer') THEN
+    CREATE ROLE token_vault_customer LOGIN PASSWORD 'token_vault_customer';
+  END IF;
+END $$;
+
+SELECT 'CREATE DATABASE token_vault_customer OWNER token_vault_customer'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'token_vault_customer') \gexec
+SELECT 'CREATE DATABASE token_vault_customer_test OWNER token_vault_customer'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'token_vault_customer_test') \gexec
+SELECT 'CREATE DATABASE token_vault_customer_e2e OWNER token_vault_customer'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'token_vault_customer_e2e') \gexec
+
+REVOKE CONNECT ON DATABASE token_vault_customer, token_vault_customer_test, token_vault_customer_e2e FROM PUBLIC;
