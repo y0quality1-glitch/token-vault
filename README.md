@@ -257,7 +257,7 @@ token-vault/
 | Org isolation | Every query is scoped by `organizationId`. The webhook also checks `org_id` on each credential. | Same, plus row-level security |
 | Logs | Method, path, status and latency only. No bodies, headers or query strings. | Structured logging with redaction |
 | GitHub App credentials | The webhook holds only the App's private key (encrypted in the customer store, or in its own environment via `GITHUB_APP_PRIVATE_KEY`). For each authorized request it mints an installation token **narrowed to the one repository and the one permission the operation needs** (e.g. `issues:write` for `github.issues.create`), uses it once and revokes it. The control plane and audit log only see the token's scope, never the token. See [docs/GITHUB_APP.md](docs/GITHUB_APP.md). | Same; keep the key in a KMS/HSM and sign the App JWT there |
-| Provider definitions | Applications are data, not code ([docs/PROVIDER_DEFINITIONS.md](docs/PROVIDER_DEFINITIONS.md)), authored in the provider CMS with draft → review → publish, separation of duties, explicit confirmation of new API hosts, and Ed25519-signed published versions ([docs/CMS.md](docs/CMS.md)). The webhook builds each request from the definition, checks the host against its allow-list **before** attaching the credential, never follows redirects, and returns only allow-listed response fields. Templates cannot reference credentials | Consumers pull and verify the signed catalog (next step); signing key in a KMS/HSM |
+| Provider definitions | Applications are data, not code ([docs/PROVIDER_DEFINITIONS.md](docs/PROVIDER_DEFINITIONS.md)), authored in the provider CMS with draft → review → publish, separation of duties, explicit confirmation of new API hosts, and Ed25519-signed published versions ([docs/CMS.md](docs/CMS.md)). The control plane and each webhook pull the catalog independently and accept only definitions that verify against the pinned CMS key; a provider published in the CMS is usable without a deploy. The webhook builds each request from the definition, checks the host against its allow-list **before** attaching the credential, never follows redirects, and returns only allow-listed response fields. Templates cannot reference credentials | Signing key in a KMS/HSM; persist the version high-water mark; key rotation with overlapping keys |
 | Upstream GitHub | **Simulated** by default. Set `GITHUB_MODE=live` in `webhook/.env` to call api.github.com. In mock mode App JWTs are really signed and the simulated GitHub enforces minted-token scope. | A GitHub App installed on selected repositories of a dedicated test org (PATs remain available for demos) |
 
 ### Deviations from the specification
@@ -288,6 +288,9 @@ token-vault/
 | `SEED_MODE` | `if-empty` (default): seed demo data into an empty database. `reset`: wipe and reseed on every start (used by the e2e suite) |
 | `DB_POOL_MAX` | Connection pool size (default 10) |
 | `HEARTBEAT_INTERVAL_MS` | Signed health-check interval (default 30000) |
+| `CMS_CATALOG_URL` | Provider CMS catalog (`http://localhost:4200/catalog/v1`). Optional: without it only the bundled definitions are used |
+| `CMS_PUBLIC_KEY` / `CMS_PUBLIC_KEY_FILE` | Pinned Ed25519 public key of the CMS (PEM; `\n` escapes allowed). Required with `CMS_CATALOG_URL`; written by `npm run setup` |
+| `CMS_POLL_INTERVAL_MS` | Catalog polling interval (default 30000) |
 
 `webhook/.env` (customer zone):
 
@@ -302,6 +305,7 @@ token-vault/
 | `GITHUB_MODE` | `mock` (default) or `live` |
 | `GITHUB_APP_PRIVATE_KEY` | Optional. GitHub App private key (PEM; `\n` escapes allowed) for integrations created with "Already configured on the webhook". Inject it as a secret; never commit it |
 | `GITHUB_APP_PRIVATE_KEY_FILE` | Optional. Path to the PEM file instead of the variable above (takes precedence) |
+| `CMS_CATALOG_URL`, `CMS_PUBLIC_KEY` / `CMS_PUBLIC_KEY_FILE`, `CMS_POLL_INTERVAL_MS` | Same as the control plane. The webhook verifies the catalog itself, so the control plane cannot change where credentials are sent |
 
 `cms/api/.env` (provider CMS):
 

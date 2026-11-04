@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Pencil, Plus, ScrollText } from 'lucide-react';
-import { OPERATIONS, PERMISSIONS, operationLabel, type Agent, type Integration, type Policy, type PolicyConditions } from '@token-vault/shared';
+import { PERMISSIONS, type Agent, type Integration, type Policy, type PolicyConditions } from '@token-vault/shared';
+import { operationLabel, useProviders } from '@/lib/providers';
 import { useApi, useMutation } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
 import { api } from '@/lib/api';
@@ -141,6 +142,7 @@ export function PoliciesPage() {
 }
 
 function PolicyDialog({ policy, agents, integrations, onClose, onSaved }: { policy: Policy | 'new' | null; agents: Agent[]; integrations: Integration[]; onClose: () => void; onSaved: () => void }) {
+  const { operations } = useProviders();
   const toast = useToast();
   const isNew = policy === 'new';
   const [f, setF] = useState({
@@ -308,7 +310,7 @@ function PolicyDialog({ policy, agents, integrations, onClose, onSaved }: { poli
           {fe['conditions.operations'] && <p className="mb-2 text-xs text-red-600">{fe['conditions.operations']}</p>}
           <div className="grid gap-2 sm:grid-cols-2">
             <Checkbox checked={anyOp} onChange={(v) => setF({ ...f, operations: v ? ['*'] : [] })} label="Any operation" />
-            {OPERATIONS.map((o) => (
+            {operations.map((o) => (
               <Checkbox key={o.id} disabled={anyOp} checked={f.operations.includes(o.id)} onChange={(v) => setF({ ...f, operations: v ? [...f.operations, o.id] : f.operations.filter((x) => x !== o.id) })} label={o.label} description={o.destructive ? 'Destructive' : undefined} />
             ))}
           </div>

@@ -38,6 +38,7 @@ export interface EvaluationInput {
   grants: GrantRecord[];
   policies: Policy[];
   operation: OperationDef;
+  /** The primary resource grants are scoped to (named "repository" for historical reasons; e.g. a GitHub repository or a project). */
   resource: { repository?: string; path?: string };
   sourceIp: string;
   now: number;
@@ -161,13 +162,13 @@ export function evaluate(input: EvaluationInput): EvaluationResult {
   const repoAllowed = (list: string[]) => list.length === 0 || list.some((r) => r.toLowerCase() === repo);
   const resourceOk = scoped.filter((g) => repoAllowed(g.resourceConstraints.repositories));
   if (resourceOk.length === 0) {
-    return deny(8, DECISION_CODES.RESOURCE_DENIED, `Repository ${input.resource.repository || '(none)'} is outside the grant resource restriction (${grant.resourceConstraints.repositories.join(', ')}).`, { type: 'grant', id: grant.id, name: grant.name });
+    return deny(8, DECISION_CODES.RESOURCE_DENIED, `${input.operation.resourceLabel} ${input.resource.repository || '(none)'} is outside the grant resource restriction (${grant.resourceConstraints.repositories.join(', ')}).`, { type: 'grant', id: grant.id, name: grant.name });
   }
   grant = resourceOk[0]!;
   if (!repoAllowed(input.integration.allowedResources)) {
-    return deny(8, DECISION_CODES.RESOURCE_DENIED, `Repository ${input.resource.repository} is not in the integration's allowed resources.`, { type: 'grant', id: grant.id, name: grant.name });
+    return deny(8, DECISION_CODES.RESOURCE_DENIED, `${input.operation.resourceLabel} ${input.resource.repository} is not in the integration's allowed resources.`, { type: 'grant', id: grant.id, name: grant.name });
   }
-  pass(8, grant.resourceConstraints.repositories.length ? `Repository matches restriction ${grant.resourceConstraints.repositories.join(', ')}` : 'No resource restriction on grant');
+  pass(8, grant.resourceConstraints.repositories.length ? `${input.operation.resourceLabel} matches restriction ${grant.resourceConstraints.repositories.join(', ')}` : 'No resource restriction on grant');
 
   // 9. Rate limit
   const used = input.recentRequests(grant.id);

@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Ban, Github, Pencil, Play, Power, RefreshCw, Trash2 } from 'lucide-react';
-import { PERMISSIONS, operationLabel, type IntegrationDetail } from '@token-vault/shared';
+import { PERMISSIONS, type IntegrationDetail } from '@token-vault/shared';
+import { getProvider, operationLabel } from '@/lib/providers';
 import { useApi, useMutation } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
 import { api } from '@/lib/api';
@@ -107,7 +108,7 @@ export function IntegrationDetailPage() {
           <CardBody>
             <DetailList
               items={[
-                { label: 'Provider', value: i.authType === 'GITHUB_APP' ? 'GitHub App (per-request installation tokens)' : 'GitHub (Personal Access Token)' },
+                { label: 'Provider', value: i.authType === 'GITHUB_APP' ? 'GitHub App (per-request installation tokens)' : `${getProvider(i.provider)?.name ?? i.provider} (${getProvider(i.provider)?.auth.find((a) => a.id === i.authType)?.label ?? i.authType})` },
                 { label: 'Environment', value: <EnvBadge env={i.environment} /> },
                 { label: 'Account / organization', value: i.accountLabel },
                 { label: 'Integration ID', value: <Mono>{i.id}</Mono> },
@@ -304,7 +305,7 @@ function RotateDialog({ open, integration, onClose, onSaved }: { open: boolean; 
           </Button>
           <Button
             loading={rotate.pending}
-            disabled={isApp ? !secret.includes('PRIVATE KEY-----') : secret.length < 20}
+            disabled={isApp ? !secret.includes('PRIVATE KEY-----') : secret.length < (integration.authType === 'PAT' ? 20 : 8)}
             onClick={async () => {
               const r = await rotate.run(secret);
               setSecret('');
@@ -327,7 +328,7 @@ function RotateDialog({ open, integration, onClose, onSaved }: { open: boolean; 
             <Textarea id="rotatePrivateKey" rows={4} spellCheck={false} autoComplete="off" className="font-mono text-xs [-webkit-text-security:disc]" value={secret} onChange={(e) => setSecret(e.target.value)} placeholder="-----BEGIN RSA PRIVATE KEY-----" />
           </Field>
         ) : (
-          <Field label="New Personal Access Token" error={rotate.fieldErrors.secret} hint="Minimum 20 characters. It will not be shown again.">
+          <Field label={`New ${getProvider(integration.provider)?.auth.find((a) => a.id === integration.authType)?.label ?? 'secret'}`} error={rotate.fieldErrors.secret} hint="It will not be shown again.">
             <Input type="password" autoComplete="new-password" className="font-mono" value={secret} onChange={(e) => setSecret(e.target.value)} />
           </Field>
         )}

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { loadProviders } from '@/lib/providers';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   Activity,
@@ -272,9 +273,14 @@ function Header({ onMenu }: { onMenu: () => void }) {
 export function AppShell() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const { pathname } = useLocation();
+  const orgId = useAuth().session?.currentOrganization?.id;
   useEffect(() => {
     window.scrollTo(0, 0);
   }, [pathname]);
+  // Providers can change at runtime (published in the CMS): refresh on navigation.
+  useEffect(() => {
+    if (orgId) void loadProviders().catch(() => undefined);
+  }, [orgId, pathname]);
   return (
     <div className="min-h-screen bg-slate-50">
       <aside className="fixed inset-y-0 left-0 z-40 hidden w-64 lg:block">

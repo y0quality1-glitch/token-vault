@@ -14,6 +14,7 @@ import { demoRouter } from './modules/demo/demo.routes';
 import { grantRequestsRouter } from './modules/grant-requests/grant-requests.routes';
 import { accessReviewsRouter } from './modules/access-reviews/access-reviews.routes';
 import { agentRouter } from './modules/broker/agent.routes';
+import { providersRouter } from './modules/providers/providers.routes';
 
 export function createApp() {
   const app = express();
@@ -36,6 +37,7 @@ export function createApp() {
   orgScoped.use(organizationsRouter);
   orgScoped.use(dashboardRouter);
   orgScoped.use(webhooksRouter);
+  orgScoped.use(providersRouter);
   orgScoped.use(integrationsRouter);
   orgScoped.use(agentsRouter);
   orgScoped.use(grantsRouter);

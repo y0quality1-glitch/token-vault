@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { GRANTABLE_OPERATIONS, PERMISSIONS, type GrantDetail } from '@token-vault/shared';
+import { PERMISSIONS, type GrantDetail } from '@token-vault/shared';
 import { transaction, type Executor } from '../../db/client';
 import { HttpError, badRequest, conflict, notFound } from '../../lib/errors';
 import { newId } from '../../lib/ids';
@@ -11,19 +11,18 @@ import { agentRepo, auditRepo, grantRepo, integrationRepo, policyRepo } from '..
 import type { GrantRecord, IntegrationRecord } from '../../store/types';
 import { effectiveGrantStatus, loadLookups, toGrant } from '../../store/views';
 import { recordEvent, userActor } from '../audit/audit.service';
+import { GENERIC_RESOURCE, foreignOperations, grantableOperationIds, resourceProblem } from '../providers/registry';
 import { policyMatches } from '../policy-engine/engine';
 
 export const grantsRouter = Router();
 
-const grantable = GRANTABLE_OPERATIONS.map((o) => o.id);
-const repoPattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
 const restrictionsSchema = z.object({
   scopes: z
     .array(z.string())
     .min(1, 'Select at least one permission')
-    .refine((s) => s.every((x) => grantable.includes(x)), 'Destructive or unknown operations cannot be granted in the POC'),
-  repositories: z.array(z.string().trim().regex(repoPattern, 'Use owner/repository format')).max(20).default([]),
+    .refine((s) => s.every((x) => grantableOperationIds().includes(x)), 'Destructive or unknown operations cannot be granted in the POC'),
+  repositories: z.array(z.string().trim().regex(GENERIC_RESOURCE, 'Enter one resource per line, without spaces')).max(20).default([]),
   validFrom: z.string().datetime({ offset: true, message: 'Enter a valid start date/time' }),
   expiresAt: z.string().datetime({ offset: true, message: 'Enter a valid expiry date/time' }),
   rateLimitPerMinute: z.number().int().min(1, 'Must be at least 1').max(600, 'Maximum 600 per minute'),
@@ -52,7 +51,11 @@ function validateWindow(validFrom: string, expiresAt: string) {
   if (to - from > 366 * 86400e3) throw badRequest('Request validation failed', { fields: { expiresAt: 'Grants may be valid for at most one year' } });
 }
 
-function validateRepos(integration: IntegrationRecord, repos: string[]) {
+function validateRepos(integration: IntegrationRecord, repos: string[], scopes?: string[]) {
+  const problem = resourceProblem(integration.provider, repos);
+  if (problem) throw badRequest('Request validation failed', { fields: { repositories: problem } });
+  const foreign = scopes ? foreignOperations(integration.provider, scopes) : [];
+  if (foreign.length) throw badRequest('Request validation failed', { fields: { scopes: `Not operations of this integration's provider: ${foreign.join(', ')}` } });
   if (integration.allowedResources.length > 0) {
     const bad = repos.filter((r) => !integration.allowedResources.some((a) => a.toLowerCase() === r.toLowerCase()));
     if (bad.length) throw badRequest('Request validation failed', { fields: { repositories: `Not allowed by the integration: ${bad.join(', ')}` } });
@@ -118,7 +121,7 @@ grantsRouter.post('/grants', requirePermission(PERMISSIONS.GRANT_MANAGE), async 
     if (integration.credentialStatus !== 'CONNECTED') throw badRequest('Request validation failed', { fields: { integrationId: 'Integration is not connected' } });
     if (body.environment !== integration.environment) throw badRequest('Request validation failed', { fields: { environment: `Must match the integration environment (${integration.environment})` } });
     validateWindow(body.validFrom, body.expiresAt);
-    validateRepos(integration, body.repositories);
+    validateRepos(integration, body.repositories, body.scopes);
     if (await grantRepo.grantNameExists(ctx.org.id, body.name, tx)) throw conflict('A grant with that name already exists');
 
     const created = await grantRepo.insertGrant(
@@ -221,7 +224,7 @@ grantsRouter.post('/grants/:id/versions', requirePermission(PERMISSIONS.GRANT_MA
     validateWindow(body.validFrom, body.expiresAt);
     const integration = await integrationRepo.getIntegration(ctx.org.id, g.integrationId, tx);
     if (!integration) throw badRequest('The integration for this grant no longer exists');
-    validateRepos(integration, body.repositories);
+    validateRepos(integration, body.repositories, body.scopes);
     await grantRepo.updateGrant(g.id, { storedStatus: 'SUPERSEDED' }, tx);
     const created = await grantRepo.insertGrant(
       {

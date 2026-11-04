@@ -81,3 +81,27 @@ export interface CmsPreviewResult {
   mockResponse: { status: number; body: unknown } | null;
   error: string | null;
 }
+
+// ---------------------------------------------------------------- Token Vault: providers API
+
+/** A provider as the console needs it, derived from the definition the control plane trusts. */
+export interface ProviderInfo {
+  key: string;
+  name: string;
+  description: string;
+  version: number;
+  source: 'bundled' | 'catalog';
+  digest: string | null;
+  resource: { name: string; label: string; pattern: string; example?: string };
+  resourceFields: Record<string, { label: string; pattern: string; example?: string }>;
+  auth: { id: string; label: string; description: string; kind: 'bearer' | 'header' | 'basic' | 'plugin'; plugin?: string; secretHint?: string; secretPattern?: string }[];
+  operations: (import('./operations').OperationDef & {
+    input: Record<string, { type: 'string' | 'number' | 'boolean'; label?: string; required: boolean; maxLength?: number; multiline?: boolean }>;
+  })[];
+}
+
+export interface ProvidersResponse {
+  providers: ProviderInfo[];
+  /** Catalog sync state (null when the control plane uses bundled definitions only). */
+  catalog: { url: string; keyId: string; lastSuccessAt: string | null; lastError: string | null } | null;
+}

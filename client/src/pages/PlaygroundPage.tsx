@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Ban, CheckCircle2, CircleDashed, Eraser, ExternalLink, FlaskConical, KeyRound, Loader2, Send, ShieldX, XCircle } from 'lucide-react';
-import { DECISION_LABELS, OPERATIONS, PERMISSIONS, getOperation, roleHas, type Agent, type ExecuteResponseBody, type Integration, type Webhook } from '@token-vault/shared';
+import { DECISION_LABELS, PERMISSIONS, roleHas, type Agent, type ExecuteResponseBody, type Integration, type Webhook } from '@token-vault/shared';
+import { getOperation, getProvider, useProviders } from '@/lib/providers';
 import { useApi } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
 import { usePlayground } from '@/context/PlaygroundContext';
@@ -71,6 +72,7 @@ function stageStates(r: ExecuteResponseBody | null): Partial<Record<FlowStage, S
 }
 
 export function PlaygroundPage() {
+  const { operations } = useProviders();
   const { session, can } = useAuth();
   const navigate = useNavigate();
   const toast = useToast();
@@ -99,6 +101,16 @@ export function PlaygroundPage() {
   }, [list, integrationId]);
 
   const op = getOperation(operation);
+  const selected = list.find((i) => i.id === integrationId);
+  const provider = selected ? getProvider(selected.provider) : undefined;
+  const providerOps = provider ? operations.filter((o) => o.provider === provider.key) : operations;
+  // Keep the operation consistent with the selected integration's provider.
+  useEffect(() => {
+    if (provider && !providerOps.some((o) => o.id === operation) && providerOps[0]) {
+      setOperation(providerOps[0].id);
+      if (provider.resource.example) setRepository(provider.resource.example);
+    }
+  }, [provider, providerOps, operation]);
   const webhook = webhooks.data?.items.find((w) => w.verifiedAt) ?? webhooks.data?.items[0];
   const effectiveKey = useInvalid ? INVALID_CREDENTIAL : credential?.apiKey ?? '';
 
@@ -153,7 +165,7 @@ export function PlaygroundPage() {
           {
             integration_id: integrationId,
             operation,
-            resource: { repository, ...(operation === 'github.contents.read' ? { path } : {}) },
+            resource: { [op?.resourceName ?? 'repository']: repository, ...(operation === 'github.contents.read' ? { path } : {}) },
             input: op?.mutating ? input : {},
             idempotency_key: `pg-${Date.now().toString(36)}-${n}`,
           },
@@ -287,7 +299,7 @@ export function PlaygroundPage() {
                 </Field>
                 <Field label="Operation">
                   <Select value={operation} onChange={(e) => setOperation(e.target.value)}>
-                    {OPERATIONS.map((o) => (
+                    {providerOps.map((o) => (
                       <option key={o.id} value={o.id}>
                         {o.label}
                         {o.destructive ? ' (destructive)' : ''}
@@ -295,8 +307,8 @@ export function PlaygroundPage() {
                     ))}
                   </Select>
                 </Field>
-                <Field label="Repository / resource">
-                  <Input value={repository} onChange={(e) => setRepository(e.target.value)} className="font-mono text-sm" />
+                <Field label={provider?.resource.label ?? 'Repository / resource'}>
+                  <Input aria-label="Resource" value={repository} onChange={(e) => setRepository(e.target.value)} className="font-mono text-sm" />
                 </Field>
                 {operation === 'github.contents.read' ? (
                   <Field label="Path">

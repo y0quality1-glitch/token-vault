@@ -3,10 +3,13 @@ import { config } from './config';
 import { closeDatabase, describeError, runMigrations } from './db/client';
 import { buildRouter } from './routes';
 import { initStore } from './store/credential-store';
+import { catalogSync } from './providers/registry';
 
 async function main() {
   await runMigrations();
   await initStore();
+  // Never blocks startup: if the CMS is unreachable, the bundled definitions apply until the next poll.
+  await catalogSync?.start();
 
   const app = express();
   app.disable('x-powered-by');
@@ -22,6 +25,7 @@ async function main() {
   const server = app.listen(config.port, () => {
     console.log(`[vault] Customer webhook runtime listening on http://localhost:${config.port}`);
     console.log(`[vault] instance=${config.instanceId} github_mode=${config.githubMode} key_ref=${config.encryptionKeyRef} store=postgres`);
+    console.log(catalogSync ? `[vault] provider catalog ${config.cmsCatalogUrl} (pinned key ${catalogSync.status.keyId})` : '[vault] provider catalog: bundled definitions only (CMS_CATALOG_URL not set)');
   });
 
   const shutdown = (signal: string) => {

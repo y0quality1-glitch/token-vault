@@ -128,7 +128,7 @@ export const integrations = pgTable(
     displayName: text('display_name').notNull(),
     environment: text('environment').$type<Environment>().notNull(),
     accountLabel: text('account_label').notNull(),
-    authType: text('auth_type').$type<'PAT' | 'GITHUB_APP'>().notNull(),
+    authType: text('auth_type').notNull(),
     /** Opaque pointer into the customer webhook's encrypted store. */
     credentialReference: text('credential_reference').notNull(),
     credentialStatus: text('credential_status').$type<CredentialStatus>().notNull(),

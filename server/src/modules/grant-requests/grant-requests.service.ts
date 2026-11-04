@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { GRANTABLE_OPERATIONS, getOperation, type AgentAccessRequestBody, type GrantRequest, type GrantRequestStatus } from '@token-vault/shared';
+import { type AgentAccessRequestBody, type GrantRequest, type GrantRequestStatus } from '@token-vault/shared';
 import { transaction } from '../../db/client';
 import { HttpError, badRequest, conflict, forbidden, notFound } from '../../lib/errors';
 import { newId } from '../../lib/ids';
@@ -9,6 +9,7 @@ import type { GrantRequestRecord } from '../../store/repos/grant-requests';
 import type { AgentRecord } from '../../store/types';
 import type { AdminContext } from '../../types/express';
 import { recordEvent, userActor } from '../audit/audit.service';
+import { GENERIC_RESOURCE, foreignOperations, getOperation, grantableOperationIds, resourceProblem } from '../providers/registry';
 
 /**
  * Just-in-time access: an agent asks for a time-limited grant, a human decides.
@@ -27,8 +28,6 @@ export const LIMITS = {
   APPROVE_MAX_MINUTES: 1440,
 };
 
-const grantable = GRANTABLE_OPERATIONS.map((o) => o.id);
-const repoPattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
 export function effectiveStatus(r: Pick<GrantRequestRecord, 'status' | 'expiresAt'>, now = Date.now()): GrantRequestStatus {
   if (r.status === 'PENDING' && new Date(r.expiresAt).getTime() <= now) return 'EXPIRED';
@@ -92,7 +91,7 @@ async function agentBody(r: GrantRequestRecord): Promise<AgentAccessRequestBody>
 const agentRequestSchema = z.object({
   integration_id: z.string().min(1).max(64),
   operations: z.array(z.string()).min(1, 'Request at least one operation').max(4),
-  repositories: z.array(z.string().trim().regex(repoPattern, 'Use owner/repository format')).max(5).default([]),
+  repositories: z.array(z.string().trim().regex(GENERIC_RESOURCE, 'One resource per entry, without spaces')).max(5).default([]),
   justification: z.string().trim().min(10, 'Explain why access is needed (at least 10 characters)').max(500),
   duration_minutes: z.number().int().min(LIMITS.REQUEST_MINUTES.min).max(LIMITS.REQUEST_MINUTES.max).default(LIMITS.REQUEST_MINUTES.default),
   denied_request_id: z.string().max(64).optional(),
@@ -102,6 +101,7 @@ export async function createFromAgent(agent: AgentRecord, raw: unknown): Promise
   if (agent.status !== 'ACTIVE') throw new HttpError(403, 'AGENT_DISABLED', 'Agent is disabled and cannot request access.');
   const req = parse(agentRequestSchema, raw);
   const operations = [...new Set(req.operations)];
+  const grantable = grantableOperationIds();
   const notGrantable = operations.filter((o) => !grantable.includes(o));
   if (notGrantable.length) {
     const destructive = notGrantable.filter((o) => getOperation(o)?.destructive);
@@ -109,6 +109,10 @@ export async function createFromAgent(agent: AgentRecord, raw: unknown): Promise
   }
   const integration = await integrationRepo.getIntegration(agent.organizationId, req.integration_id);
   if (!integration) throw new HttpError(404, 'INTEGRATION_NOT_FOUND', `Integration "${req.integration_id}" does not exist in this organization.`);
+  const problem = resourceProblem(integration.provider, req.repositories);
+  if (problem) throw badRequest(problem);
+  const foreign = foreignOperations(integration.provider, operations);
+  if (foreign.length) throw badRequest(`Not operations of this integration's provider: ${foreign.join(', ')}`);
   if (integration.allowedResources.length && req.repositories.some((r) => !lower(integration.allowedResources).includes(r.toLowerCase()))) {
     throw badRequest(`Repositories must be among the integration's allowed resources: ${integration.allowedResources.join(', ')}`);
   }
@@ -181,7 +185,7 @@ export async function getForAgent(agent: AgentRecord, id: string): Promise<Agent
 const approveSchema = z.object({
   durationMinutes: z.number().int().min(LIMITS.REQUEST_MINUTES.min, 'At least 15 minutes').max(LIMITS.APPROVE_MAX_MINUTES, 'At most 24 hours'),
   operations: z.array(z.string()).min(1, 'Approve at least one operation').optional(),
-  repositories: z.array(z.string().trim().regex(repoPattern, 'Use owner/repository format')).max(20).optional(),
+  repositories: z.array(z.string().trim().regex(GENERIC_RESOURCE, 'One resource per entry, without spaces')).max(20).optional(),
   rateLimitPerMinute: z.number().int().min(1).max(600).default(10),
   note: z.string().trim().max(240).default(''),
 });

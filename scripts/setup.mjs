@@ -3,7 +3,7 @@
 //
 // Runtime-only mode: if WEBHOOK_SIGNING_SECRET and VAULT_ENCRYPTION_KEY are already set in the
 // environment (CI, containers, a secret manager), nothing is written to disk.
-import { generateKeyPairSync, randomBytes } from 'node:crypto';
+import { createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes } from 'node:crypto';
 import { existsSync, writeFileSync, readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -107,4 +107,22 @@ if (!existsSync(cmsEnv)) {
     ].join('\n'),
   );
   console.log('[setup] created cms/api/.env');
+}
+
+// Token Vault and the customer webhook pull provider definitions from the CMS catalog and
+// accept only those signed by the CMS key. Pin its public key in both (upgrade-safe).
+const cmsPrivate = readVar(cmsEnv, 'CMS_SIGNING_PRIVATE_KEY');
+if (cmsPrivate) {
+  const publicPem = createPublicKey(createPrivateKey(cmsPrivate.replace(/\\n/g, '\n'))).export({ type: 'spki', format: 'pem' }).toString();
+  const lines = [
+    '# Signed provider catalog (provider CMS). Only definitions signed by this key are accepted.',
+    'CMS_CATALOG_URL=http://localhost:4200/catalog/v1',
+    `CMS_PUBLIC_KEY=${publicPem.trim().replace(/\n/g, '\\n')}`,
+  ];
+  for (const [file, name] of [[serverEnv, 'server/.env'], [webhookEnv, 'webhook/.env']]) {
+    if (existsSync(file) && !readVar(file, 'CMS_PUBLIC_KEY')) {
+      writeFileSync(file, readFileSync(file, 'utf8').trimEnd() + '\n' + lines.join('\n') + '\n');
+      console.log(`[setup] pinned the CMS public key in ${name}`);
+    }
+  }
 }

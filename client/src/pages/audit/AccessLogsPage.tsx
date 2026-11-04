@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Activity, CheckCircle2, CircleDashed, Download, Search, XCircle } from 'lucide-react';
-import { DECISION_LABELS, OPERATIONS, operationLabel, type AccessRequest, type Agent, type AuditEvent, type Integration } from '@token-vault/shared';
+import { DECISION_LABELS, type AccessRequest, type Agent, type AuditEvent, type Integration } from '@token-vault/shared';
+import { operationLabel, useProviders } from '@/lib/providers';
 import { useApi } from '@/hooks/useApi';
 import { qs } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -16,6 +17,7 @@ import { JsonView, Mono } from '@/components/ui/secret';
 import { cn, formatDateTime, formatDuration, fromLocalInput } from '@/lib/utils';
 
 export function AccessLogsPage() {
+  const { operations } = useProviders();
   const [params, setParams] = useSearchParams();
   const [filters, setFilters] = useState({
     agentId: '',
@@ -91,7 +93,7 @@ export function AccessLogsPage() {
           </Select>
           <Select value={filters.operation} onChange={set('operation')} aria-label="Operation">
             <option value="">All operations</option>
-            {OPERATIONS.map((o) => (
+            {operations.map((o) => (
               <option key={o.id} value={o.id}>
                 {o.label}
               </option>
