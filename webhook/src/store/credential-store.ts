@@ -52,14 +52,14 @@ function toRecord(r: Row): CredentialRecord {
 }
 
 /** Encrypts a secret into the column set for one row. The plaintext goes no further. */
-function encrypted(ref: string, secret: string) {
+function encrypted(ref: string, secret: string, masked?: string) {
   const sealed = seal(config.encryptionKey, secret, ref);
   return {
     iv: sealed.iv,
     ciphertext: sealed.ciphertext,
     authTag: sealed.authTag,
     encryptionKeyRef: config.encryptionKeyRef,
-    maskedIdentifier: mask(secret),
+    maskedIdentifier: masked ?? mask(secret),
     fingerprint: fingerprint(config.encryptionKey, secret),
   };
 }
@@ -147,19 +147,20 @@ async function importLegacyFile() {
 
 // ---------------------------------------------------------------- operations
 
-export async function createCredential(orgId: string, provider: string, secret: string, metadata: Record<string, string>): Promise<CredentialRecord> {
+/** `masked` overrides the default token-style mask (e.g. for GitHub App credentials). */
+export async function createCredential(orgId: string, provider: string, secret: string, metadata: Record<string, string>, masked?: string): Promise<CredentialRecord> {
   const ref = 'cref_' + randomUUID().replace(/-/g, '').slice(0, 16);
   const [row] = await db
     .insert(credentials)
-    .values({ credentialRef: ref, orgId, provider, ...encrypted(ref, secret), metadata, status: 'ACTIVE', createdAt: new Date().toISOString(), rotatedAt: null })
+    .values({ credentialRef: ref, orgId, provider, ...encrypted(ref, secret, masked), metadata, status: 'ACTIVE', createdAt: new Date().toISOString(), rotatedAt: null })
     .returning();
   return toRecord(row!);
 }
 
-export async function rotateCredential(ref: string, orgId: string, secret: string): Promise<CredentialRecord | null> {
+export async function rotateCredential(ref: string, orgId: string, secret: string, masked?: string): Promise<CredentialRecord | null> {
   const [row] = await db
     .update(credentials)
-    .set({ ...encrypted(ref, secret), rotatedAt: new Date().toISOString(), status: 'ACTIVE' })
+    .set({ ...encrypted(ref, secret, masked), rotatedAt: new Date().toISOString(), status: 'ACTIVE' })
     .where(and(eq(credentials.credentialRef, ref), eq(credentials.orgId, orgId)))
     .returning();
   return row ? toRecord(row) : null;

@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { DEFAULT_WEBHOOK_INSTANCE_ID } from '@token-vault/shared';
 
@@ -34,6 +34,13 @@ if (seedMode !== 'if-missing' && seedMode !== 'reset') {
   process.exit(1);
 }
 
+function readAppKey(): string | undefined {
+  const file = process.env.GITHUB_APP_PRIVATE_KEY_FILE;
+  if (file) return readFileSync(file, 'utf8');
+  const inline = process.env.GITHUB_APP_PRIVATE_KEY;
+  return inline ? inline.replace(/\\n/g, '\n') : undefined;
+}
+
 export const config = {
   port: Number(process.env.PORT ?? 4100),
   signingSecret: required('WEBHOOK_SIGNING_SECRET', 32),
@@ -42,6 +49,8 @@ export const config = {
   instanceId: process.env.WEBHOOK_INSTANCE_ID ?? DEFAULT_WEBHOOK_INSTANCE_ID,
   githubMode: (process.env.GITHUB_MODE === 'live' ? 'live' : 'mock') as 'mock' | 'live',
   databaseUrl,
+  /** Optional GitHub App private key held only by this webhook (PEM; literal "\n" sequences allowed). */
+  githubAppPrivateKey: readAppKey(),
   dbPoolMax: Number(process.env.DB_POOL_MAX ?? 5),
   /** if-missing: (re)create demo mock credentials only where absent or unreadable. reset: wipe the store first (tests). */
   seedMode: seedMode as 'if-missing' | 'reset',

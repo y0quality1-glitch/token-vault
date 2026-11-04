@@ -247,7 +247,8 @@ token-vault/
 | Admin sessions at rest | Stored in Postgres as the SHA-256 of the cookie token, so a database dump holds no usable session | Same |
 | Org isolation | Every query is scoped by `organizationId`. The webhook also checks `org_id` on each credential. | Same, plus row-level security |
 | Logs | Method, path, status and latency only. No bodies, headers or query strings. | Structured logging with redaction |
-| Upstream GitHub | **Simulated** by default. Set `GITHUB_MODE=live` in `webhook/.env` to call api.github.com. | Use a dedicated test org and a fine-grained PAT with minimum scopes |
+| GitHub App credentials | The webhook holds only the App's private key (encrypted in the customer store, or in its own environment via `GITHUB_APP_PRIVATE_KEY`). For each authorized request it mints an installation token **narrowed to the one repository and the one permission the operation needs** (e.g. `issues:write` for `github.issues.create`), uses it once and revokes it. The control plane and audit log only see the token's scope, never the token. See [docs/GITHUB_APP.md](docs/GITHUB_APP.md). | Same; keep the key in a KMS/HSM and sign the App JWT there |
+| Upstream GitHub | **Simulated** by default. Set `GITHUB_MODE=live` in `webhook/.env` to call api.github.com. In mock mode App JWTs are really signed and the simulated GitHub enforces minted-token scope. | A GitHub App installed on selected repositories of a dedicated test org (PATs remain available for demos) |
 
 ### Deviations from the specification
 
@@ -289,6 +290,8 @@ token-vault/
 | `WEBHOOK_DATABASE_URL` | Customer-side PostgreSQL connection string (required). Deliberately a different variable from the control plane's `DATABASE_URL` |
 | `SEED_MODE` | `if-missing` (default): create the demo mock credentials where absent or unreadable. `reset`: wipe the credential store on start (used by the e2e suite) |
 | `GITHUB_MODE` | `mock` (default) or `live` |
+| `GITHUB_APP_PRIVATE_KEY` | Optional. GitHub App private key (PEM; `\n` escapes allowed) for integrations created with "Already configured on the webhook". Inject it as a secret; never commit it |
+| `GITHUB_APP_PRIVATE_KEY_FILE` | Optional. Path to the PEM file instead of the variable above (takes precedence) |
 
 If you regenerate `VAULT_ENCRYPTION_KEY`, credentials encrypted under the old key can no longer be decrypted. The webhook logs how many are affected but **never deletes them** (a misconfigured key must not destroy customer credentials); requests that use them fail with `CREDENTIAL_UNREADABLE` until the original key is restored or the credential is rotated. The seeded mock credentials are recreated automatically.
 

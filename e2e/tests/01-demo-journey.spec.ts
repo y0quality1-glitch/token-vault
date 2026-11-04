@@ -46,6 +46,7 @@ test.describe.serial('demo script: first-time setup to revocation (Sandbox Organ
     await page.getByRole('button', { name: 'Connect', exact: true }).first().click();
     await page.locator('#displayName').fill('Demo GitHub');
     await page.locator('#accountLabel').fill('demo-org');
+    await page.getByRole('button', { name: /^Personal access token/ }).click();
     await page.locator('#secret').fill(MOCK_TOKEN);
     await page.locator('#allowedResources').fill('demo-org/demo-repo, demo-org/other-repo');
     await page.getByRole('button', { name: 'Store in customer vault' }).click();

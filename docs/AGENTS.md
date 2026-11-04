@@ -14,6 +14,8 @@ There are two ways to connect:
 
 Without a grant, every request is denied.
 
+If the integration is a **GitHub App** (recommended), the agent does not change at all. Behind the scenes each allowed request runs on its own installation token, minted for that request's repository and the one permission the operation needs, then revoked. Even a compromised webhook process leaks at most a one-hour token for one repository and one permission. The SDK exposes the scope as `response.execution.credential`. See [GITHUB_APP.md](GITHUB_APP.md).
+
 ## 2a. MCP server (Claude Code, Claude Desktop, any MCP client)
 
 Print configuration with this checkout's absolute paths:

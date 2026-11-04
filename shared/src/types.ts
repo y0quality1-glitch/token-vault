@@ -106,7 +106,8 @@ export interface Integration {
   displayName: string;
   environment: Environment;
   accountLabel: string;
-  authType: 'PAT' | 'OAUTH';
+  /** PAT: stored token. GITHUB_APP: the webhook mints a narrowed installation token per request. */
+  authType: 'PAT' | 'GITHUB_APP';
   /** Opaque pointer to the encrypted credential inside the customer webhook. */
   credentialReference: string;
   credentialStatus: CredentialStatus;
@@ -362,6 +363,8 @@ export interface ExecuteResponseBody {
     duration_ms: number;
     simulated: boolean;
     idempotent_replay: boolean;
+    /** GitHub App integrations: the short-lived token minted for this request (never the token itself). */
+    credential?: CredentialUseInfo | null;
   };
   result: unknown;
   checks: DecisionCheck[];
@@ -477,4 +480,13 @@ export interface AccessReviewSummary {
   unused30d: number;
   expiringSoon: number;
   items: AccessReviewItem[];
+}
+
+/** Non-secret description of a per-request credential minted by the customer webhook. */
+export interface CredentialUseInfo {
+  type: 'github_app_installation_token';
+  repositories: string[];
+  permissions: Record<string, string>;
+  expires_at: ISODate;
+  revoked: boolean;
 }

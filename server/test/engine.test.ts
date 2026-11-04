@@ -110,6 +110,10 @@ describe('sanitize & net helpers', () => {
     const out = sanitize({ secret: 'x', authorization: 'Bearer abc', note: 'token tvak_0123456789ab_abcdefghijklmnopqrstuvwx', credentialReference: 'cref_1' });
     expect(out).toEqual({ secret: '[REDACTED]', authorization: '[REDACTED]', note: 'token [REDACTED]', credentialReference: 'cref_1' });
   });
+  it('redacts PEM private keys anywhere in a value', () => {
+    const pem = '-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END PRIVATE KEY-----';
+    expect(sanitize({ note: `key: ${pem} end` })).toEqual({ note: 'key: [REDACTED] end' });
+  });
   it('matches IPv4 CIDRs', () => {
     expect(ipInCidr('10.1.2.3', '10.0.0.0/8')).toBe(true);
     expect(ipInCidr('192.168.1.1', '10.0.0.0/8')).toBe(false);

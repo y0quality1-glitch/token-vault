@@ -5,6 +5,7 @@ import {
   type AccessRequest,
   type DecisionCheck,
   type AgentCapabilitiesBody,
+  type CredentialUseInfo,
   type ExecuteResponseBody,
   type MatchedRule,
 } from '@token-vault/shared';
@@ -87,6 +88,7 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
     upstreamStatus: number | null;
     result: unknown;
     simulated?: boolean;
+    credential?: CredentialUseInfo | null;
     idempotencyKey: string | null;
   }) => {
     const durationMs = Date.now() - started;
@@ -105,6 +107,7 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
         duration_ms: durationMs,
         simulated: args.simulated ?? true,
         idempotent_replay: false,
+        credential: args.credential ?? null,
       },
       result: args.result,
       checks: args.checks,
@@ -148,7 +151,7 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
           target: args.integration ? { type: 'integration', id: args.integration.id, name: args.integration.displayName } : { type: 'integration', id: 'unknown', name: '—' },
           outcome: args.decision === 'DENY' ? 'DENIED' : failed ? 'FAILURE' : 'SUCCESS',
           severity: args.decision === 'ALLOW' && !failed ? 'info' : ['AGENT_UNAUTHENTICATED', 'POLICY_DENIED', 'AGENT_DISABLED', 'GRANT_REVOKED'].includes(args.code) ? 'critical' : 'warning',
-          metadata: { requestId, operation: args.operation, ...args.resource, decisionCode: args.code, grantId: args.grant?.id ?? null, upstreamStatus: args.upstreamStatus },
+          metadata: { requestId, operation: args.operation, ...args.resource, decisionCode: args.code, grantId: args.grant?.id ?? null, upstreamStatus: args.upstreamStatus, ...(args.credential ? { credential: args.credential } : {}) },
           correlationId,
         }, tx);
       });
@@ -293,6 +296,7 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
     upstreamStatus: upstream,
     result: wh.body.result ?? null,
     simulated: wh.body.simulated !== false,
+    credential: wh.body.credential ?? null,
   });
   if (req.idempotency_key && operation.mutating && ok) {
     idempotency.set(idemKey(agent.id, req.idempotency_key), { at: Date.now(), status: out.status, body: out.body });
