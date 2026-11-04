@@ -1,3 +1,3 @@
-export { TokenVault, type ExecuteOptions, type ExecuteResult, type GitHubOperation, type TokenVaultOptions } from './client';
+export { TokenVault, type AccessRequestResult, type ExecuteOptions, type ExecuteResult, type GitHubOperation, type RequestAccessOptions, type TokenVaultOptions } from './client';
 export { AccessDeniedError, AuthenticationError, ExecutionFailedError, TokenVaultError } from './errors';
-export type { AgentCapabilitiesBody, ExecuteResponseBody } from '@token-vault/shared';
+export type { AgentAccessRequestBody, AgentCapabilitiesBody, ExecuteResponseBody } from '@token-vault/shared';

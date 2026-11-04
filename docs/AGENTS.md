@@ -39,6 +39,8 @@ The one-line `claude mcp add …` command and the Claude Desktop JSON that the h
 | `github_read_file` | `github.contents.read` |
 | `github_list_issues` | `github.issues.list` |
 | `github_create_issue` | `github.issues.create` |
+| `token_vault_request_access` | Asks a human for time-limited access (see below) |
+| `token_vault_check_access_request` | Status of a request: `PENDING`, `APPROVED`, `REJECTED` or `EXPIRED` |
 
 Each GitHub tool takes `repository` (`owner/name`) and an optional `integration` (ID or name), which is needed only when the agent has more than one GitHub integration. Results include the Token Vault request ID. A denial comes back as a tool error that gives the reason, such as `GRANT_REVOKED`, `SCOPE_DENIED` or `RESOURCE_DENIED`, and tells the model not to work around it.
 
@@ -53,6 +55,26 @@ Each GitHub tool takes `repository` (`owner/name`) and an optional `integration`
 The server speaks MCP over stdio and writes diagnostics to stderr only. It never prints the key.
 
 **Try it in the demo:** register an agent, grant it *Create issue* on `demo-org/demo-repo`, connect Claude Code, and ask it to file an issue. Then revoke the grant in the console and ask again: the next tool call is denied with `GRANT_REVOKED`. Both requests appear in Access Logs. GitHub is simulated unless the webhook runs with `GITHUB_MODE=live`.
+
+## Just-in-time access requests
+
+When a request is denied for a reason a human can fix (`GRANT_MISSING`, `SCOPE_DENIED`, `RESOURCE_DENIED` or `GRANT_EXPIRED`), the agent can ask for time-limited access instead of failing:
+
+1. The agent calls `token_vault_request_access` (MCP) or `tv.requestAccess()` (SDK). It specifies the operations, ideally one repository, a duration of 15–480 minutes, a justification, and the denied request's ID.
+2. The request appears in **Access Management → Access Requests**. The sidebar shows a pending count and the Overview shows an alert.
+3. A Security Administrator or Owner reviews it. The agent's justification is shown as agent-written, untrusted text. The approver can approve, optionally narrowing operations, repositories or duration but never widening them, or reject it with a note.
+4. Approval creates an ordinary grant that expires on its own. The agent's next call is authorized. The agent can check the outcome with `token_vault_check_access_request` or `tv.getAccessRequest()`.
+
+**Guardrails**
+
+- Destructive operations cannot be requested.
+- Revocations, deny policies and disabled agents are not resolvable by request; the MCP server tells the model so.
+- An agent can have at most 3 pending requests. Identical pending requests are returned rather than duplicated.
+- Pending requests lapse after 24 hours.
+- **Separation of duties:** the agent's owner cannot approve that agent's requests, though they can reject them.
+- Each step is audited: `grant_request.created`, `grant_request.approved` or `grant_request.rejected`, and `grant.created` with `justInTime: true`.
+
+An agent with no grants at all has no integration to infer. Pass `integration` (the integration ID, which the user can provide) to `token_vault_request_access`.
 
 ## 2b. TypeScript SDK
 
@@ -85,6 +107,7 @@ try {
 
   Each error carries `code`, `requestId` and `httpStatus`.
 - `executeRaw()` returns the full decision for every outcome instead of throwing.
+- `requestAccess({ integrationId, operations, repositories, justification, durationMinutes, deniedRequestId })` and `getAccessRequest(id)` implement just-in-time access.
 - An idempotency key is generated for every request, so retrying a creating operation is safe.
 - The key is held in a private field: `console.log(tv)` and `JSON.stringify(tv)` show only `baseUrl` and the public `keyId`.
 

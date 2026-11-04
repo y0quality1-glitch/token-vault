@@ -20,13 +20,14 @@ import {
 import { ROLE_LABELS } from '@token-vault/shared';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/components/ui/toast';
+import { api } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
 interface NavGroup {
   label: string;
   icon: React.ComponentType<{ className?: string }>;
   to?: string;
-  children?: { label: string; to: string }[];
+  children?: { label: string; to: string; badge?: 'pendingRequests' }[];
   badge?: string;
 }
 
@@ -47,6 +48,7 @@ const NAV: NavGroup[] = [
     icon: KeyRound,
     children: [
       { label: 'Access Grants', to: '/access/grants' },
+      { label: 'Access Requests', to: '/access/requests', badge: 'pendingRequests' },
       { label: 'Policies', to: '/access/policies' },
     ],
   },
@@ -78,8 +80,29 @@ const NAV: NavGroup[] = [
   },
 ];
 
+/** Pending just-in-time requests, refreshed on navigation and every 30 s. */
+function usePendingRequests(pathname: string): number {
+  const [count, setCount] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    const load = () =>
+      api
+        .get<{ pending: number }>('/grant-requests?status=PENDING')
+        .then((r) => !cancelled && setCount(r.pending))
+        .catch(() => undefined);
+    void load();
+    const t = setInterval(load, 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [pathname]);
+  return count;
+}
+
 function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const { pathname } = useLocation();
+  const pendingRequests = usePendingRequests(pathname);
   return (
     <div className="flex h-full flex-col bg-slate-950 text-slate-300">
       <div className="flex h-14 items-center gap-2.5 border-b border-white/10 px-5">
@@ -120,7 +143,14 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                     onClick={onNavigate}
                     className={({ isActive }) => cn('block rounded-md py-1.5 pl-9 pr-2.5 text-sm transition', isActive ? 'bg-white/10 font-medium text-white' : 'text-slate-400 hover:bg-white/5 hover:text-white')}
                   >
-                    {c.label}
+                    <span className="flex items-center justify-between gap-2">
+                      {c.label}
+                      {c.badge === 'pendingRequests' && pendingRequests > 0 && (
+                        <span className="rounded-full bg-amber-500 px-1.5 text-[10px] font-semibold leading-4 text-white" aria-label={`${pendingRequests} pending`}>
+                          {pendingRequests}
+                        </span>
+                      )}
+                    </span>
                   </NavLink>
                 ))}
               </div>

@@ -73,4 +73,12 @@ describe('TokenVault SDK', () => {
     expect(String(Object.keys(tv))).not.toContain(KEY);
     expect(tv.keyId).toBe('0123456789ab');
   });
+
+  it('requests access and surfaces server validation errors', async () => {
+    const ok = client({ access_request_id: 'arq_1', status: 'PENDING', operations: ['github.issues.list'] }, 201);
+    expect(await ok.tv.requestAccess({ integrationId: 'int_1', operations: ['github.issues.list'], justification: 'Need to triage open issues.' })).toMatchObject({ access_request_id: 'arq_1', status: 'PENDING' });
+    expect(JSON.parse(ok.fetchMock.mock.calls[0]![1]!.body as string)).toMatchObject({ integration_id: 'int_1', operations: ['github.issues.list'], duration_minutes: 60 });
+    const bad = client({ error: { code: 'VALIDATION_ERROR', message: 'Destructive operations cannot be requested: github.repositories.delete' } }, 400);
+    await expect(bad.tv.requestAccess({ integrationId: 'int_1', operations: ['github.repositories.delete'], justification: 'Cleanup old repos.' })).rejects.toMatchObject({ code: 'VALIDATION_ERROR', httpStatus: 400 });
+  });
 });

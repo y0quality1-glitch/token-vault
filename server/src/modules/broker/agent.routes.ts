@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { normalizeIp } from '../../lib/net';
-import { executeAgentRequest, getCapabilities, getOwnRequest } from './broker.service';
+import { authenticate, executeAgentRequest, getCapabilities, getOwnRequest } from './broker.service';
+import { createFromAgent, getForAgent } from '../grant-requests/grant-requests.service';
 
 /**
  * Agent-facing API. Authenticated ONLY by the agent API credential
@@ -31,4 +32,22 @@ agentRouter.get('/capabilities', async (req, res) => {
   const r = await getCapabilities(req.headers.authorization);
   if (r.status === 401) return void res.status(401).json({ error: { code: 'AGENT_UNAUTHENTICATED', message: 'Invalid agent credential' } });
   res.json(r.body);
+});
+
+const unauthenticated = { error: { code: 'AGENT_UNAUTHENTICATED', message: 'Invalid agent credential' } };
+
+/** Just-in-time access: the agent asks a human for a time-limited grant. */
+agentRouter.post('/access-requests', async (req, res) => {
+  const agent = await authenticate(req.headers.authorization);
+  if (!agent) return void res.status(401).json(unauthenticated);
+  const r = await createFromAgent(agent, req.body);
+  res.status(r.status).json(r.body);
+});
+
+agentRouter.get('/access-requests/:id', async (req, res) => {
+  const agent = await authenticate(req.headers.authorization);
+  if (!agent) return void res.status(401).json(unauthenticated);
+  const r = await getForAgent(agent, String(req.params.id));
+  if (!r) return void res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Access request not found' } });
+  res.json(r);
 });

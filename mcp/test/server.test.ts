@@ -75,7 +75,7 @@ describe('MCP tools', () => {
   it('exposes the brokered GitHub tools', async () => {
     const { client } = await connect({});
     const names = (await client.listTools()).tools.map((t) => t.name).sort();
-    expect(names).toEqual(['github_create_issue', 'github_get_repository', 'github_list_issues', 'github_read_file', 'token_vault_list_access']);
+    expect(names).toEqual(['github_create_issue', 'github_get_repository', 'github_list_issues', 'github_read_file', 'token_vault_check_access_request', 'token_vault_list_access', 'token_vault_request_access']);
   });
 
   it('creates an issue through Token Vault and returns the sanitized result with its request ID', async () => {
@@ -93,7 +93,14 @@ describe('MCP tools', () => {
     const r = await client.callTool({ name: 'github_create_issue', arguments: { repository: 'demo-org/demo-repo', title: 'x' } });
     expect(r.isError).toBe(true);
     expect(textOf(r)).toMatch(/Access denied by Token Vault: Revoked grant \(GRANT_REVOKED/);
-    expect(textOf(r)).toMatch(/Do not retry/);
+    expect(textOf(r)).toMatch(/cannot be resolved by requesting access/); // revocation is not requestable
+  });
+
+  it('offers a just-in-time request for denials a human can resolve', async () => {
+    const { client } = await connect({ httpStatus: 403, decision: 'DENY', decision_code: 'SCOPE_DENIED', reason: 'Operation github.contents.read is not included in grant scopes.', result: null, execution: { status: 'NOT_EXECUTED', webhook_status: 'NOT_CALLED', upstream_status: null, duration_ms: 3, simulated: true, idempotent_replay: false } });
+    const r = await client.callTool({ name: 'github_read_file', arguments: { repository: 'demo-org/demo-repo', path: 'README.md' } });
+    expect(textOf(r)).toMatch(/token_vault_request_access/);
+    expect(textOf(r)).toContain('denied_request_id: "req_abc"');
   });
 
   it('validates arguments before calling Token Vault', async () => {
