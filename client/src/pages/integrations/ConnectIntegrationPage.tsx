@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom';
-import { ArrowRight, CheckCircle2, ExternalLink, Github, Lock, Plug, ShieldCheck } from 'lucide-react';
+import { ArrowRight, CheckCircle2, ExternalLink, Lock, ShieldCheck } from 'lucide-react';
+import { ProviderIcon } from '@/components/ui/provider-icon';
 import { PERMISSIONS, type Environment, type IntegrationDetail, type Webhook } from '@token-vault/shared';
 import { useApi, useMutation } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
@@ -148,13 +149,25 @@ export function ConnectIntegrationPage() {
       <PageHeader
         title={
           <span className="flex items-center gap-2">
-            {def.key === 'github' ? <Github className="h-5 w-5" /> : <Plug className="h-5 w-5" />} Connect {def.name}
+            <ProviderIcon name={def.catalog.icon} className="h-5 w-5" /> Connect {def.name}
           </span>
         }
         description={`Register a ${def.auth.map((a) => a.label).join(' or ')} with your customer-controlled vault.${def.source === 'catalog' ? ` Definition v${def.version}, signed by the provider CMS.` : ''}`}
         breadcrumbs={[{ label: 'Integrations', to: '/integrations/catalog' }, { label: 'Integration Catalog', to: '/integrations/catalog' }, { label: `Connect ${def.name}` }]}
       />
-      {connected.length === 0 ? (
+      {def.catalog.availability !== 'available' ? (
+        <Callout
+          tone="info"
+          title={`${def.name} is coming soon`}
+          action={
+            <Button size="sm" variant="outline" onClick={() => navigate('/integrations/catalog')}>
+              Back to the catalog
+            </Button>
+          }
+        >
+          It is listed in the catalog, but your platform team has not made it available for connection yet.
+        </Callout>
+      ) : connected.length === 0 ? (
         <Callout
           tone="warning"
           title="A connected customer webhook is required"

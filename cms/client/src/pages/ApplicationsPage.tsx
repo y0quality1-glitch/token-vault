@@ -3,6 +3,7 @@ import { Plus } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import type { CmsApplicationSummary } from '@token-vault/shared';
 import { Badge } from '@ui/badge';
+import { ProviderIcon } from '@ui/provider-icon';
 import { Button } from '@ui/button';
 import { Card } from '@ui/card';
 import { Dialog } from '@ui/dialog';
@@ -51,9 +52,14 @@ export function ApplicationsPage() {
                 key: 'name',
                 header: 'Application',
                 cell: (a) => (
-                  <div>
-                    <p className="font-medium text-slate-900">{a.name}</p>
-                    <p className="font-mono text-xs text-slate-500">{a.key}</p>
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-slate-900 text-white">
+                      <ProviderIcon name={a.icon} className="h-4 w-4" />
+                    </div>
+                    <div>
+                      <p className="font-medium text-slate-900">{a.name}</p>
+                      <p className="font-mono text-xs text-slate-500">{a.key}</p>
+                    </div>
                   </div>
                 ),
               },

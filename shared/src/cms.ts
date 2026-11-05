@@ -23,6 +23,10 @@ export interface CmsApplicationSummary {
   publishedAt: string | null;
   openVersion: { version: number; status: 'DRAFT' | 'IN_REVIEW' } | null;
   operationCount: number;
+  /** Catalog presentation of the published (or latest) version. */
+  icon: string;
+  category: string;
+  availability: 'available' | 'coming_soon';
   updatedAt: string;
 }
 
@@ -94,6 +98,7 @@ export interface ProviderInfo {
   version: number;
   source: 'bundled' | 'catalog';
   digest: string | null;
+  catalog: { category: string; icon: string; availability: 'available' | 'coming_soon'; docsUrl: string | null; tags: string[] };
   resource: { name: string; label: string; pattern: string; example?: string };
   resourceFields: Record<string, { label: string; pattern: string; example?: string }>;
   auth: { id: string; label: string; description: string; kind: 'bearer' | 'header' | 'basic' | 'plugin' | 'oauth2'; plugin?: string; secretHint?: string; secretPattern?: string; oauth?: { authorizeHost: string; scopes: string[] } }[];

@@ -58,7 +58,9 @@ suite('provider CMS workflow', () => {
 
   it('serves GitHub v1 as a signed definition that verifies against the public key', async () => {
     const { definitions } = await catalog();
-    expect(definitions.map((d) => (d.definition as { key: string }).key)).toEqual(['github']);
+    expect(definitions.map((d) => (d.definition as { key: string }).key)).toEqual(['github', 'google', 'openai', 'slack']);
+    for (const d of definitions) verifySignedDefinition(d, publicKeyPem);
+    expect(definitions.map((d) => (d.definition as { catalog: { availability: string } }).catalog.availability)).toEqual(['available', 'coming_soon', 'coming_soon', 'coming_soon']);
     expect(verifySignedDefinition(definitions[0]!, publicKeyPem).operations.length).toBeGreaterThan(3);
 
     const first = await call(null, 'GET', '/catalog/v1/definitions');
@@ -159,7 +161,7 @@ suite('provider CMS workflow', () => {
   it('removes archived applications from the catalog', async () => {
     expect((await call(editor, 'POST', '/api/v1/applications/notes/archive', { reason: 'test' })).status).toBe(403);
     expect((await call(admin, 'POST', '/api/v1/applications/notes/archive', { reason: 'Replaced' })).status).toBe(200);
-    expect((await catalog()).definitions.map((d) => (d.definition as { key: string }).key)).toEqual(['github']);
+    expect((await catalog()).definitions.map((d) => (d.definition as { key: string }).key)).toEqual(['github', 'google', 'openai', 'slack']);
   });
 
   it('rotates the signing key: every published version is signed by both keys, consumers pinning either accept', async () => {
