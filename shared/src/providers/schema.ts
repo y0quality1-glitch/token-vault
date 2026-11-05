@@ -151,12 +151,30 @@ const resourceField = z
   })
   .strict();
 
+/** Icons the consoles can render for a provider (no remote images: nothing to fetch or track). */
+export const CATALOG_ICONS = ['plug', 'github', 'mail', 'calendar', 'message-square', 'bot', 'ticket', 'database', 'cloud', 'file-text', 'credit-card', 'users', 'shield', 'git-branch', 'briefcase', 'bar-chart'] as const;
+export type CatalogIcon = (typeof CATALOG_ICONS)[number];
+
+/** How the provider is listed in Token Vault's Integration Catalog. */
+const catalogInfo = z
+  .object({
+    category: z.string().trim().min(1).max(40).default('Other'),
+    icon: z.enum(CATALOG_ICONS).default('plug'),
+    /** coming_soon: listed in the catalog, but integrations cannot be connected yet. */
+    availability: z.enum(['available', 'coming_soon']).default('available'),
+    docsUrl: z.string().url().max(300).optional(),
+    tags: z.array(z.string().trim().min(1).max(30)).max(10).default([]),
+  })
+  .strict();
+export type CatalogInfo = z.infer<typeof catalogInfo>;
+
 export const providerDefinitionSchema = z
   .object({
     key: z.string().regex(/^[a-z][a-z0-9-]{1,30}$/),
     version: z.number().int().positive(),
     name: z.string().min(1).max(60),
     description: z.string().max(500).default(''),
+    catalog: catalogInfo.default({}),
     api: z
       .object({
         baseUrl: z.string().url().max(300),
@@ -196,6 +214,7 @@ export function validateProviderDefinition(raw: unknown): ProviderDefinition {
   const def = parsed.data;
   const issues: string[] = [];
 
+  if (def.catalog.docsUrl && !def.catalog.docsUrl.startsWith('https://')) issues.push('catalog.docsUrl: must use https');
   const base = new URL(def.api.baseUrl);
   if (base.protocol !== 'https:') issues.push('api.baseUrl: must use https');
   if (base.search || base.hash || base.username || base.password) issues.push('api.baseUrl: must not contain credentials, query or fragment');

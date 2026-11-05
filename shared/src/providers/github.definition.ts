@@ -11,6 +11,7 @@ export const githubDefinition: ProviderDefinitionInput = {
   version: 1,
   name: 'GitHub',
   description: 'Repositories, contents and issues via the GitHub REST API.',
+  catalog: { category: 'Developer tools', icon: 'github', docsUrl: 'https://docs.github.com/en/rest', tags: ['code', 'issues'] },
   api: {
     baseUrl: 'https://api.github.com',
     allowedHosts: ['api.github.com'],

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { PERMISSIONS, type AuthMethodDefinition, type CatalogEntry, type IntegrationDetail } from '@token-vault/shared';
+import { PERMISSIONS, type AuthMethodDefinition, type CatalogEntry, type IntegrationDetail, type ProviderDefinition } from '@token-vault/shared';
 import { and, eq, lt } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
 import { config } from '../../config';
@@ -48,6 +48,11 @@ const appSchema = baseSchema.extend({
   privateKey: privateKeySchema.optional(),
 });
 
+/** Providers listed as "coming soon" in the catalog cannot be connected yet. */
+function assertAvailable(def: ProviderDefinition) {
+  if (def.catalog.availability !== 'available') throw new HttpError(400, 'PROVIDER_NOT_AVAILABLE', `${def.name} is listed as coming soon and cannot be connected yet`);
+}
+
 /** The secret rules of a definition's auth method (GitHub PATs keep their historical rules). */
 function secretSchemaFor(method: AuthMethodDefinition) {
   if (method.id === 'PAT') return secretSchema;
@@ -62,6 +67,7 @@ function secretSchemaFor(method: AuthMethodDefinition) {
 function parseCreate(raw: unknown) {
   const head = parse(baseSchema.extend({ authType: z.string().min(1, 'Choose an authentication method') }), raw);
   const def = registry.get(head.provider)!;
+  assertAvailable(def);
   const method = def.auth.find((a) => a.id === head.authType);
   if (!method) throw badRequest('Request validation failed', { fields: { authType: `${def.name} does not support "${head.authType}"` } });
   if (method.kind === 'oauth2') throw badRequest('Request validation failed', { fields: { authType: `${method.label} connects through the provider's sign-in (POST /integrations/oauth/start)` } });
@@ -251,6 +257,7 @@ integrationsRouter.post('/integrations/oauth/start', requirePermission(PERMISSIO
   );
   if (req.body && typeof req.body === 'object') delete (req.body as Record<string, unknown>).clientSecret;
   const def = registry.get(body.provider)!;
+  assertAvailable(def);
   const method = def.auth.find((a) => a.id === body.authType && a.kind === 'oauth2');
   if (!method) throw badRequest('Request validation failed', { fields: { authType: `${def.name} has no OAuth method "${body.authType}"` } });
   const problem = resourceProblem(def.key, body.allowedResources);

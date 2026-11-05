@@ -3,6 +3,8 @@ import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Copy, Plus, Trash2 } fro
 import { Badge } from '@ui/badge';
 import { Button } from '@ui/button';
 import { Checkbox, Field, Input, Select, Textarea } from '@ui/form';
+import { CATALOG_ICONS } from '@token-vault/shared';
+import { ProviderIcon } from '@ui/provider-icon';
 import { cn } from '@/lib/utils';
 
 /**
@@ -236,6 +238,34 @@ export function DefinitionForm({ value, onChange, readOnly, issues }: Props) {
         <Field label="Description">
           <Textarea aria-label="Description" rows={2} value={String(def.description ?? '')} disabled={ro} onChange={(e) => edit((d) => (d.description = e.target.value))} />
         </Field>
+      </Section>
+
+      <Section title="Catalog listing" description="How this application appears in Token Vault's Integration Catalog." issues={issuesFor(issues, 'catalog')}>
+        <div className="grid gap-4 sm:grid-cols-[1fr_1fr_auto]">
+          <Text label="Category" value={def.catalog?.category} readOnly={ro} placeholder="Support" onChange={(v) => edit((d) => ((d.catalog ??= {}).category = v))} />
+          <Field label="Icon">
+            <Select aria-label="Icon" value={def.catalog?.icon ?? 'plug'} disabled={ro} onChange={(e) => edit((d) => ((d.catalog ??= {}).icon = e.target.value))}>
+              {CATALOG_ICONS.map((i) => (
+                <option key={i} value={i}>
+                  {i}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <div className="flex h-9 w-9 items-center justify-center self-end rounded-lg bg-slate-900 text-white" aria-hidden>
+            <ProviderIcon name={def.catalog?.icon} className="h-5 w-5" />
+          </div>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Availability" hint="Coming soon: listed in the catalog, but integrations cannot be connected yet.">
+            <Select aria-label="Availability" value={def.catalog?.availability ?? 'available'} disabled={ro} onChange={(e) => edit((d) => ((d.catalog ??= {}).availability = e.target.value))}>
+              <option value="available">Available</option>
+              <option value="coming_soon">Coming soon</option>
+            </Select>
+          </Field>
+          <Text label="Documentation URL" mono value={def.catalog?.docsUrl} readOnly={ro} placeholder="https://…" onChange={(v) => edit((d) => ((d.catalog ??= {}).docsUrl = v || undefined))} />
+        </div>
+        <Lines label="Tags" value={def.catalog?.tags} readOnly={ro} hint="One per line; used by the catalog search." onChange={(v) => edit((d) => ((d.catalog ??= {}).tags = v))} />
       </Section>
 
       <Section title="API" description="Where requests go. Credentials are only ever sent to the allowed hosts, over https." issues={issuesFor(issues, 'api')}>

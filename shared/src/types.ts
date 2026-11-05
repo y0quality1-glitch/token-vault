@@ -89,14 +89,9 @@ export interface Webhook {
 export type ProviderId = string;
 export type CredentialStatus = 'CONNECTED' | 'DISABLED' | 'INVALID' | 'ROTATION_REQUIRED';
 
-export interface CatalogEntry {
-  provider: ProviderId;
-  name: string;
-  description: string;
-  authMethods: string[];
-  available: boolean;
+export type CatalogEntry = import('./operations').CatalogItem & {
   connectedCount: number;
-}
+};
 
 export interface Integration {
   id: string;

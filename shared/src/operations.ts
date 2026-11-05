@@ -51,24 +51,37 @@ export function operationLabel(id: string): string {
   return getOperation(id)?.label ?? id;
 }
 
+/** A provider as listed in the Integration Catalog, entirely from its definition. */
 export interface CatalogItem {
   provider: ProviderId;
   name: string;
   description: string;
   authMethods: string[];
+  /** False for providers listed as "coming soon": shown, but they cannot be connected. */
   available: boolean;
+  category: string;
+  icon: string;
+  docsUrl: string | null;
+  tags: string[];
+  version: number;
 }
 
-/** Providers on the roadmap without a definition yet (shown as "planned"). */
-export const PLANNED_PROVIDERS: CatalogItem[] = [
-  { provider: 'google', name: 'Google Workspace', description: 'Drive, Calendar and Gmail APIs. Planned for a later phase.', authMethods: ['OAuth 2.0'], available: false },
-  { provider: 'slack', name: 'Slack', description: 'Post messages and read channels with a bot token. Planned for a later phase.', authMethods: ['OAuth 2.0', 'Bot token'], available: false },
-  { provider: 'openai', name: 'OpenAI', description: 'Model inference with an organization API key. Planned for a later phase.', authMethods: ['API key'], available: false },
-];
-
+/** The catalog is derived from the definitions only (bundled, or published in the CMS). */
 export function catalogOf(definitions: readonly ProviderDefinition[]): CatalogItem[] {
-  const defined = definitions.map((d) => ({ provider: d.key, name: d.name, description: d.description, authMethods: d.auth.map((a) => a.label), available: true }));
-  return [...defined, ...PLANNED_PROVIDERS.filter((p) => !defined.some((d) => d.provider === p.provider))];
+  return definitions
+    .map((d) => ({
+      provider: d.key,
+      name: d.name,
+      description: d.description,
+      authMethods: d.auth.map((a) => a.label),
+      available: d.catalog.availability === 'available',
+      category: d.catalog.category,
+      icon: d.catalog.icon,
+      docsUrl: d.catalog.docsUrl ?? null,
+      tags: d.catalog.tags,
+      version: d.version,
+    }))
+    .sort((a, b) => Number(b.available) - Number(a.available) || a.name.localeCompare(b.name));
 }
 
 export const PROVIDER_CATALOG: CatalogItem[] = catalogOf(PROVIDER_DEFINITIONS);

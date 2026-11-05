@@ -39,6 +39,7 @@ export function providerInfo(e: RegistryEntry): ProviderInfo {
     version: d.version,
     source: e.source,
     digest: e.digest,
+    catalog: { category: d.catalog.category, icon: d.catalog.icon, availability: d.catalog.availability, docsUrl: d.catalog.docsUrl ?? null, tags: d.catalog.tags },
     resource: { name: d.resource.name, label: d.resource.label, pattern: d.resource.pattern, example: d.resource.example },
     resourceFields: Object.fromEntries(Object.entries(d.resourceFields).map(([k, f]) => [k, { label: f.label, pattern: f.pattern, example: f.example }])),
     auth: d.auth.map((a) => ({ id: a.id, label: a.label, description: a.description, kind: a.kind, plugin: a.plugin, secretHint: a.secretHint, secretPattern: a.secretPattern, ...(a.oauth ? { oauth: { authorizeHost: new URL(a.oauth.authorizeUrl).host, scopes: a.oauth.scopes } } : {}) })),

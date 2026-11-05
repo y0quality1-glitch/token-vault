@@ -42,11 +42,11 @@ test.describe.serial('provider CMS: define, review and publish an application', 
     await page?.close();
   });
 
-  test('the bundled GitHub definition is published and signed', async ({ request }) => {
+  test('the seeded definitions are published and signed', async ({ request }) => {
     const { public_key_pem } = await (await request.get(`${CMS_API}/catalog/v1/public-key`)).json();
     const { definitions } = (await (await request.get(`${CMS_API}/catalog/v1/definitions`)).json()) as { definitions: SignedDefinition[] };
-    expect(definitions).toHaveLength(1);
-    expect(verifySignedDefinition(definitions[0]!, public_key_pem).key).toBe('github');
+    // GitHub, plus the catalog entries the CMS seeds as "coming soon".
+    expect(definitions.map((d) => verifySignedDefinition(d, public_key_pem).key)).toEqual(['github', 'google', 'openai', 'slack']);
   });
 
   test('an editor drafts a new application and must fix validation problems before submitting', async () => {

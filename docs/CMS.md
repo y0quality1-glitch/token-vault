@@ -106,6 +106,19 @@ Public catalog (`/catalog/v1`, no authentication: definitions are not secret, th
 
 `SignedDefinition` = `{definition, digest, signature, key_id, published_at, published_by, approved_by}`.
 
+## The Integration Catalog is data
+
+Everything in the console's **Integration Catalog** comes from definitions:
+- the tiles themselves;
+- each tile's category, icon, description, tags, auth methods and docs link;
+- whether it can be connected (`catalog.availability`).
+
+Nothing about the catalog is hard-coded in Token Vault:
+- **Coming soon:** an application published with availability `coming_soon` is listed but cannot be connected. The console disables Connect, and the API answers `PROVIDER_NOT_AVAILABLE`.
+- **Seeded entries:** the CMS seeds Google Workspace, Slack and OpenAI as coming soon. They are ordinary applications: edit them, publish them as available when ready, or archive them to remove the tile.
+- **Upgrading existing databases:** a CMS database from before this change gets any missing seeded entries on start-up (an archived one is never re-added). If GitHub's published version is still the untouched system seed, the CMS publishes the next version with only the catalog listing added. The upgrade is audited.
+- **Live updates:** the console refreshes the catalog every 15 seconds and when the tab regains focus. A publication or archive shows up without a reload, after the control plane's next sync.
+
 ## How Token Vault consumes the catalog
 
 The control plane and every customer webhook pull `/catalog/v1/definitions` **independently**. Each one pins the CMS public key (`CMS_PUBLIC_KEY`, written by `npm run setup`) and verifies every definition before using it. The webhook does not trust the control plane for definitions, so nothing the control plane sends can change where a webhook sends customer credentials.

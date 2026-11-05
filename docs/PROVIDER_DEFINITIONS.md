@@ -11,6 +11,13 @@ GitHub is itself a definition: [`shared/src/providers/github.definition.ts`](../
   "key": "notes",                       // lower-case; prefixes every operation id
   "version": 1,
   "name": "Notes",
+  "catalog": {                          // how it is listed in Token Vault's Integration Catalog
+    "category": "Productivity",
+    "icon": "file-text",                // one of a fixed set (no remote images)
+    "availability": "available",        // or "coming_soon": listed, not connectable
+    "docsUrl": "https://docs.notes.example.com/api",
+    "tags": ["notes"]
+  },
   "api": {
     "baseUrl": "https://api.notes.example.com/v2",
     "allowedHosts": ["*.notes.example.com"],   // credentials are never sent anywhere else
