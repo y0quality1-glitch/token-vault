@@ -25,7 +25,11 @@ New application ─► v1 DRAFT ──submit──► IN_REVIEW ──approve─
                       └──── withdraw / request changes (with note)
 ```
 
-- **Draft:** free-form JSON with live validation. A draft can be saved while it is invalid, but it cannot be submitted until it is valid. The CMS owns `key` and `version`.
+- **Draft:** edited with a **form** (the default) or as **JSON**. Both views change the same document, and the form keeps properties it does not show.
+  - The form covers the general details, API (base URL, allowed hosts, static headers), the resource, auth methods (bearer, header, basic, OAuth 2.0), the credential test, and operations (add, duplicate, reorder, remove; request, query, body, inputs, response allow-list, mock response).
+  - Request fields list the placeholders they may use.
+  - The shared validator runs in the browser on every change. Each form section shows its own problems, and the side panel summarizes the unsaved document.
+  - A draft can be saved while it is invalid, but it cannot be submitted until it is valid. The CMS owns `key` and `version`.
 - **Submit:** the definition is normalized (defaults filled in), so the reviewer sees exactly what will be signed.
 - **Review:** the *Changes* tab compares the version with the current publication (auth methods and operations, by id). The *Request preview* tab shows the exact request the webhook would build for any operation, including URL, headers and body. The credential header appears by name only.
 - **Host confirmation:** if `api.baseUrl` or `api.allowedHosts` changed, or this is the first publication, the approver must explicitly confirm the hosts customer credentials will be sent to. The API refuses the approval otherwise (`HOST_CHANGE_UNACKNOWLEDGED`).
