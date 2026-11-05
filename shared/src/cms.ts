@@ -96,7 +96,7 @@ export interface ProviderInfo {
   digest: string | null;
   resource: { name: string; label: string; pattern: string; example?: string };
   resourceFields: Record<string, { label: string; pattern: string; example?: string }>;
-  auth: { id: string; label: string; description: string; kind: 'bearer' | 'header' | 'basic' | 'plugin'; plugin?: string; secretHint?: string; secretPattern?: string }[];
+  auth: { id: string; label: string; description: string; kind: 'bearer' | 'header' | 'basic' | 'plugin' | 'oauth2'; plugin?: string; secretHint?: string; secretPattern?: string; oauth?: { authorizeHost: string; scopes: string[] } }[];
   operations: (import('./operations').OperationDef & {
     input: Record<string, { type: 'string' | 'number' | 'boolean'; label?: string; required: boolean; maxLength?: number; multiline?: boolean }>;
   })[];

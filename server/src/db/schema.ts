@@ -363,3 +363,19 @@ export const providerCatalogState = pgTable('provider_catalog_state', {
   highWater: jsonb('high_water').$type<Record<string, number>>().notNull(),
   savedAt: ts('saved_at').notNull(),
 });
+
+/**
+ * OAuth connections in progress. The state is bound to the admin who started the flow
+ * (only its hash is stored), single use, and expires after 10 minutes. The client secret
+ * and PKCE verifier are never here: they are in the customer webhook.
+ */
+export const oauthPending = pgTable('oauth_pending', {
+  stateHash: text('state_hash').primaryKey(),
+  organizationId: text('organization_id').notNull(),
+  userId: text('user_id').notNull(),
+  webhookId: text('webhook_id').notNull(),
+  credentialReference: text('credential_reference').notNull(),
+  draft: jsonb('draft').$type<Record<string, unknown>>().notNull(),
+  createdAt: ts('created_at').notNull(),
+  expiresAt: ts('expires_at').notNull(),
+});

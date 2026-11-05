@@ -28,6 +28,7 @@ import { SecurityEventsPage } from '@/pages/audit/SecurityEventsPage';
 import { OrganizationSettingsPage } from '@/pages/settings/OrganizationSettingsPage';
 import { MembersPage } from '@/pages/settings/MembersPage';
 import { ApiClientsPage } from '@/pages/settings/ApiClientsPage';
+import { OAuthCallbackPage } from '@/pages/integrations/OAuthCallbackPage';
 
 export function App() {
   return (
@@ -49,6 +50,7 @@ export function App() {
         <Route path="integrations/credentials" element={<CredentialStatusPage />} />
         <Route path="integrations/connect/:provider" element={<ConnectIntegrationPage />} />
         <Route path="integrations/:id" element={<IntegrationDetailPage />} />
+        <Route path="oauth/callback" element={<OAuthCallbackPage />} />
 
         <Route path="agents" element={<AgentRegistryPage />} />
         <Route path="agents/:id" element={<AgentDetailPage />} />

@@ -12,6 +12,7 @@ import {
   type ResponseMap,
 } from '@token-vault/shared';
 import { githubSimulator } from './simulators/github';
+import { mockAccessTokenValid } from './simulators/oauth';
 import type { Simulator, UpstreamRequest, UpstreamResponse } from './simulators/types';
 
 /**
@@ -126,6 +127,9 @@ async function liveTransport(req: UpstreamRequest, timeoutMs: number): Promise<U
 }
 
 async function mockTransport(req: UpstreamRequest, fallback?: { status: number; body?: unknown }): Promise<UpstreamResponse> {
+  // Access tokens from the simulated OAuth server must be live, like at a real provider.
+  const bearer = /^Bearer (mock_oat_\S+)$/.exec(req.headers.authorization ?? '')?.[1];
+  if (bearer && !mockAccessTokenValid(bearer)) return { status: 401, body: { message: 'invalid_token' } };
   const sim = SIMULATORS[req.url.host];
   if (sim) return sim(req);
   if (fallback) return { status: fallback.status, body: fallback.body };

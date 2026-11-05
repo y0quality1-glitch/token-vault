@@ -166,6 +166,20 @@ export async function rotateCredential(ref: string, orgId: string, secret: strin
   return row ? toRecord(row) : null;
 }
 
+/**
+ * Re-encrypts a credential's secret in place without changing its masked identifier,
+ * fingerprint or rotation date (OAuth token refreshes and connection completion).
+ */
+export async function replaceSecret(ref: string, orgId: string, secret: string, masked?: string): Promise<CredentialRecord | null> {
+  const sealed = seal(config.encryptionKey, secret, ref);
+  const [row] = await db
+    .update(credentials)
+    .set({ iv: sealed.iv, ciphertext: sealed.ciphertext, authTag: sealed.authTag, encryptionKeyRef: config.encryptionKeyRef, ...(masked ? { maskedIdentifier: masked } : {}) })
+    .where(and(eq(credentials.credentialRef, ref), eq(credentials.orgId, orgId)))
+    .returning();
+  return row ? toRecord(row) : null;
+}
+
 /** Crypto-shred: the row (and with it the only copy of the ciphertext) is removed. */
 export async function deleteCredential(ref: string, orgId: string): Promise<boolean> {
   const rows = await db

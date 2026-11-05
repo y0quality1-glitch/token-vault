@@ -72,6 +72,8 @@ export default defineConfig({
         // Points the one-time legacy JSON import at a path that never exists.
         WEBHOOK_DATA_FILE: resolve(LOG_DIR, 'no-legacy-store.json'),
         GITHUB_MODE: 'mock',
+        // Simulated OAuth access tokens expire quickly, so every call exercises the refresh path.
+        MOCK_OAUTH_TOKEN_TTL_S: '2',
         ...cmsCatalog,
       },
     },

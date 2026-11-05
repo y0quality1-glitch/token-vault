@@ -485,10 +485,18 @@ export interface AccessReviewSummary {
 }
 
 /** Non-secret description of a per-request credential minted by the customer webhook. */
-export interface CredentialUseInfo {
-  type: 'github_app_installation_token';
-  repositories: string[];
-  permissions: Record<string, string>;
-  expires_at: ISODate;
-  revoked: boolean;
-}
+export type CredentialUseInfo =
+  | {
+      type: 'github_app_installation_token';
+      repositories: string[];
+      permissions: Record<string, string>;
+      expires_at: ISODate;
+      revoked: boolean;
+    }
+  | {
+      /** An OAuth access token held by the webhook; refreshed when it was about to expire or was rejected. */
+      type: 'oauth2_access_token';
+      refreshed: boolean;
+      expires_at: ISODate | null;
+      scopes: string[];
+    };

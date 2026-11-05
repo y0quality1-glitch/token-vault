@@ -74,9 +74,11 @@ export function IntegrationDetailPage() {
               <Button variant="outline" onClick={() => setDialog('edit')}>
                 <Pencil className="h-4 w-4" /> Edit metadata
               </Button>
-              <Button variant="outline" onClick={() => setDialog('rotate')}>
-                <RefreshCw className="h-4 w-4" /> Rotate / replace
-              </Button>
+              {getProvider(i.provider)?.auth.find((a) => a.id === i.authType)?.kind !== 'oauth2' && (
+                <Button variant="outline" onClick={() => setDialog('rotate')}>
+                  <RefreshCw className="h-4 w-4" /> Rotate / replace
+                </Button>
+              )}
               {i.credentialStatus === 'DISABLED' ? (
                 <Button
                   variant="outline"

@@ -256,6 +256,7 @@ token-vault/
 | Admin sessions at rest | Stored in Postgres as the SHA-256 of the cookie token, so a database dump holds no usable session | Same |
 | Org isolation | Every query is scoped by `organizationId`. The webhook also checks `org_id` on each credential. | Same, plus row-level security |
 | Logs | Method, path, status and latency only. No bodies, headers or query strings. | Structured logging with redaction |
+| OAuth 2.0 connections | Authorization code + PKCE. The client secret, the PKCE verifier and all tokens live only in the customer webhook, which refreshes access tokens (single-flight, refresh-token rotation, one retry on 401). The control plane binds `state` to the admin who started, single use, and only relays the single-use code. See [docs/OAUTH.md](docs/OAUTH.md). | Token revocation at the provider on delete; client-credentials flow |
 | GitHub App credentials | The webhook holds only the App's private key (encrypted in the customer store, or in its own environment via `GITHUB_APP_PRIVATE_KEY`). For each authorized request it mints an installation token **narrowed to the one repository and the one permission the operation needs** (e.g. `issues:write` for `github.issues.create`), uses it once and revokes it. The control plane and audit log only see the token's scope, never the token. See [docs/GITHUB_APP.md](docs/GITHUB_APP.md). | Same; keep the key in a KMS/HSM and sign the App JWT there |
 | Provider definitions | Applications are data, not code ([docs/PROVIDER_DEFINITIONS.md](docs/PROVIDER_DEFINITIONS.md)), authored in the provider CMS with draft → review → publish, separation of duties, explicit confirmation of new API hosts, and Ed25519-signed published versions ([docs/CMS.md](docs/CMS.md)). The control plane and each webhook pull the catalog independently and accept only definitions that verify against the pinned CMS key; a provider published in the CMS is usable without a deploy. Each service keeps its last verified catalog and the highest accepted version per provider in its own database, re-verified on start-up, so a restart while the CMS is down keeps those providers and an old signed version cannot be replayed. The CMS signing key can be rotated without downtime: each published version carries a signature per key, and consumers may pin the old and new keys during the switch. The webhook builds each request from the definition, checks the host against its allow-list **before** attaching the credential, never follows redirects, and returns only allow-listed response fields. Templates cannot reference credentials | Signing key in a KMS/HSM |
 | Upstream GitHub | **Simulated** by default. Set `GITHUB_MODE=live` in `webhook/.env` to call api.github.com. In mock mode App JWTs are really signed and the simulated GitHub enforces minted-token scope. | A GitHub App installed on selected repositories of a dedicated test org (PATs remain available for demos) |
@@ -288,6 +289,7 @@ token-vault/
 | `SEED_MODE` | `if-empty` (default): seed demo data into an empty database. `reset`: wipe and reseed on every start (used by the e2e suite) |
 | `DB_POOL_MAX` | Connection pool size (default 10) |
 | `HEARTBEAT_INTERVAL_MS` | Signed health-check interval (default 30000) |
+| `CONSOLE_PUBLIC_URL` | Where the console is served (default `http://localhost:5173`); OAuth providers redirect to `<this>/oauth/callback` |
 | `CMS_CATALOG_URL` | Provider CMS catalog (`http://localhost:4200/catalog/v1`). Optional: without it only the bundled definitions are used |
 | `CMS_PUBLIC_KEY` / `CMS_PUBLIC_KEY_FILE` | Pinned Ed25519 public key(s) of the CMS (PEM; `\n` escapes allowed; several concatenated during a key rotation). Required with `CMS_CATALOG_URL`; written by `npm run setup` |
 | `CMS_POLL_INTERVAL_MS` | Catalog polling interval (default 30000) |
@@ -302,7 +304,8 @@ token-vault/
 | `WEBHOOK_INSTANCE_ID` | Identity pinned by the control plane (signature audience) |
 | `WEBHOOK_DATABASE_URL` | Customer-side PostgreSQL connection string (required). Deliberately a different variable from the control plane's `DATABASE_URL` |
 | `SEED_MODE` | `if-missing` (default): create the demo mock credentials where absent or unreadable. `reset`: wipe the credential store on start (used by the e2e suite) |
-| `GITHUB_MODE` | `mock` (default) or `live` |
+| `GITHUB_MODE` | `mock` (default) or `live`. Applies to every upstream call, not only GitHub |
+| `MOCK_OAUTH_TOKEN_TTL_S` | Lifetime of access tokens issued by the simulated OAuth server in mock mode (default 3600) |
 | `GITHUB_APP_PRIVATE_KEY` | Optional. GitHub App private key (PEM; `\n` escapes allowed) for integrations created with "Already configured on the webhook". Inject it as a secret; never commit it |
 | `GITHUB_APP_PRIVATE_KEY_FILE` | Optional. Path to the PEM file instead of the variable above (takes precedence) |
 | `CMS_CATALOG_URL`, `CMS_PUBLIC_KEY` / `CMS_PUBLIC_KEY_FILE`, `CMS_POLL_INTERVAL_MS` | Same as the control plane. The webhook verifies the catalog itself, so the control plane cannot change where credentials are sent |

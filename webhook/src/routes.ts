@@ -5,7 +5,8 @@ import { PgNonceStore } from './security/nonce-store';
 import { hmacHex, signResponse, verifySignedRequest } from './security/signature';
 import * as store from './store/credential-store';
 import { createHash } from 'node:crypto';
-import type { AuthMethodDefinition, ProviderDefinition } from '@token-vault/shared';
+import type { AuthMethodDefinition, CredentialUseInfo, ProviderDefinition } from '@token-vault/shared';
+import * as oauth from './providers/oauth';
 import { ExecutionError, executeOperation, getExecutableOperation, injectionFor, testCredential, type ProviderCall, type ProviderResult } from './providers/executor';
 import * as app from './providers/github-app';
 import { catalogSync, registry } from './providers/registry';
@@ -64,17 +65,11 @@ function credentialFailure(req: SignedRequest, res: Response, e: unknown, contex
 }
 
 /** Non-secret description of the credential actually used, for the control plane and audit. */
-export interface CredentialUse {
-  type: 'github_app_installation_token';
-  repositories: string[];
-  permissions: Record<string, string>;
-  expires_at: string;
-  revoked: boolean;
-}
+export type CredentialUse = CredentialUseInfo;
 
 /** The definition's auth method a stored (non-plugin) secret is used with. */
 function secretAuthMethod(def: ProviderDefinition, metadata: Record<string, string>): AuthMethodDefinition {
-  const methods = def.auth.filter((a) => a.kind !== 'plugin');
+  const methods = def.auth.filter((a) => a.kind !== 'plugin' && a.kind !== 'oauth2');
   const chosen = methods.find((a) => a.id === metadata.auth_method) ?? methods[0];
   if (!chosen) throw new ExecutionError('UNSUPPORTED_OPERATION', `${def.name} has no secret-based auth method`);
   return chosen;
@@ -95,6 +90,7 @@ function definitionFor(provider: string): ProviderDefinition {
 async function runWithCredential(rec: store.CredentialRecord, secret: string, call: ProviderCall): Promise<ProviderResult & { credential?: CredentialUse }> {
   const def = definitionFor(rec.provider);
   const isTest = call.operation === 'credential.test';
+  if (oauth.isOAuthCredential(secret)) return runWithOAuth(rec, def, JSON.parse(secret) as oauth.OAuthCredential, call);
   if (!app.isGitHubAppCredential(secret)) {
     const method = secretAuthMethod(def, rec.metadata);
     const auth = injectionFor(method, secret);
@@ -116,6 +112,51 @@ async function runWithCredential(rec: store.CredentialRecord, secret: string, ca
     await app.revokeInstallationToken(config.githubMode, minted.token);
     throw e;
   }
+}
+
+/**
+ * OAuth credentials: refresh the access token if it is about to expire, call, and if the
+ * provider still rejects the token (revoked or expired early) refresh once and retry.
+ * Refreshes are single-flight per credential and re-read the stored credential first, so
+ * concurrent requests never spend a rotated (already used) refresh token.
+ */
+async function runWithOAuth(rec: store.CredentialRecord, def: ProviderDefinition, initial: oauth.OAuthCredential, call: ProviderCall): Promise<ProviderResult & { credential?: CredentialUse }> {
+  if (initial.pending || !initial.accessToken) throw new oauth.OAuthError('OAUTH_NOT_CONNECTED', 'This OAuth connection was never completed; connect it again');
+  const method = def.auth.find((a) => a.id === initial.authMethod && a.kind === 'oauth2');
+  if (!method) throw new ExecutionError('UNSUPPORTED_OPERATION', `${def.name} no longer offers the OAuth method ${initial.authMethod}`);
+  let cred = initial;
+  let refreshed = false;
+  const doRefresh = async () => {
+    const used = cred.accessToken;
+    cred = await oauth.singleFlight(rec.credentialRef, async () => {
+      const latestRec = await store.get(rec.credentialRef, rec.orgId);
+      const latest = latestRec ? (JSON.parse(await store.withSecret(latestRec, async (s) => s)) as oauth.OAuthCredential) : cred;
+      // Another request already refreshed: use its token instead of spending the refresh token again.
+      if (latest.accessToken !== used && !oauth.needsRefresh(latest)) return latest;
+      const next = await oauth.refresh(config.githubMode, def, method, latest, config.mockOAuthTokenTtlS);
+      await store.replaceSecret(rec.credentialRef, rec.orgId, JSON.stringify(next));
+      console.log(`[vault] refreshed OAuth access token for ${rec.credentialRef}`);
+      return next;
+    });
+    refreshed = true;
+  };
+  const run = () => {
+    const auth = { kind: 'bearer' as const, secret: cred.accessToken! };
+    return call.operation === 'credential.test' ? testCredential(config.githubMode, def, method, auth) : executeOperation(config.githubMode, def, call, auth);
+  };
+  if (oauth.needsRefresh(cred)) await doRefresh();
+  let result = await run();
+  if (result.upstreamStatus === 401 && !refreshed && cred.refreshToken) {
+    await doRefresh();
+    result = await run();
+  }
+  return { ...result, credential: { type: 'oauth2_access_token', refreshed, expires_at: cred.expiresAt ?? null, scopes: cred.scopes ?? [] } };
+}
+
+function oauthFailure(req: SignedRequest, res: Response, e: oauth.OAuthError) {
+  console.warn(`[vault] OAuth: ${e.code}`);
+  const status = e.code === 'OAUTH_REFRESH_FAILED' || e.code === 'OAUTH_EXCHANGE_FAILED' ? 502 : e.code === 'OAUTH_NOT_CONNECTED' ? 409 : 400;
+  return signedJson(req, res, status, { error: { code: e.code, message: e.message } });
 }
 
 /** Execution errors raised before or around the upstream call (never contain secrets). */
@@ -222,6 +263,9 @@ export function buildRouter() {
     if (!existing) return signedJson(req, res, 404, { error: { code: 'CREDENTIAL_NOT_FOUND', message: 'Unknown credential reference' } });
     try {
       const current = await store.withSecret(existing, async (s) => s);
+      if (oauth.isOAuthCredential(current)) {
+        return signedJson(req, res, 400, { error: { code: 'RECONNECT_REQUIRED', message: 'OAuth connections are renewed by connecting again, not by entering a secret' } });
+      }
       if (app.isGitHubAppCredential(current)) {
         const cred = JSON.parse(current) as app.GitHubAppCredential;
         if (cred.keySource === 'webhook_env') {
@@ -254,8 +298,8 @@ export function buildRouter() {
       const result = await store.withSecret(rec, (secret) => runWithCredential(rec, secret, { operation: 'credential.test', resource: {}, input: {} }));
       signedJson(req, res, 200, { valid: result.upstreamStatus === 200, upstream_status: result.upstreamStatus, simulated: result.simulated, ...store.publicView(rec) });
     } catch (e) {
-      if (e instanceof app.GitHubAppError || e instanceof ExecutionError) {
-        return signedJson(req, res, 200, { valid: false, upstream_status: e instanceof app.GitHubAppError ? e.upstreamStatus : null, simulated: config.githubMode === 'mock', error_code: e.code, ...store.publicView(rec) });
+      if (e instanceof app.GitHubAppError || e instanceof ExecutionError || e instanceof oauth.OAuthError) {
+        return signedJson(req, res, 200, { valid: false, upstream_status: e instanceof ExecutionError ? null : e.upstreamStatus, simulated: config.githubMode === 'mock', error_code: e.code, ...store.publicView(rec) });
       }
       credentialFailure(req, res, e, `test ${rec.credentialRef}`);
     }
@@ -264,6 +308,61 @@ export function buildRouter() {
   r.post('/internal/v1/credentials/:ref/delete', requireSignature, async (req: SignedRequest, res) => {
     const ok = await store.deleteCredential(String(req.params.ref), str(req.json?.org_id));
     signedJson(req, res, ok ? 200 : 404, { deleted: ok });
+  });
+
+  /**
+   * OAuth connection, step 1: store the client credentials and a PKCE verifier (encrypted),
+   * and return the URL the admin's browser goes to. The state is returned so the control
+   * plane can bind the callback to the admin's session; the webhook keeps only its hash.
+   */
+  r.post('/internal/v1/oauth/start', requireSignature, async (req: SignedRequest, res) => {
+    const { org_id, provider, auth_method, client_id, client_secret, redirect_uri, metadata } = req.json ?? {};
+    const def = typeof provider === 'string' ? registry.get(provider) : undefined;
+    const method = def?.auth.find((a) => a.id === auth_method && a.kind === 'oauth2');
+    let redirect: URL | null = null;
+    try {
+      redirect = new URL(String(redirect_uri));
+    } catch {
+      redirect = null;
+    }
+    if (!str(org_id) || !def || !method || !redirect || !/^https?:$/.test(redirect.protocol) || redirect.search || redirect.hash) {
+      return signedJson(req, res, 400, { error: { code: 'INVALID_CREDENTIAL_REQUEST', message: 'org_id, a provider with this OAuth method, and a plain redirect_uri are required' } });
+    }
+    if (typeof client_id !== 'string' || !/^\S{1,300}$/.test(client_id) || typeof client_secret !== 'string' || client_secret.length < 8 || client_secret.length > 1000) {
+      return signedJson(req, res, 400, { error: { code: 'INVALID_CREDENTIAL_REQUEST', message: 'A client ID and a client secret (8+ characters) are required' } });
+    }
+    const safeMeta: Record<string, string> = {};
+    for (const [k, v] of Object.entries(metadata ?? {})) if (typeof v === 'string') safeMeta[k.slice(0, 40)] = v.slice(0, 200);
+    const started = oauth.start(config.githubMode, method, { clientId: client_id, clientSecret: client_secret, redirectUri: redirect.toString() });
+    const rec = await store.createCredential(org_id, def.key, JSON.stringify(started.credential), { ...safeMeta, auth: 'oauth2', auth_method: method.id }, oauth.maskOAuth(started.credential));
+    console.log(`[vault] started OAuth connection ${rec.credentialRef} provider=${def.key}`);
+    signedJson(req, res, 201, { ...store.publicView(rec), authorize_url: started.authorizeUrl, state: started.state });
+  });
+
+  /** OAuth connection, step 2: check the state, exchange the code (PKCE), store the tokens. */
+  r.post('/internal/v1/oauth/complete', requireSignature, async (req: SignedRequest, res) => {
+    const { org_id, credential_ref, code, state } = req.json ?? {};
+    const rec = await store.get(str(credential_ref), str(org_id));
+    if (!rec) return signedJson(req, res, 404, { error: { code: 'CREDENTIAL_NOT_FOUND', message: 'Unknown credential reference' } });
+    if (typeof code !== 'string' || !code || code.length > 2000 || typeof state !== 'string' || !state) {
+      return signedJson(req, res, 400, { error: { code: 'INVALID_CREDENTIAL_REQUEST', message: 'code and state are required' } });
+    }
+    try {
+      const current = await store.withSecret(rec, async (s) => s);
+      if (!oauth.isOAuthCredential(current)) return signedJson(req, res, 400, { error: { code: 'INVALID_CREDENTIAL_REQUEST', message: 'Not an OAuth credential' } });
+      const cred = JSON.parse(current) as oauth.OAuthCredential;
+      const def = definitionFor(rec.provider);
+      const method = def.auth.find((a) => a.id === cred.authMethod && a.kind === 'oauth2');
+      if (!method) throw new oauth.OAuthError('OAUTH_CONFIG', `${def.name} no longer offers the OAuth method ${cred.authMethod}`);
+      const connected = await oauth.complete(config.githubMode, def, method, cred, { code, state }, config.mockOAuthTokenTtlS);
+      const updated = await store.replaceSecret(rec.credentialRef, rec.orgId, JSON.stringify(connected));
+      console.log(`[vault] completed OAuth connection ${rec.credentialRef} (tokens stored encrypted)`);
+      signedJson(req, res, 200, { ...store.publicView(updated!), scopes: connected.scopes ?? [], expires_at: connected.expiresAt ?? null, refreshable: !!connected.refreshToken });
+    } catch (e) {
+      if (e instanceof oauth.OAuthError) return oauthFailure(req, res, e);
+      if (e instanceof ExecutionError) return executionFailure(req, res, e);
+      credentialFailure(req, res, e, `oauth complete ${rec.credentialRef}`);
+    }
   });
 
   // Execute a brokered operation with credential injection.
@@ -302,6 +401,7 @@ export function buildRouter() {
     } catch (e) {
       if (e instanceof app.GitHubAppError) return appFailure(req, res, e);
       if (e instanceof ExecutionError) return executionFailure(req, res, e);
+      if (e instanceof oauth.OAuthError) return oauthFailure(req, res, e);
       credentialFailure(req, res, e, `execute ${claims.request_id}`);
     }
   });
