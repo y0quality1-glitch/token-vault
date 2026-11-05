@@ -15,6 +15,13 @@
       "when": 1793814281819,
       "tag": "0001_audit_append_only",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793853699154,
+      "tag": "0002_key_rotation",
+      "breakpoints": true
     }
   ]
 }

@@ -179,7 +179,7 @@ export function buildRouter() {
       uptime_s: Math.round((Date.now() - startedAt) / 1000),
       credentials_stored: await store.countCredentials(),
       providers: registry.list().map((e) => ({ key: e.definition.key, version: e.definition.version, source: e.source, digest: (e.digest ?? createHash('sha256').update(JSON.stringify(e.definition)).digest('hex')).slice(0, 16) })),
-      catalog: catalogSync ? { key_id: catalogSync.status.keyId, last_success_at: catalogSync.status.lastSuccessAt, last_error: catalogSync.status.lastError, restored_from: catalogSync.status.restored?.savedAt ?? null } : null,
+      catalog: catalogSync ? { key_ids: catalogSync.status.keyIds, last_success_at: catalogSync.status.lastSuccessAt, last_error: catalogSync.status.lastError, restored_from: catalogSync.status.restored?.savedAt ?? null } : null,
       challenge_response: hmacHex(config.signingSecret, `health:${challenge}:${config.instanceId}`),
     });
   });

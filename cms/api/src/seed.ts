@@ -5,6 +5,7 @@ import { db, transaction } from './db/client';
 import { applications, users, versions } from './db/schema';
 import { hashPassword, newId, signDefinition } from './lib/crypto';
 import { SYSTEM_ACTOR, audit } from './modules/audit';
+import { registerActiveKey, signPublishedWithActiveKey } from './modules/signing';
 
 /** Local demo accounts (development only). */
 export const DEMO_PASSWORD = 'TokenVault-Demo-2026';
@@ -41,13 +42,15 @@ export async function seed() {
       publishedAt: t,
       hostChangeAcknowledged: true,
     });
+    await registerActiveKey(tx);
+    await signPublishedWithActiveKey(tx);
     await audit(tx, SYSTEM_ACTOR, 'version.published', { key: def.key, version: def.version }, { digest: signed.digest, keyId: signed.keyId, seeded: true });
   });
 }
 
 export async function resetDatabase() {
   // TRUNCATE does not fire the row-level append-only / immutability triggers (test and e2e reset only).
-  await db.execute(sql`TRUNCATE cms_audit_events, cms_sessions, application_versions, applications, cms_users RESTART IDENTITY CASCADE`);
+  await db.execute(sql`TRUNCATE cms_audit_events, cms_sessions, cms_version_signatures, cms_signing_keys, application_versions, applications, cms_users RESTART IDENTITY CASCADE`);
   await seed();
 }
 

@@ -90,3 +90,32 @@ export const auditEvents = pgTable(
   },
   (t) => [index('cms_audit_events_app').on(t.applicationKey, t.at)],
 );
+
+/** Every key the CMS has signed with (public part only; private keys never touch the database). */
+export const signingKeys = pgTable('cms_signing_keys', {
+  keyId: text('key_id').primaryKey(),
+  algorithm: text('algorithm').notNull(),
+  /** Null for keys known only from signatures made before this table existed. */
+  publicKeyPem: text('public_key_pem'),
+  firstUsedAt: ts('first_used_at').notNull(),
+});
+
+/**
+ * Signatures of published versions, one per key (append-only: trigger in migration 0002).
+ * When the CMS starts with a new key it signs every published version again, so consumers
+ * pinning either the old or the new key keep accepting the catalog during a rotation.
+ */
+export const versionSignatures = pgTable(
+  'cms_version_signatures',
+  {
+    versionId: text('version_id')
+      .notNull()
+      .references(() => versions.id),
+    keyId: text('key_id')
+      .notNull()
+      .references(() => signingKeys.keyId),
+    signature: text('signature').notNull(),
+    signedAt: ts('signed_at').notNull(),
+  },
+  (t) => [uniqueIndex('cms_version_signatures_version_key').on(t.versionId, t.keyId)],
+);

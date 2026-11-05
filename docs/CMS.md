@@ -44,10 +44,27 @@ signature = Ed25519( "token-vault/provider-definition/v1:" + digest )
 
 The private key is `CMS_SIGNING_PRIVATE_KEY` and never leaves the CMS API. The key id is the first 16 hex characters of the sha256 of the public key (SPKI DER). A consumer accepts a definition only if all of these hold (`verifySignedDefinition` in `@token-vault/shared/signing`):
 
-1. `key_id` matches the pinned public key;
-2. the digest recomputed from the definition matches `digest`;
-3. the signature verifies;
-4. the definition passes `validateProviderDefinition`.
+1. the digest recomputed from the definition matches `digest`;
+2. at least one entry of `signatures` (or the primary `key_id` / `signature`) is by a pinned key and verifies;
+3. the definition passes `validateProviderDefinition`.
+
+## Key rotation
+
+Published versions are immutable, so a rotation never re-signs them in place. Instead, a version carries **one signature per key** (`cms_version_signatures`, append-only):
+
+- When the CMS starts with a key it has not used before, it records that key's public part (`cms_signing_keys`) and signs every published and superseded version with it. The old private key is not needed.
+- The catalog serves every signature of a version, the active key's first (it is also the primary `key_id` / `signature`). `/catalog/v1/public-key` lists all keys that have signed, with the active one marked.
+- Consumers may pin several keys: `CMS_PUBLIC_KEY` accepts concatenated PEM keys. A definition is accepted if any signature by a pinned key verifies.
+
+Order of operations (locally, `npm run cms:rotate-key` does steps 1 and 2 in the `.env` files):
+
+1. Add the new public key to every consumer's `CMS_PUBLIC_KEY`, next to the old one, and restart them. They now accept either key.
+2. Give the CMS the new private key (`CMS_SIGNING_PRIVATE_KEY`) and restart it. It signs every published version with the new key, and new publications are signed with the new key only.
+3. Once every consumer has synced (`/api/v1/providers` → `catalog.lastSuccessAt`, or the webhook health check), remove the old key from the consumers (`npm run cms:rotate-key -- --retire` locally) and restart them.
+
+Doing step 2 before step 1 is safe for existing definitions (they still carry the old key's signature), but anything published in between would be refused by consumers that do not pin the new key yet.
+
+Each step is audited (`signing.key_activated`, `signing.versions_signed`). A compromised key cannot be revoked by the CMS alone: remove it from every consumer's pins.
 
 ## Tamper resistance in the database
 

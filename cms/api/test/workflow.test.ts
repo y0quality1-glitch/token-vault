@@ -161,4 +161,49 @@ suite('provider CMS workflow', () => {
     expect((await call(admin, 'POST', '/api/v1/applications/notes/archive', { reason: 'Replaced' })).status).toBe(200);
     expect((await catalog()).definitions.map((d) => (d.definition as { key: string }).key)).toEqual(['github']);
   });
+
+  it('rotates the signing key: every published version is signed by both keys, consumers pinning either accept', async () => {
+    const { config } = await import('../src/config');
+    const signing = await import('../src/modules/signing');
+    const { createPublicKey } = await import('node:crypto');
+    const { publicKeyId } = await import('@token-vault/shared/signing');
+    const oldPem = publicKeyPem;
+    const oldKeyId = config.keyId;
+
+    // Restart the CMS with a new key (the old private key is no longer available).
+    const next = generateKeyPairSync('ed25519');
+    config.signingKey = next.privateKey;
+    config.publicKeyPem = next.publicKey.export({ type: 'spki', format: 'pem' }).toString();
+    config.keyId = publicKeyId(createPublicKey(config.publicKeyPem));
+    await signing.initSigning();
+    expect(await signing.signPublishedWithActiveKey(m.client.db)).toBe(0); // idempotent
+
+    const keys = (await call(null, 'GET', '/catalog/v1/public-key')).body;
+    expect(keys).toMatchObject({ key_id: config.keyId });
+    expect(keys.keys.map((k: { key_id: string; active: boolean }) => [k.key_id, k.active])).toEqual([
+      [oldKeyId, false],
+      [config.keyId, true],
+    ]);
+
+    const [gh] = (await catalog()).definitions;
+    expect(gh!.key_id).toBe(config.keyId); // the active key's signature is primary
+    expect(gh!.signatures!.map((x) => x.key_id)).toEqual([config.keyId, oldKeyId]);
+    expect(verifySignedDefinition(gh!, oldPem).key).toBe('github'); // a consumer still pinning the old key
+    expect(verifySignedDefinition(gh!, config.publicKeyPem).key).toBe('github'); // one that already switched
+
+    // Versions published from now on carry only the new key's signature.
+    await call(editor, 'POST', '/api/v1/applications', { key: 'rotated', name: 'Rotated' });
+    await call(editor, 'POST', version('rotated', 1) + '/submit');
+    await call(publisher, 'POST', version('rotated', 1) + '/approve', { acknowledgeHostChange: true });
+    const rotated = (await catalog()).definitions.find((d) => (d.definition as { key: string }).key === 'rotated')!;
+    expect(rotated.signatures!.map((x) => x.key_id)).toEqual([config.keyId]);
+    expect(() => verifySignedDefinition(rotated, oldPem)).toThrow(SignatureError);
+    expect((await call(editor, 'GET', version('rotated', 1))).body.signatures).toEqual([{ keyId: config.keyId, signedAt: expect.any(String), active: true }]);
+
+    // Signatures are append-only.
+    await expect(m.client.pool.query(`delete from cms_version_signatures`)).rejects.toThrow(/append-only/);
+    const actions = (await call(admin, 'GET', '/api/v1/audit')).body.items.map((e: { action: string }) => e.action);
+    expect(actions).toEqual(expect.arrayContaining(['signing.key_activated', 'signing.versions_signed']));
+  });
 });
+

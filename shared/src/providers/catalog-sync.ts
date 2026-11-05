@@ -1,7 +1,6 @@
-import { createPublicKey } from 'node:crypto';
 import type { SignedDefinition } from './canonical';
 import type { ProviderRegistry, RegistryUpdate } from './registry';
-import { publicKeyId, verifySignedDefinition } from './signing';
+import { parsePinnedKeys, verifySignedDefinition, type PinnedKeys } from './signing';
 
 /**
  * Keeps a ProviderRegistry in step with the CMS catalog (Node only; import
@@ -29,6 +28,7 @@ export interface CatalogCache {
 export interface CatalogSyncOptions {
   /** e.g. http://localhost:4200/catalog/v1 */
   url: string;
+  /** One or more pinned CMS public keys (PEM, concatenated during a key rotation). */
   publicKeyPem: string;
   registry: ProviderRegistry;
   intervalMs?: number;
@@ -40,7 +40,8 @@ export interface CatalogSyncOptions {
 
 export interface CatalogSyncStatus {
   url: string;
-  keyId: string;
+  /** Ids of the pinned CMS keys. */
+  keyIds: string[];
   lastAttemptAt: string | null;
   lastSuccessAt: string | null;
   lastError: string | null;
@@ -57,10 +58,11 @@ export class CatalogSync {
   /** Envelopes behind the registry's catalog entries, by provider key. */
   #accepted = new Map<string, SignedDefinition>();
   readonly status: CatalogSyncStatus;
+  #keys: PinnedKeys;
 
   constructor(private opts: CatalogSyncOptions) {
-    const keyId = publicKeyId(createPublicKey(opts.publicKeyPem)); // throws on a malformed pinned key
-    this.status = { url: opts.url, keyId, lastAttemptAt: null, lastSuccessAt: null, lastError: null, lastUpdate: null, restored: null, lastPersistError: null };
+    this.#keys = parsePinnedKeys(opts.publicKeyPem); // throws on a missing or malformed pinned key
+    this.status = { url: opts.url, keyIds: [...this.#keys.keys()], lastAttemptAt: null, lastSuccessAt: null, lastError: null, lastUpdate: null, restored: null, lastPersistError: null };
   }
 
   /** Fetches and applies the catalog once. Never throws; failures are recorded in status. */
@@ -106,7 +108,7 @@ export class CatalogSync {
   #verifyAll(envelopes: SignedDefinition[]) {
     const verified = envelopes.map((env) => {
       try {
-        return { definition: verifySignedDefinition(env, this.opts.publicKeyPem), digest: env.digest };
+        return { definition: verifySignedDefinition(env, this.#keys), digest: env.digest };
       } catch (e) {
         const key = (env?.definition as { key?: unknown } | undefined)?.key;
         throw new Error(`definition ${typeof key === 'string' ? key : '(unknown)'} rejected: ${(e as Error).message}`);

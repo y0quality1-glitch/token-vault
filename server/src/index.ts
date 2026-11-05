@@ -24,7 +24,7 @@ async function main() {
   const server = app.listen(config.port, () => {
     console.log(`[api] Token Vault control plane listening on http://localhost:${config.port}`);
     console.log(`[api] Customer webhook expected at ${config.defaultWebhookUrl}`);
-    console.log(catalogSync ? `[api] Provider catalog ${config.cmsCatalogUrl} (pinned key ${catalogSync.status.keyId})` : '[api] Provider catalog: bundled definitions only (CMS_CATALOG_URL not set)');
+    console.log(catalogSync ? `[api] Provider catalog ${config.cmsCatalogUrl} (pinned keys ${catalogSync.status.keyIds.join(', ')})` : '[api] Provider catalog: bundled definitions only (CMS_CATALOG_URL not set)');
     console.log(`[api] Demo sign-in: owner@demo.test / ${DEMO_PASSWORD} (mock account, development only)`);
   });
   const heartbeat = startHeartbeat();
