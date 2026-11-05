@@ -20,6 +20,7 @@ async function cmsLogin(page: Page, email: string) {
 }
 
 async function editDefinition(page: Page, change: (d: any) => void) {
+  await page.getByRole('tab', { name: 'JSON', exact: true }).click(); // the form view is the default
   const editor = page.getByLabel('Definition JSON');
   const def = JSON.parse(await editor.inputValue());
   change(def);

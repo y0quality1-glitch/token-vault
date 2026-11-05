@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, FileCheck2, Play, Save, Send, Undo2, XCircle } from 'lucide-react';
 import { useParams } from 'react-router-dom';
-import type { CmsPreviewResult, CmsVersionDetail } from '@token-vault/shared';
+import { DefinitionError, validateProviderDefinition, type CmsPreviewResult, type CmsVersionDetail } from '@token-vault/shared';
 import { Badge } from '@ui/badge';
 import { Button } from '@ui/button';
 import { Card, CardBody, CardHeader, DetailList } from '@ui/card';
@@ -12,6 +12,7 @@ import { PageHeader, Tabs } from '@ui/navigation';
 import { JsonView } from '@ui/secret';
 import { useToast } from '@ui/toast';
 import { useApi, useMutation } from '@tv-hooks/useApi';
+import { DefinitionForm } from '@/components/DefinitionForm';
 import { VersionBadge } from '@/components/VersionBadge';
 import { api } from '@/lib/api';
 import { formatDateTime } from '@/lib/utils';
@@ -50,6 +51,7 @@ export function VersionPage() {
   const v = useApi<CmsVersionDetail>(path);
   const [tab, setTab] = useState<Tab>('definition');
   const [text, setText] = useState('');
+  const [view, setView] = useState<'form' | 'json'>('form');
   const [dialog, setDialog] = useState<null | 'approve' | 'reject'>(null);
 
   useEffect(() => {
@@ -63,6 +65,17 @@ export function VersionPage() {
       return { value: null, error: (e as Error).message };
     }
   }, [text]);
+
+  // Live validation of the unsaved document (the same validator the API, Token Vault and webhooks use).
+  const liveIssues = useMemo(() => {
+    if (parsed.error || !parsed.value || typeof parsed.value !== 'object') return null;
+    try {
+      validateProviderDefinition(parsed.value);
+      return [] as string[];
+    } catch (e) {
+      return e instanceof DefinitionError ? e.issues : [(e as Error).message];
+    }
+  }, [parsed]);
 
   const save = useMutation(() => api.put<CmsVersionDetail>(path, { definition: parsed.value }));
   const action = useMutation((name: 'submit' | 'withdraw') => api.post<CmsVersionDetail>(`${path}/${name}`, {}));
@@ -157,14 +170,32 @@ export function VersionPage() {
           <div className="grid gap-6 xl:grid-cols-5">
             <Card className="xl:col-span-3">
               <CardHeader
-                title="Definition (JSON)"
-                description={d.can.edit ? 'The key and version are set by the CMS.' : 'Read-only in this state.'}
+                title="Definition"
+                description={d.can.edit ? 'Edit with the form or as JSON: both change the same document. The key and version are set by the CMS.' : 'Read-only in this state.'}
                 actions={
-                  d.can.edit && (
+                  <>
+                    <div className="flex rounded-md border border-slate-200 p-0.5 text-xs" role="tablist" aria-label="Editor view">
+                      {(['form', 'json'] as const).map((v) => (
+                        <button
+                          key={v}
+                          role="tab"
+                          aria-selected={view === v}
+                          disabled={v === 'form' && !!parsed.error}
+                          title={v === 'form' && parsed.error ? 'Fix the JSON first' : undefined}
+                          onClick={() => setView(v)}
+                          className={view === v ? 'rounded bg-slate-900 px-2.5 py-1 font-medium text-white' : 'rounded px-2.5 py-1 text-slate-600 hover:bg-slate-100 disabled:opacity-40'}
+                        >
+                          {v === 'form' ? 'Form' : 'JSON'}
+                        </button>
+                      ))}
+                    </div>
+                  {d.can.edit && (
                     <>
-                      <Button variant="ghost" size="sm" disabled={!!parsed.error} onClick={() => setText(pretty(parsed.value))}>
-                        Format
-                      </Button>
+                      {view === 'json' && (
+                        <Button variant="ghost" size="sm" disabled={!!parsed.error} onClick={() => setText(pretty(parsed.value))}>
+                          Format
+                        </Button>
+                      )}
                       <Button
                         size="sm"
                         disabled={!dirty || !!parsed.error}
@@ -180,28 +211,38 @@ export function VersionPage() {
                         <Save className="h-4 w-4" /> Save draft
                       </Button>
                     </>
-                  )
+                  )}
+                  </>
                 }
               />
               <CardBody className="space-y-3">
                 <FormError error={save.error} />
                 {parsed.error && <Callout tone="danger">Not valid JSON: {parsed.error}</Callout>}
-                <Textarea
-                  aria-label="Definition JSON"
-                  spellCheck={false}
-                  readOnly={!d.can.edit}
-                  rows={30}
-                  className="font-mono text-xs leading-relaxed"
-                  value={text}
-                  onChange={(e) => setText(e.target.value)}
-                />
+                {view === 'form' && !parsed.error && parsed.value && typeof parsed.value === 'object' ? (
+                  <DefinitionForm value={parsed.value as Record<string, unknown>} onChange={(next) => setText(pretty(next))} readOnly={!d.can.edit} issues={liveIssues ?? []} />
+                ) : (
+                  <Textarea
+                    aria-label="Definition JSON"
+                    spellCheck={false}
+                    readOnly={!d.can.edit}
+                    rows={30}
+                    className="font-mono text-xs leading-relaxed"
+                    value={text}
+                    onChange={(e) => setText(e.target.value)}
+                  />
+                )}
                 {dirty && <p className="text-xs text-amber-700">Unsaved changes</p>}
               </CardBody>
             </Card>
             <div className="space-y-6 xl:col-span-2">
               <Card>
                 <CardHeader title="Validation" />
-                <CardBody>
+                <CardBody className="space-y-3">
+                  {dirty && liveIssues && (
+                    <p className={liveIssues.length ? 'text-sm text-amber-700' : 'text-sm text-emerald-700'} data-testid="live-validation">
+                      {liveIssues.length ? `Unsaved changes: ${liveIssues.length} problem${liveIssues.length > 1 ? 's' : ''} (shown in the form sections)` : 'Unsaved changes are valid.'}
+                    </p>
+                  )}
                   {d.issues.length === 0 ? (
                     <p className="flex items-center gap-2 text-sm text-emerald-700">
                       <FileCheck2 className="h-4 w-4" /> The saved definition is valid.
