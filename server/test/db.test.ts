@@ -115,4 +115,14 @@ suite('PostgreSQL storage', () => {
     const g = (await m.repos.grantRepo.getGrant(m.seed.IDS.demoOrg, m.seed.IDS.grtIssue))!;
     expect(g.storedStatus).toBe('ACTIVE');
   });
+
+  it('persists the verified provider catalog, and a demo reset clears it', async () => {
+    const { pgCatalogCache } = await import('../src/modules/providers/catalog-cache');
+    const state = { envelopes: [], highWater: { notes: 4 }, savedAt: new Date().toISOString() };
+    await pgCatalogCache.save(state);
+    expect(await pgCatalogCache.load()).toMatchObject({ highWater: { notes: 4 } });
+    await m.seed.resetDatabase();
+    expect(await pgCatalogCache.load()).toBeNull();
+  });
 });
+

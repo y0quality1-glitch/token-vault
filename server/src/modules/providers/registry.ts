@@ -1,5 +1,6 @@
 import { BUNDLED_DEFINITIONS, ProviderRegistry, catalogOf, operationsOf, type CatalogItem, type OperationDef, type ProviderInfo, type RegistryEntry } from '@token-vault/shared';
 import { CatalogSync } from '@token-vault/shared/catalog-sync';
+import { pgCatalogCache } from './catalog-cache';
 import { config } from '../../config';
 
 /**
@@ -11,7 +12,7 @@ export const registry = new ProviderRegistry(BUNDLED_DEFINITIONS);
 
 export const catalogSync =
   config.cmsCatalogUrl && config.cmsPublicKey
-    ? new CatalogSync({ url: config.cmsCatalogUrl, publicKeyPem: config.cmsPublicKey, registry, intervalMs: config.cmsPollIntervalMs, log: (m) => console.log(`[api] ${m}`) })
+    ? new CatalogSync({ url: config.cmsCatalogUrl, publicKeyPem: config.cmsPublicKey, registry, intervalMs: config.cmsPollIntervalMs, cache: pgCatalogCache, log: (m) => console.log(`[api] ${m}`) })
     : null;
 
 let cache: { operations: OperationDef[]; catalog: CatalogItem[] } | null = null;

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
 import { BUNDLED_DEFINITIONS, ProviderRegistry, githubDefinition, signaturePayload, validateProviderDefinition, type SignedDefinition } from '@token-vault/shared';
 import { definitionDigest, publicKeyId } from '@token-vault/shared/signing';
-import { CatalogSync } from '@token-vault/shared/catalog-sync';
+import { CatalogSync, type CatalogCache, type CatalogState } from '@token-vault/shared/catalog-sync';
 
 const cms = generateKeyPairSync('ed25519');
 const PUBLIC_PEM = cms.publicKey.export({ type: 'spki', format: 'pem' }).toString();
@@ -105,5 +105,72 @@ describe('provider registry + catalog sync', () => {
     await sync.refresh();
     expect(sync.status.lastError).toBe('ECONNREFUSED');
     expect(registry.get('github')).toBeDefined();
+  });
+
+  describe('persisted across restarts', () => {
+    const memoryCache = () => {
+      let state: CatalogState | null = null;
+      const cache: CatalogCache = { load: async () => structuredClone(state), save: async (s) => void (state = structuredClone(s)) };
+      return { cache, peek: () => state, poke: (fn: (s: CatalogState) => void) => fn(state!) };
+    };
+    const down = (async () => Promise.reject(new Error('ECONNREFUSED'))) as typeof fetch;
+    const restart = (cache: CatalogCache, fetchImpl: typeof fetch, publicKeyPem = PUBLIC_PEM) => {
+      const registry = new ProviderRegistry(BUNDLED_DEFINITIONS);
+      return { registry, sync: new CatalogSync({ url: 'http://cms/catalog/v1', publicKeyPem, registry, fetchImpl, cache }) };
+    };
+
+    it('serves the last verified catalog after a restart while the CMS is down', async () => {
+      const mem = memoryCache();
+      const first = restart(mem.cache, fakeCatalog([envelope({ ...githubDefinition, version: 2 }), envelope(notes(3))]).fetchImpl);
+      await first.sync.start();
+      first.sync.stop();
+      expect(mem.peek()!.highWater).toEqual({ github: 2, notes: 3 });
+
+      const second = restart(mem.cache, down);
+      await second.sync.start();
+      second.sync.stop();
+      expect(second.registry.list().map((e) => [e.definition.key, e.definition.version, e.source])).toEqual([
+        ['github', 2, 'catalog'],
+        ['notes', 3, 'catalog'],
+      ]);
+      expect(second.sync.status.restored?.providers).toEqual(['github v2', 'notes v3']);
+    });
+
+    it('keeps refusing an older signed version after a restart', async () => {
+      const mem = memoryCache();
+      const first = restart(mem.cache, fakeCatalog([envelope(notes(2, 'New label'))]).fetchImpl);
+      await first.sync.refresh();
+
+      const replay = fakeCatalog([envelope(notes(1, 'Old label'))]);
+      const second = restart(mem.cache, replay.fetchImpl);
+      await second.sync.start();
+      second.sync.stop();
+      expect(second.registry.get('notes')?.operations[0]?.label).toBe('New label');
+      expect(second.sync.status.lastUpdate?.refused).toEqual(['notes v1 (already accepted v2)']);
+      // The newer envelope stays in the persisted state, so a third start still has it.
+      expect(mem.peek()!.envelopes.map((e) => (e.definition as { version: number }).version)).toEqual([2]);
+    });
+
+    it('re-verifies persisted definitions: a modified row is ignored, the version marks still apply', async () => {
+      const mem = memoryCache();
+      const first = restart(mem.cache, fakeCatalog([envelope(notes(2))]).fetchImpl);
+      await first.sync.refresh();
+      mem.poke((s) => ((s.envelopes[0]!.definition as { api: { baseUrl: string } }).api.baseUrl = 'https://evil.example.net'));
+
+      const second = restart(mem.cache, down);
+      await second.sync.restore();
+      expect(second.registry.get('notes')).toBeUndefined();
+      expect(second.sync.status.restored).toBeNull();
+      expect(second.registry.highWater()).toEqual({ notes: 2 });
+
+      // A persisted catalog signed with a key that is no longer pinned is ignored too.
+      const other = generateKeyPairSync('ed25519').publicKey.export({ type: 'spki', format: 'pem' }).toString();
+      const saved = memoryCache();
+      await restart(saved.cache, fakeCatalog([envelope(notes(1))]).fetchImpl).sync.refresh();
+      expect(saved.peek()!.envelopes).toHaveLength(1);
+      const third = restart(saved.cache, down, other);
+      await third.sync.restore();
+      expect(third.registry.list().map((e) => e.source)).toEqual(['bundled']);
+    });
   });
 });

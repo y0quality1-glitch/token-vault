@@ -118,4 +118,18 @@ suite('customer credential store (PostgreSQL)', () => {
     expect(await m.store.countCredentials()).toBe(before);
     expect(await m.store.get(rec.credentialRef, 'org_a')).not.toBeNull();
   });
+
+  it('persists the verified provider catalog in the customer database, and a reset clears it', async () => {
+    const { pgCatalogCache } = await import('../src/providers/catalog-cache');
+    expect(await pgCatalogCache.load()).toBeNull();
+    const state = { envelopes: [{ definition: { key: 'notes' }, digest: 'd1', signature: 's', key_id: 'k', published_at: 'p', published_by: 'a', approved_by: 'b' }], highWater: { notes: 2 }, savedAt: new Date().toISOString() };
+    await pgCatalogCache.save(state);
+    await pgCatalogCache.save({ ...state, highWater: { notes: 3 } }); // upsert, single row
+    expect(await pgCatalogCache.load()).toMatchObject({ envelopes: state.envelopes, highWater: { notes: 3 } });
+    const { config } = await import('../src/config');
+    config.seedMode = 'reset'; // an earlier test switched the loaded value to if-missing
+    await m.store.initStore();
+    expect(await pgCatalogCache.load()).toBeNull();
+  });
 });
+

@@ -86,7 +86,7 @@ const mockSecret = () => `mock_ghp_${randomBytes(18).toString('base64url')}`;
 export async function initStore() {
   if (config.seedMode === 'reset') {
     console.warn('[vault] SEED_MODE=reset: wiping the credential store');
-    await db.execute(sql`TRUNCATE credentials, used_nonces`);
+    await db.execute(sql`TRUNCATE credentials, used_nonces, provider_catalog_state`);
   }
   await importLegacyFile();
 

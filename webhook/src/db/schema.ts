@@ -1,4 +1,4 @@
-import { customType, index, jsonb, pgTable, text } from 'drizzle-orm/pg-core';
+import { customType, index, integer, jsonb, pgTable, text } from 'drizzle-orm/pg-core';
 
 /**
  * Customer-side store (spec section 9, "Customer webhook credential store").
@@ -47,3 +47,15 @@ export const usedNonces = pgTable(
   },
   (t) => [index('used_nonces_expires_at_idx').on(t.expiresAt)],
 );
+
+/**
+ * Last verified provider catalog (one row). Envelopes are re-verified against the pinned
+ * CMS key when loaded, so this row cannot inject a definition; high_water keeps replayed
+ * older versions refused across restarts.
+ */
+export const providerCatalogState = pgTable('provider_catalog_state', {
+  id: integer('id').primaryKey(),
+  envelopes: jsonb('envelopes').notNull(),
+  highWater: jsonb('high_water').$type<Record<string, number>>().notNull(),
+  savedAt: ts('saved_at').notNull(),
+});

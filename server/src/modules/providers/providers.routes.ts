@@ -9,7 +9,7 @@ export const providersRouter = Router();
 providersRouter.get('/providers', (_req, res) => {
   const body: ProvidersResponse = {
     providers: registry.list().map(providerInfo),
-    catalog: catalogSync ? { url: catalogSync.status.url, keyId: catalogSync.status.keyId, lastSuccessAt: catalogSync.status.lastSuccessAt, lastError: catalogSync.status.lastError } : null,
+    catalog: catalogSync ? { url: catalogSync.status.url, keyId: catalogSync.status.keyId, lastSuccessAt: catalogSync.status.lastSuccessAt, lastError: catalogSync.status.lastError, restoredFrom: catalogSync.status.restored?.savedAt ?? null } : null,
   };
   res.json(body);
 });
