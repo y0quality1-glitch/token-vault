@@ -89,4 +89,24 @@ test.describe.serial('CMS form editor', () => {
     await expect(form.getByLabel('Base URL')).toBeDisabled();
     await expect(form.getByRole('button', { name: 'Add operation' })).toHaveCount(0);
   });
+
+  test('the applications list shows catalog availability, and what an open version changes', async () => {
+    await page.getByRole('complementary').getByRole('link', { name: 'Applications' }).click();
+    await expect(page.getByTestId('availability-github')).toContainText('Available');
+    await expect(page.getByTestId('availability-slack')).toContainText('Coming soon');
+
+    // Make Slack available in a new version: until it is published, the catalog still shows "coming soon".
+    await page.getByRole('row', { name: /Slack/ }).click();
+    await page.getByRole('button', { name: 'New version' }).click();
+    await expect(page.locator('h1').getByText('Coming soon')).toBeVisible(); // copied from v1
+    await page.getByTestId('definition-form').getByLabel('Availability').selectOption('available');
+    await page.getByRole('button', { name: 'Save draft' }).click();
+    await expect(page.getByRole('button', { name: 'Save draft' })).toBeDisabled(); // saved: nothing left to save
+    await expect(page.locator('h1').getByText('Available')).toBeVisible(); // this version would publish it as available
+
+    await page.getByRole('complementary').getByRole('link', { name: 'Applications' }).click();
+    await expect(page.getByTestId('availability-slack')).toContainText('Coming soon');
+    await expect(page.getByRole('row', { name: /Slack/ })).toContainText('Changes it to available when published');
+  });
 });
+
