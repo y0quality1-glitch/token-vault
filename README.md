@@ -140,6 +140,8 @@ Switch to **Demo Organization** for the seeded data and the remaining scenarios:
 
 ## Architecture
 
+For a visual walkthrough of the whole system, see the **[Token Vault application and configuration flow](https://claude.ai/artifact/WTuQ7dvF3XKiZetLRq7YaR)** page: trust zones, where every secret lives, the setup steps in order, the signed provider catalog, connecting integrations, granting access and the path of one agent request. The page is private: ask its owner for access if the link does not open.
+
 ```mermaid
 flowchart LR
   subgraph Browser
