@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom';
-import { ArrowRight, CheckCircle2, Github, Lock, Plug, ShieldCheck } from 'lucide-react';
+import { ArrowRight, CheckCircle2, ExternalLink, Github, Lock, Plug, ShieldCheck } from 'lucide-react';
 import { PERMISSIONS, type Environment, type IntegrationDetail, type Webhook } from '@token-vault/shared';
 import { useApi, useMutation } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
@@ -10,7 +10,7 @@ import { Card, CardBody, CardHeader, DetailList } from '@/components/ui/card';
 import { Field, Input, RadioCard, Select, Textarea } from '@/components/ui/form';
 import { Callout, FormError, PermissionDenied, Spinner } from '@/components/ui/feedback';
 import { PageHeader } from '@/components/ui/navigation';
-import { Mono } from '@/components/ui/secret';
+import { CopyButton, Mono } from '@/components/ui/secret';
 import { Badge, StatusBadge } from '@/components/ui/badge';
 import { useToast } from '@/components/ui/toast';
 import { splitList } from '@/lib/utils';
@@ -36,6 +36,8 @@ export function ConnectIntegrationPage() {
   const [localErrors, setLocalErrors] = useState<Record<string, string>>({});
   const [created, setCreated] = useState<IntegrationDetail | null>(null);
   const submit = useMutation((body: unknown) => api.post<IntegrationDetail>('/integrations', body));
+  const oauthStart = useMutation((body: unknown) => api.post<{ authorizeUrl: string }>('/integrations/oauth/start', body));
+  const [oauthClient, setOauthClient] = useState({ clientId: '', clientSecret: '' });
 
   if (!loaded) return <Spinner />;
   if (!def) return <Navigate to="/integrations/catalog" replace />;
@@ -43,12 +45,14 @@ export function ConnectIntegrationPage() {
   if (webhooks.loading && !webhooks.data) return <Spinner />;
 
   const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => setForm((f) => ({ ...f, [k]: e.target.value }));
-  const errors = { ...submit.fieldErrors, ...localErrors };
+  const errors = { ...submit.fieldErrors, ...oauthStart.fieldErrors, ...localErrors };
   const webhookId = form.webhookId || connected[0]?.id || '';
   const provider = def; // narrowed for the async handler below
   const method = def.auth.find((a) => a.id === authChoice) ?? def.auth[0]!;
   const authType = method.id;
   const isApp = method.kind === 'plugin' && method.plugin === 'github_app';
+  const isOAuth = method.kind === 'oauth2';
+  const redirectUri = `${window.location.origin}/oauth/callback`;
   const isPat = method.id === 'PAT';
   const resourceLabel = def.resource.label.toLowerCase();
 
@@ -60,6 +64,9 @@ export function ConnectIntegrationPage() {
       if (!form.accountLabel.trim()) errs.accountLabel = 'Account / organization label is required';
       if (secret.length < 20) errs.secret = 'Token must be at least 20 characters';
       if (/\s/.test(secret)) errs.secret = 'Token must not contain whitespace';
+    } else if (isOAuth) {
+      if (!oauthClient.clientId.trim()) errs.clientId = 'Enter the client ID of your OAuth app';
+      if (oauthClient.clientSecret.length < 8) errs.clientSecret = 'Enter the client secret of your OAuth app';
     } else if (!isApp) {
       if (secret.length < 8) errs.secret = 'The secret is too short';
       else if (method.secretPattern && !new RegExp(method.secretPattern).test(secret)) errs.secret = method.secretHint ?? 'The secret does not have the expected format';
@@ -72,6 +79,13 @@ export function ConnectIntegrationPage() {
     setLocalErrors(errs);
     if (Object.keys(errs).length) return;
     const common = { provider: provider.key, ...form, webhookId, allowedResources: splitList(form.allowedResources) };
+    if (isOAuth) {
+      // The client secret goes to the customer webhook; the browser then visits the provider's consent screen.
+      const started = await oauthStart.run({ ...common, authType, clientId: oauthClient.clientId.trim(), clientSecret: oauthClient.clientSecret });
+      setOauthClient((c) => ({ ...c, clientSecret: '' }));
+      if (started) window.location.assign(started.authorizeUrl);
+      return;
+    }
     const result = await submit.run(
       !isApp
         ? { ...common, authType, secret }
@@ -158,7 +172,7 @@ export function ConnectIntegrationPage() {
             <CardHeader title="Credential details" />
             <form onSubmit={onSubmit} noValidate autoComplete="off">
               <CardBody className="space-y-4">
-                <FormError error={submit.error} />
+                <FormError error={submit.error ?? oauthStart.error} />
                 <div className="grid gap-4 sm:grid-cols-2">
                   <Field label="Integration name" htmlFor="displayName" required error={errors.displayName}>
                     <Input id="displayName" value={form.displayName} onChange={set('displayName')} placeholder={`Demo ${def.name}`} invalid={!!errors.displayName} />
@@ -198,7 +212,36 @@ export function ConnectIntegrationPage() {
                     ))}
                   </div>
                 </div>
-                {!isApp ? (
+                {isOAuth ? (
+                  <div className="space-y-4 rounded-lg border border-slate-200 p-4">
+                    <Callout tone="info" title="Register an OAuth app at the provider first">
+                      Use this redirect URI: <span className="font-mono">{redirectUri}</span> <CopyButton value={redirectUri} label="Copy" />
+                      {method.oauth?.scopes.length ? (
+                        <>
+                          <br />
+                          Scopes requested: <span className="font-mono">{method.oauth.scopes.join(' ')}</span>
+                        </>
+                      ) : null}
+                    </Callout>
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <Field label="Client ID" htmlFor="clientId" required error={errors.clientId}>
+                        <Input id="clientId" value={oauthClient.clientId} onChange={(e) => setOauthClient({ ...oauthClient, clientId: e.target.value })} invalid={!!errors.clientId} className="font-mono" />
+                      </Field>
+                      <Field
+                        label={
+                          <span className="flex items-center gap-1.5">
+                            <Lock className="h-3.5 w-3.5 text-slate-400" /> Client secret
+                          </span>
+                        }
+                        htmlFor="clientSecret"
+                        required
+                        error={errors.clientSecret}
+                      >
+                        <Input id="clientSecret" type="password" autoComplete="new-password" spellCheck={false} value={oauthClient.clientSecret} onChange={(e) => setOauthClient({ ...oauthClient, clientSecret: e.target.value })} invalid={!!errors.clientSecret} className="font-mono" />
+                      </Field>
+                    </div>
+                  </div>
+                ) : !isApp ? (
                   <Field
                     label={
                       <span className="flex items-center gap-1.5">
@@ -271,8 +314,16 @@ export function ConnectIntegrationPage() {
                 <Button variant="outline" onClick={() => navigate('/integrations/catalog')}>
                   Cancel
                 </Button>
-                <Button type="submit" loading={submit.pending}>
-                  <ShieldCheck className="h-4 w-4" /> Store in customer vault
+                <Button type="submit" loading={submit.pending || oauthStart.pending}>
+                  {isOAuth ? (
+                    <>
+                      <ExternalLink className="h-4 w-4" /> Continue to {method.oauth?.authorizeHost ?? 'the provider'}
+                    </>
+                  ) : (
+                    <>
+                      <ShieldCheck className="h-4 w-4" /> Store in customer vault
+                    </>
+                  )}
                 </Button>
               </div>
             </form>
@@ -283,7 +334,15 @@ export function ConnectIntegrationPage() {
               <CardHeader title="How your credential is handled" />
               <CardBody>
                 <ol className="space-y-3 text-sm">
-                  {(!isApp
+                  {(isOAuth
+                    ? [
+                        'The client secret is forwarded in a signed request to your customer webhook and encrypted there.',
+                        'The webhook creates a PKCE verifier and a one-time state; your browser goes to the provider to approve access.',
+                        'The provider sends you back here with a single-use code, which only the webhook can redeem (it holds the verifier and the secret).',
+                        'Access and refresh tokens are stored encrypted in the webhook and refreshed there before they expire.',
+                        'Token Vault never sees the client secret or any token.',
+                      ]
+                    : !isApp
                     ? [
                         'Submitted over TLS to the Token Vault backend. Never placed in browser storage, URLs or logs.',
                         'Forwarded in a signed, short-lived request to your customer webhook.',

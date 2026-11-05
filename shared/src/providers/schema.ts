@@ -89,6 +89,25 @@ const operation = z
   .strict();
 export type OperationDefinition = z.infer<typeof operation>;
 
+/**
+ * OAuth 2.0 authorization-code flow with PKCE. The client secret, the PKCE verifier and
+ * every token live only in the customer webhook, which also refreshes access tokens.
+ */
+const oauthConfig = z
+  .object({
+    authorizeUrl: z.string().url().max(500),
+    /** Receives the client secret and refresh tokens: its host must be in api.allowedHosts. */
+    tokenUrl: z.string().url().max(500),
+    scopes: z.array(z.string().min(1).max(200)).max(30).default([]),
+    scopeSeparator: z.string().max(3).default(' '),
+    /** How the client authenticates at the token endpoint. */
+    clientAuth: z.enum(['body', 'basic']).default('body'),
+    /** Extra authorize parameters, e.g. {"access_type": "offline", "prompt": "consent"} for Google. */
+    authorizeParams: z.record(z.string().regex(/^[a-z_]{1,40}$/), z.string().max(200)).default({}),
+  })
+  .strict();
+export type OAuthConfig = z.infer<typeof oauthConfig>;
+
 const authMethod = z
   .object({
     id: z.string().regex(/^[A-Z][A-Z0-9_]{1,30}$/),
@@ -96,9 +115,11 @@ const authMethod = z
     description: z.string().max(300).default(''),
     /**
      * bearer: "Authorization: Bearer <secret>"; header: <header>: <prefix><secret>;
-     * basic: HTTP basic auth from "user:secret"; plugin: provider-specific code (e.g. github_app).
+     * basic: HTTP basic auth from "user:secret"; plugin: provider-specific code (e.g. github_app);
+     * oauth2: authorization code + PKCE, access token sent as a bearer token and refreshed by the webhook.
      */
-    kind: z.enum(['bearer', 'header', 'basic', 'plugin']),
+    kind: z.enum(['bearer', 'header', 'basic', 'plugin', 'oauth2']),
+    oauth: oauthConfig.optional(),
     header: z.string().regex(/^[A-Za-z0-9-]{1,60}$/).optional(),
     prefix: z.string().max(40).optional(),
     plugin: z.enum(['github_app']).optional(),
@@ -112,6 +133,8 @@ const authMethod = z
   .superRefine((a, ctx) => {
     if (a.kind === 'header' && !a.header) ctx.addIssue({ code: 'custom', message: 'header auth needs "header"', path: ['header'] });
     if (a.kind === 'plugin' && !a.plugin) ctx.addIssue({ code: 'custom', message: 'plugin auth needs "plugin"', path: ['plugin'] });
+    if (a.kind === 'oauth2' && !a.oauth) ctx.addIssue({ code: 'custom', message: 'oauth2 auth needs "oauth"', path: ['oauth'] });
+    if (a.kind !== 'oauth2' && a.oauth) ctx.addIssue({ code: 'custom', message: '"oauth" only applies to kind oauth2', path: ['oauth'] });
     if (a.header && RESERVED_HEADERS.test(a.header) && a.header.toLowerCase() !== 'authorization' && a.header.toLowerCase() !== 'x-api-key') {
       ctx.addIssue({ code: 'custom', message: `cannot inject into ${a.header}`, path: ['header'] });
     }
@@ -226,6 +249,13 @@ export function validateProviderDefinition(raw: unknown): ProviderDefinition {
     if (authIds.has(a.id)) issues.push(`auth.${a.id}: duplicate id`);
     authIds.add(a.id);
     if (a.test) checkTemplate(`auth.${a.id}.test.request`, a.test.request, new Set());
+    if (a.oauth) {
+      const token = new URL(a.oauth.tokenUrl);
+      const authorize = new URL(a.oauth.authorizeUrl);
+      if (token.protocol !== 'https:' || authorize.protocol !== 'https:') issues.push(`auth.${a.id}.oauth: authorizeUrl and tokenUrl must use https`);
+      if (!hostAllowed(token.hostname, def.api.allowedHosts)) issues.push(`auth.${a.id}.oauth.tokenUrl: host ${token.hostname} must be in api.allowedHosts (it receives the client secret)`);
+      if (token.username || token.password || authorize.username || authorize.password || authorize.hash) issues.push(`auth.${a.id}.oauth: URLs must not contain credentials or fragments`);
+    }
     if (a.secretPattern) {
       try {
         new RegExp(a.secretPattern);

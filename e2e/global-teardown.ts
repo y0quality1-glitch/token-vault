@@ -11,6 +11,8 @@ const SECRET_PATTERNS: [string, RegExp][] = [
   ['agent API credential', /tvak_[0-9a-f]{12}_[A-Za-z0-9_-]{20,}/],
   ['bearer header', /Bearer\s+[A-Za-z0-9._-]{20,}/],
   ['private key', /-----BEGIN [A-Z ]*PRIVATE KEY-----/],
+  ['OAuth access or refresh token', /mock_o[ar]t_[A-Za-z0-9_-]{10,}/],
+  ['OAuth client secret (e2e)', /cal-secret-value-123/],
 ];
 
 const LOGS = ['server.log', 'webhook.log', 'cms.log'];

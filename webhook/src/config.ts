@@ -74,6 +74,8 @@ export const config = {
   cmsCatalogUrl,
   cmsPublicKey,
   cmsPollIntervalMs: Number(process.env.CMS_POLL_INTERVAL_MS ?? 30_000),
+  /** Lifetime of access tokens issued by the simulated OAuth server (mock mode only). */
+  mockOAuthTokenTtlS: Number(process.env.MOCK_OAUTH_TOKEN_TTL_S ?? 3600),
   /** if-missing: (re)create demo mock credentials only where absent or unreadable. reset: wipe the store first (tests). */
   seedMode: seedMode as 'if-missing' | 'reset',
   /** Pre-PostgreSQL JSON store; imported once on startup if present, then renamed. */

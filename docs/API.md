@@ -30,7 +30,10 @@ Errors use one shape: `{ "error": { "code": "…", "message": "…", "details": 
 | GET | `/integrations/:id` | any role | includes granted agents |
 | PATCH | `/integrations/:id` | `integration:manage` | metadata only |
 | POST | `/integrations/:id/test` | `integration:manage` | webhook decrypts the credential and calls the provider |
-| POST | `/integrations/:id/rotate` | `integration:manage` | PAT: `{secret}`. GitHub App: `{privateKey}` (400 `KEY_MANAGED_BY_WEBHOOK` if the key lives in the webhook's environment) |
+| POST | `/integrations/:id/rotate` | `integration:manage` | PAT: `{secret}`. GitHub App: `{privateKey}` (400 `KEY_MANAGED_BY_WEBHOOK` if the key lives in the webhook's environment). OAuth: 400 `RECONNECT_REQUIRED` |
+| POST | `/integrations/oauth/start` | `integration:manage` | `{provider, authType, webhookId, displayName, environment, clientId, clientSecret, allowedResources, …}` → `{authorizeUrl}` (see [OAUTH.md](OAUTH.md)) |
+| POST | `/integrations/oauth/complete` | `integration:manage` | `{code, state}` from the provider redirect; only the admin who started, once, within 10 minutes (`OAUTH_STATE_INVALID` otherwise) → integration |
+| POST | `/integrations/oauth/cancel` | `integration:manage` | `{state}`: discard a pending connection |
 | POST | `/integrations/:id/disable` · `/enable` | `integration:manage` | |
 | DELETE | `/integrations/:id` | `integration:manage` | webhook crypto-shreds the credential; grants are revoked |
 | GET | `/agents` · `/agents/:id` | any role | |

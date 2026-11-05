@@ -56,6 +56,7 @@ GitHub is itself a definition: [`shared/src/providers/github.definition.ts`](../
 | `header` | `<header>: <prefix><secret>` |
 | `basic` | `Authorization: Basic base64(<secret>)`, where the secret is `user:password` |
 | `plugin` | Provider-specific code that produces a short-lived bearer token. Today the only plugin is `github_app`, which mints a token narrowed to the request's repository and the operation's `providerPermissions` |
+| `oauth2` | OAuth 2.0 authorization code + PKCE (`oauth: {authorizeUrl, tokenUrl, scopes, …}`). The admin signs in at the provider; the webhook holds the client secret and tokens, and refreshes the access token. See [OAUTH.md](OAUTH.md) |
 
 ## Safety rules enforced
 

@@ -1,7 +1,11 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { PERMISSIONS, type AuthMethodDefinition, type CatalogEntry, type IntegrationDetail } from '@token-vault/shared';
-import { transaction } from '../../db/client';
+import { and, eq, lt } from 'drizzle-orm';
+import { createHash } from 'node:crypto';
+import { config } from '../../config';
+import { db, transaction } from '../../db/client';
+import { oauthPending } from '../../db/schema';
 import { HttpError, badRequest, conflict, notFound } from '../../lib/errors';
 import { newId } from '../../lib/ids';
 import { parse } from '../../lib/validate';
@@ -60,11 +64,74 @@ function parseCreate(raw: unknown) {
   const def = registry.get(head.provider)!;
   const method = def.auth.find((a) => a.id === head.authType);
   if (!method) throw badRequest('Request validation failed', { fields: { authType: `${def.name} does not support "${head.authType}"` } });
+  if (method.kind === 'oauth2') throw badRequest('Request validation failed', { fields: { authType: `${method.label} connects through the provider's sign-in (POST /integrations/oauth/start)` } });
   const problem = resourceProblem(def.key, head.allowedResources);
   if (problem) throw badRequest('Request validation failed', { fields: { allowedResources: problem } });
   if (method.kind === 'plugin' && method.plugin === 'github_app') return { def, method, kind: 'github_app' as const, ...parse(appSchema, raw) };
   const accountLabel = method.id === 'PAT' ? z.string().trim().min(1, 'Account / organization label is required').max(80) : z.string().trim().max(80).default('');
   return { def, method, kind: 'secret' as const, ...parse(baseSchema.extend({ authType: z.string(), accountLabel, secret: secretSchemaFor(method) }), raw) };
+}
+
+type IntegrationDraft = { provider: string; displayName: string; environment: IntegrationRecord['environment']; accountLabel: string; authType: string; allowedResources: string[]; description: string };
+
+/**
+ * Shared tail of every connection (secret, GitHub App, OAuth): validate the stored
+ * credential through the webhook, then record the integration and its audit event.
+ */
+async function finishIntegration(ctx: ReturnType<typeof orgCtx>, webhook: { id: string; name: string } & Parameters<typeof callWebhook>[0], meta: IntegrationDraft, stored: Record<string, any>) {
+  // Validate immediately through the webhook (it decrypts and calls the provider; we only see the outcome).
+  let lastValidatedAt: string | null = null;
+  let credentialStatus: IntegrationRecord['credentialStatus'] = 'CONNECTED';
+  try {
+    const test = await callWebhook(webhook, 'POST', `/internal/v1/credentials/${stored.credential_ref}/test`, { org_id: ctx.org.id });
+    if (test.status === 200) {
+      lastValidatedAt = new Date().toISOString();
+      if (test.body.valid !== true) credentialStatus = 'INVALID';
+    }
+  } catch {
+    /* validation is best-effort; status stays CONNECTED until the next test */
+  }
+
+  const now = new Date().toISOString();
+  const integration = await transaction(async (tx) => {
+    const created = await integrationRepo.insertIntegration(
+      {
+        id: newId('int'),
+        organizationId: ctx.org.id,
+        webhookId: webhook.id,
+        provider: meta.provider,
+        displayName: meta.displayName,
+        environment: meta.environment,
+        accountLabel: meta.accountLabel || stored.account || '',
+        authType: meta.authType,
+        credentialReference: stored.credential_ref,
+        credentialStatus,
+        maskedIdentifier: stored.masked_identifier,
+        credentialFingerprint: stored.fingerprint,
+        allowedResources: meta.allowedResources,
+        description: meta.description,
+        createdBy: ctx.user.id,
+        createdAt: now,
+        updatedAt: now,
+        lastValidatedAt,
+        rotatedAt: null,
+        deletedAt: null,
+      },
+      tx,
+    );
+    await recordEvent(
+      {
+        orgId: ctx.org.id,
+        actor: userActor(ctx),
+        eventType: 'integration.connected',
+        target: { type: 'integration', id: created.id, name: created.displayName },
+        metadata: { provider: created.provider, credentialReference: created.credentialReference, webhookId: webhook.id, environment: created.environment },
+      },
+      tx,
+    );
+    return created;
+  });
+  return detail(integration);
 }
 
 async function getIntegration(orgId: string, id: string): Promise<IntegrationRecord> {
@@ -161,59 +228,115 @@ integrationsRouter.post('/integrations', requirePermission(PERMISSIONS.INTEGRATI
     throw new HttpError(stored.status === 400 ? 400 : 502, stored.body?.error?.code ?? 'WEBHOOK_REJECTED', stored.body?.error?.message ?? 'The webhook rejected the credential');
   }
 
-  // Validate immediately through the webhook (it decrypts and calls the provider; we only see the outcome).
-  let lastValidatedAt: string | null = null;
-  let credentialStatus: IntegrationRecord['credentialStatus'] = 'CONNECTED';
-  try {
-    const test = await callWebhook(webhook, 'POST', `/internal/v1/credentials/${stored.body.credential_ref}/test`, { org_id: ctx.org.id });
-    if (test.status === 200) {
-      lastValidatedAt = new Date().toISOString();
-      if (test.body.valid !== true) credentialStatus = 'INVALID';
-    }
-  } catch {
-    /* validation is best-effort; status stays CONNECTED until the next test */
-  }
+  res.status(201).json(await finishIntegration(ctx, webhook, meta, stored.body));
+});
 
-  const now = new Date().toISOString();
-  const integration = await transaction(async (tx) => {
-    const created = await integrationRepo.insertIntegration(
-      {
-        id: newId('int'),
-        organizationId: ctx.org.id,
-        webhookId: webhook.id,
-        provider: meta.provider,
-        displayName: meta.displayName,
-        environment: meta.environment,
-        accountLabel: meta.accountLabel || stored.body.account || '',
-        authType: meta.authType,
-        credentialReference: stored.body.credential_ref,
-        credentialStatus,
-        maskedIdentifier: stored.body.masked_identifier,
-        credentialFingerprint: stored.body.fingerprint,
-        allowedResources: meta.allowedResources,
-        description: meta.description,
-        createdBy: ctx.user.id,
-        createdAt: now,
-        updatedAt: now,
-        lastValidatedAt,
-        rotatedAt: null,
-        deletedAt: null,
-      },
-      tx,
-    );
-    await recordEvent(
-      {
-        orgId: ctx.org.id,
-        actor: userActor(ctx),
-        eventType: 'integration.connected',
-        target: { type: 'integration', id: created.id, name: created.displayName },
-        metadata: { provider: created.provider, credentialReference: created.credentialReference, webhookId: webhook.id, environment: created.environment },
-      },
-      tx,
-    );
-    return created;
+const OAUTH_PENDING_TTL_MS = 10 * 60_000;
+const stateHash = (state: string) => createHash('sha256').update(state).digest('hex');
+
+/**
+ * OAuth connection, step 1. The client secret goes to the customer webhook (which also
+ * generates the PKCE verifier) and is never stored here. The returned state is bound to
+ * this admin and expires; the browser is then sent to the provider's consent screen.
+ */
+integrationsRouter.post('/integrations/oauth/start', requirePermission(PERMISSIONS.INTEGRATION_MANAGE), async (req, res) => {
+  const ctx = orgCtx(req);
+  const body = parse(
+    baseSchema.extend({
+      authType: z.string().min(1, 'Choose an authentication method'),
+      clientId: z.string().trim().min(1, 'Enter the client ID').max(300).regex(/^\S+$/, 'The client ID has no spaces'),
+      clientSecret: z.string().min(8, 'Enter the client secret').max(1000),
+    }),
+    req.body,
+  );
+  if (req.body && typeof req.body === 'object') delete (req.body as Record<string, unknown>).clientSecret;
+  const def = registry.get(body.provider)!;
+  const method = def.auth.find((a) => a.id === body.authType && a.kind === 'oauth2');
+  if (!method) throw badRequest('Request validation failed', { fields: { authType: `${def.name} has no OAuth method "${body.authType}"` } });
+  const problem = resourceProblem(def.key, body.allowedResources);
+  if (problem) throw badRequest('Request validation failed', { fields: { allowedResources: problem } });
+  const webhook = await webhookRepo.getWebhook(ctx.org.id, body.webhookId);
+  if (!webhook) throw badRequest('Request validation failed', { fields: { webhookId: 'Unknown webhook' } });
+  if (webhook.status !== 'CONNECTED') throw new HttpError(409, 'WEBHOOK_NOT_CONNECTED', `Webhook "${webhook.name}" is ${webhook.status.toLowerCase()}. Verify connectivity before registering credentials.`);
+  if ((await integrationRepo.listIntegrations(ctx.org.id)).some((i) => i.displayName.toLowerCase() === body.displayName.toLowerCase())) throw conflict('An integration with that name already exists');
+
+  let started;
+  try {
+    started = await callWebhook(webhook, 'POST', '/internal/v1/oauth/start', {
+      org_id: ctx.org.id,
+      provider: def.key,
+      auth_method: method.id,
+      client_id: body.clientId,
+      client_secret: body.clientSecret,
+      redirect_uri: `${config.consolePublicUrl}/oauth/callback`,
+      metadata: { label: body.displayName, account: body.accountLabel, environment: body.environment },
+    });
+  } catch (e) {
+    webhookError(e);
+  }
+  if (started.status !== 201) throw new HttpError(started.status === 400 ? 400 : 502, started.body?.error?.code ?? 'WEBHOOK_REJECTED', started.body?.error?.message ?? 'The webhook could not start the OAuth connection');
+  const now = Date.now();
+  const draft: IntegrationDraft = { provider: def.key, displayName: body.displayName, environment: body.environment, accountLabel: body.accountLabel, authType: method.id, allowedResources: body.allowedResources, description: body.description };
+  await db.delete(oauthPending).where(lt(oauthPending.expiresAt, new Date(now).toISOString()));
+  await db.insert(oauthPending).values({
+    stateHash: stateHash(String(started.body.state)),
+    organizationId: ctx.org.id,
+    userId: ctx.user.id,
+    webhookId: webhook.id,
+    credentialReference: started.body.credential_ref,
+    draft,
+    createdAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + OAUTH_PENDING_TTL_MS).toISOString(),
   });
-  res.status(201).json(await detail(integration));
+  await recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: 'integration.oauth_started', target: { type: 'integration', id: started.body.credential_ref, name: body.displayName }, metadata: { provider: def.key, authMethod: method.id } });
+  res.status(201).json({ authorizeUrl: started.body.authorize_url });
+});
+
+/** Takes (and removes) the pending connection for a state, if it belongs to this admin and has not expired. */
+async function takePending(ctx: ReturnType<typeof orgCtx>, state: string) {
+  const [row] = await db
+    .delete(oauthPending)
+    .where(and(eq(oauthPending.stateHash, stateHash(state)), eq(oauthPending.organizationId, ctx.org.id), eq(oauthPending.userId, ctx.user.id)))
+    .returning();
+  if (!row || new Date(row.expiresAt).getTime() < Date.now()) throw new HttpError(400, 'OAUTH_STATE_INVALID', 'This sign-in does not match a connection you started, or it expired. Start again from the integration catalog.');
+  const webhook = await webhookRepo.getWebhook(ctx.org.id, row.webhookId);
+  if (!webhook) throw notFound('Webhook');
+  return { row, webhook };
+}
+
+async function discardWebhookCredential(webhook: Parameters<typeof callWebhook>[0], orgId: string, ref: string) {
+  await callWebhook(webhook, 'POST', `/internal/v1/credentials/${ref}/delete`, { org_id: orgId }).catch(() => undefined);
+}
+
+/**
+ * OAuth connection, step 2, called by the console's /oauth/callback page (same origin, so
+ * the SameSite=Strict session cookie is sent). The code is relayed to the webhook, which
+ * checks the state against its own copy and redeems the code with the PKCE verifier.
+ */
+integrationsRouter.post('/integrations/oauth/complete', requirePermission(PERMISSIONS.INTEGRATION_MANAGE), async (req, res) => {
+  const ctx = orgCtx(req);
+  const body = parse(z.object({ code: z.string().min(1).max(2000), state: z.string().min(1).max(200) }), req.body);
+  const { row, webhook } = await takePending(ctx, body.state);
+  let done;
+  try {
+    done = await callWebhook(webhook, 'POST', '/internal/v1/oauth/complete', { org_id: ctx.org.id, credential_ref: row.credentialReference, code: body.code, state: body.state });
+  } catch (e) {
+    webhookError(e);
+  }
+  if (done.status !== 200) {
+    await discardWebhookCredential(webhook, ctx.org.id, row.credentialReference);
+    throw new HttpError(done.status === 400 ? 400 : 502, done.body?.error?.code ?? 'WEBHOOK_REJECTED', done.body?.error?.message ?? 'The webhook could not complete the OAuth connection');
+  }
+  res.status(201).json(await finishIntegration(ctx, webhook, row.draft as IntegrationDraft, done.body));
+});
+
+/** The provider reported an error (e.g. the admin denied consent): drop the pending connection. */
+integrationsRouter.post('/integrations/oauth/cancel', requirePermission(PERMISSIONS.INTEGRATION_MANAGE), async (req, res) => {
+  const ctx = orgCtx(req);
+  const { state } = parse(z.object({ state: z.string().min(1).max(200) }), req.body);
+  const { row, webhook } = await takePending(ctx, state);
+  await discardWebhookCredential(webhook, ctx.org.id, row.credentialReference);
+  res.json({ ok: true });
 });
 
 integrationsRouter.patch('/integrations/:id', requirePermission(PERMISSIONS.INTEGRATION_MANAGE), async (req, res) => {
@@ -269,6 +392,7 @@ integrationsRouter.post('/integrations/:id/rotate', requirePermission(PERMISSION
   const ctx = orgCtx(req);
   const i = await getIntegration(ctx.org.id, String(req.params.id));
   const method = registry.get(i.provider)?.auth.find((a) => a.id === i.authType);
+  if (method?.kind === 'oauth2') throw new HttpError(400, 'RECONNECT_REQUIRED', 'OAuth integrations are renewed by connecting again, not by entering a secret');
   const rotation =
     method?.kind === 'plugin'
       ? { private_key: parse(z.object({ privateKey: privateKeySchema }), req.body).privateKey }

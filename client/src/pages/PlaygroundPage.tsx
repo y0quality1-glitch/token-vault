@@ -432,7 +432,7 @@ function ResultPanel({ item, sending, canAudit }: { item: HistoryItem | null; se
           ]}
         />
         {r.execution.idempotent_replay && <Callout tone="info">Idempotent replay: the cached result was returned after re-authorization.</Callout>}
-        {r.execution.credential && (
+        {r.execution.credential?.type === 'github_app_installation_token' && (
           <Callout tone="security">
             <span className="font-medium">Minted GitHub App token</span> scoped to{' '}
             <span className="font-mono">{r.execution.credential.repositories.join(', ') || 'all installation repositories'}</span> with{' '}
@@ -442,6 +442,13 @@ function ResultPanel({ item, sending, canAudit }: { item: HistoryItem | null; se
                 .join(', ')}
             </span>
             {r.execution.credential.revoked ? ', revoked right after use.' : `, expiring ${formatDateTime(r.execution.credential.expires_at)}.`}
+          </Callout>
+        )}
+        {r.execution.credential?.type === 'oauth2_access_token' && (
+          <Callout tone="security">
+            <span className="font-medium">OAuth access token</span> held by the customer webhook
+            {r.execution.credential.refreshed ? ', refreshed for this request' : ''}
+            {r.execution.credential.expires_at ? `, valid until ${formatDateTime(r.execution.credential.expires_at)}` : ''}.
           </Callout>
         )}
 

@@ -61,6 +61,8 @@ export const config = {
   cookieSecure: process.env.NODE_ENV === 'production',
   executionTtlMs: 30_000,
   webhookTimeoutMs: 5_000,
+  /** Where the admin console is served; OAuth providers redirect back to <this>/oauth/callback. */
+  consolePublicUrl: (process.env.CONSOLE_PUBLIC_URL ?? 'http://localhost:5173').replace(/\/$/, ''),
   /** Signed provider catalog (optional; without it only the bundled definitions are used). */
   cmsCatalogUrl,
   cmsPublicKey,
