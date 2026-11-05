@@ -6,11 +6,13 @@ import { CopyButton } from '@ui/secret';
 import { DataTable } from '@ui/table';
 import { useApi } from '@tv-hooks/useApi';
 import { formatDateTime } from '@/lib/utils';
+import { Badge } from '@ui/badge';
 
 interface PublicKey {
   algorithm: string;
   key_id: string;
   public_key_pem: string;
+  keys: { key_id: string; public_key_pem: string | null; active: boolean; first_used_at: string }[];
 }
 
 export function CatalogPage() {
@@ -33,6 +35,21 @@ export function CatalogPage() {
               ]}
             />
             <pre className="overflow-x-auto rounded-lg bg-slate-900 p-4 font-mono text-xs text-slate-100">{key.data.public_key_pem}</pre>
+            {key.data.keys.length > 1 && (
+              <div>
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Keys that have signed published versions</p>
+                <ul className="space-y-1 text-sm" data-testid="signing-keys">
+                  {key.data.keys.map((k) => (
+                    <li key={k.key_id} className="flex items-center gap-2">
+                      <span className="font-mono text-xs">{k.key_id}</span>
+                      {k.active ? <Badge tone="green">active</Badge> : <Badge>previous</Badge>}
+                      <span className="text-xs text-slate-500">since {formatDateTime(k.first_used_at)}</span>
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-2 text-xs text-slate-500">Every published version carries a signature by each of these keys, so consumers still pinning a previous key keep working until they switch. See docs/CMS.md, Key rotation.</p>
+              </div>
+            )}
             <Callout tone="security">
               A consumer accepts a definition only if sha256(canonical JSON) equals its digest, the signature over <span className="font-mono">token-vault/provider-definition/v1:&lt;digest&gt;</span> verifies with this key, and the definition passes validation.
             </Callout>

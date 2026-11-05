@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
 import { BUNDLED_DEFINITIONS, ProviderRegistry, githubDefinition, signaturePayload, validateProviderDefinition, type SignedDefinition } from '@token-vault/shared';
-import { definitionDigest, publicKeyId } from '@token-vault/shared/signing';
+import { definitionDigest, publicKeyId, verifySignedDefinition } from '@token-vault/shared/signing';
 import { CatalogSync, type CatalogCache, type CatalogState } from '@token-vault/shared/catalog-sync';
 
 const cms = generateKeyPairSync('ed25519');
@@ -173,4 +173,38 @@ describe('provider registry + catalog sync', () => {
       expect(third.registry.list().map((e) => e.source)).toEqual(['bundled']);
     });
   });
+
+  describe('key rotation', () => {
+    const next = generateKeyPairSync('ed25519');
+    const pem = (k: KeyObject) => k.export({ type: 'spki', format: 'pem' }).toString();
+    /** An envelope carrying a signature by the old key and one by the new key, as the CMS serves during a rotation. */
+    const dual = () => {
+      const old = envelope(notes(1));
+      const sig = sign(null, Buffer.from(signaturePayload(old.digest)), next.privateKey).toString('base64');
+      return { ...old, key_id: publicKeyId(next.publicKey), signature: sig, signatures: [{ key_id: publicKeyId(next.publicKey), signature: sig }, { key_id: old.key_id, signature: old.signature }] };
+    };
+
+    it('accepts a definition signed by any pinned key', () => {
+      expect(verifySignedDefinition(dual(), PUBLIC_PEM).key).toBe('notes'); // still pins only the old key
+      expect(verifySignedDefinition(dual(), pem(next.publicKey)).key).toBe('notes'); // already switched
+      expect(verifySignedDefinition(dual(), PUBLIC_PEM + pem(next.publicKey)).key).toBe('notes'); // pins both
+      expect(() => verifySignedDefinition(dual(), pem(generateKeyPairSync('ed25519').publicKey))).toThrow(/unknown key/);
+    });
+
+    it('needs one valid signature by a pinned key: a forged entry does not count', () => {
+      const env = dual();
+      env.signatures![1]!.signature = env.signatures![0]!.signature; // old-key entry now carries a signature it did not make
+      expect(() => verifySignedDefinition(env, PUBLIC_PEM)).toThrow(/does not verify/);
+      expect(verifySignedDefinition(env, PUBLIC_PEM + pem(next.publicKey)).key).toBe('notes'); // the new key's signature is genuine
+    });
+
+    it('syncs with two pinned keys and reports both', async () => {
+      const registry = new ProviderRegistry(BUNDLED_DEFINITIONS);
+      const sync = new CatalogSync({ url: 'http://cms/catalog/v1', publicKeyPem: PUBLIC_PEM + pem(next.publicKey), registry, fetchImpl: fakeCatalog([dual()]).fetchImpl });
+      await sync.refresh();
+      expect(sync.status.keyIds).toEqual([publicKeyId(cms.publicKey), publicKeyId(next.publicKey)]);
+      expect(registry.get('notes')).toBeDefined();
+    });
+  });
 });
+

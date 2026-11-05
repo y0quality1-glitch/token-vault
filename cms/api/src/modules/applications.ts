@@ -3,11 +3,13 @@ import { Router } from 'express';
 import { z } from 'zod';
 import type { CmsApplicationDetail, CmsApplicationSummary, CmsUser, CmsVersionDetail, CmsVersionSummary } from '@token-vault/shared';
 import { db, transaction, type Executor } from '../db/client';
-import { applications, versions } from '../db/schema';
+import { applications, versionSignatures, versions } from '../db/schema';
+import { config } from '../config';
 import { newId, signDefinition } from '../lib/crypto';
 import { HttpError, conflict, forbidden, notFound, parse } from '../lib/http';
 import { audit } from './audit';
 import { requireRole } from './auth';
+import { addSignature, registerActiveKey } from './signing';
 import { check, diffDefinitions, preview, starterDefinition } from './definitions';
 
 type AppRow = typeof applications.$inferSelect;
@@ -95,6 +97,7 @@ async function baselineFor(ex: Executor, app: AppRow, v: VersionRow): Promise<Ve
 async function detail(ex: Executor, user: CmsUser, app: AppRow, v: VersionRow): Promise<CmsVersionDetail> {
   const baseline = await baselineFor(ex, app, v);
   const { issues } = check(v.definition);
+  const sigs = await ex.select().from(versionSignatures).where(eq(versionSignatures.versionId, v.id)).orderBy(asc(versionSignatures.signedAt));
   const isEditor = user.role === 'EDITOR' || user.role === 'ADMIN';
   const block = reviewBlock(user, v);
   return {
@@ -102,6 +105,7 @@ async function detail(ex: Executor, user: CmsUser, app: AppRow, v: VersionRow): 
     key: app.key,
     definition: v.definition,
     issues,
+    signatures: sigs.map((x) => ({ keyId: x.keyId, signedAt: x.signedAt, active: x.keyId === config.keyId })),
     diff: diffDefinitions(v.definition, baseline?.definition ?? null, baseline?.version ?? null),
     can: {
       edit: isEditor && v.status === 'DRAFT' && !app.archivedAt,
@@ -262,6 +266,8 @@ applicationsRouter.post('/applications/:key/versions/:version/approve', reviewer
       .update(versions)
       .set({ status: 'PUBLISHED', definition: normalized, ...signed, reviewedBy: user.id, reviewedAt: t, reviewNote: body.note || null, publishedAt: t, updatedAt: t, hostChangeAcknowledged: diff.hostChange })
       .where(eq(versions.id, v.id));
+    await registerActiveKey(tx);
+    await addSignature(tx, v.id, signed.digest, signed.signature);
     await tx.update(applications).set({ name: normalized.name, description: normalized.description, updatedAt: t }).where(eq(applications.id, app.id));
     await audit(tx, user, 'version.published', { key: app.key, version: v.version }, { digest: signed.digest, keyId: signed.keyId, supersedes: published?.version ?? null, hostChange: diff.hostChange, hosts: normalized.api.allowedHosts });
     return detail(tx, user, app, { ...v, status: 'PUBLISHED', definition: normalized, ...signed, reviewedBy: user.id, reviewedAt: t, reviewNote: body.note || null, publishedAt: t });

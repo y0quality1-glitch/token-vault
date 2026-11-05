@@ -55,6 +55,8 @@ export interface CmsVersionDetail extends CmsVersionSummary {
   /** Validation problems; a version can only be submitted with none. */
   issues: string[];
   diff: CmsDiff;
+  /** One signature per CMS key that has signed this version (published versions only). */
+  signatures: { keyId: string; signedAt: string; active: boolean }[];
   /** What the current user may do with this version, and why not. */
   can: { edit: boolean; submit: boolean; withdraw: boolean; review: boolean; reviewBlockedReason: string | null };
 }
@@ -103,5 +105,5 @@ export interface ProviderInfo {
 export interface ProvidersResponse {
   providers: ProviderInfo[];
   /** Catalog sync state (null when the control plane uses bundled definitions only). */
-  catalog: { url: string; keyId: string; lastSuccessAt: string | null; lastError: string | null; restoredFrom: string | null } | null;
+  catalog: { url: string; keyIds: string[]; lastSuccessAt: string | null; lastError: string | null; restoredFrom: string | null } | null;
 }

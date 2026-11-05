@@ -231,6 +231,20 @@ export function VersionPage() {
                 columns={1}
                 items={[
                   { label: 'Digest (sha256)', value: d.digest, mono: true },
+                  {
+                    label: 'Signed by keys',
+                    value: (
+                      <ul className="space-y-1" data-testid="signature-keys">
+                        {d.signatures.map((s) => (
+                          <li key={s.keyId} className="flex items-center gap-2">
+                            <span className="font-mono text-xs">{s.keyId}</span>
+                            {s.active ? <Badge tone="green">active key</Badge> : <Badge>previous key</Badge>}
+                            <span className="text-xs text-slate-500">{formatDateTime(s.signedAt)}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    ),
+                  },
                   { label: 'Approved', value: `${formatDateTime(d.reviewedAt)}${d.reviewNote ? ` · “${d.reviewNote}”` : ''}` },
                 ]}
               />

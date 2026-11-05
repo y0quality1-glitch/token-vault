@@ -29,9 +29,14 @@ export interface SignedDefinition {
   definition: unknown;
   /** sha256 hex of canonicalJson(definition). */
   digest: string;
-  /** base64 Ed25519 signature over signaturePayload(digest). */
+  /** base64 Ed25519 signature over signaturePayload(digest), by the CMS's active key. */
   signature: string;
   key_id: string;
+  /**
+   * Every signature of this version, one per CMS key that has signed it (the active key
+   * first). During a key rotation, consumers pinning either key accept the definition.
+   */
+  signatures?: { key_id: string; signature: string }[];
   published_at: string;
   published_by: string;
   approved_by: string;
