@@ -65,6 +65,18 @@ export class ProviderRegistry {
     return undefined;
   }
 
+  /** Highest catalog version accepted per provider (persisted so rollbacks stay refused across restarts). */
+  highWater(): Record<string, number> {
+    return Object.fromEntries(this.#highWater);
+  }
+
+  /** Restores persisted high-water marks; never lowers a mark already held. */
+  restoreHighWater(marks: Record<string, number>): void {
+    for (const [key, v] of Object.entries(marks)) {
+      if (Number.isInteger(v) && v > (this.#highWater.get(key) ?? 0)) this.#highWater.set(key, v);
+    }
+  }
+
   onChange(fn: () => void): () => void {
     this.#listeners.add(fn);
     return () => this.#listeners.delete(fn);

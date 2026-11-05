@@ -504,7 +504,7 @@ export async function seedIfEmpty(): Promise<boolean> {
  */
 export async function resetDatabase(ex: Executor = pg) {
   const run = async (tx: Executor) => {
-    await tx.execute(sql.raw(`TRUNCATE ${TABLES_IN_INSERT_ORDER.join(', ')} CASCADE`));
+    await tx.execute(sql.raw(`TRUNCATE ${[...TABLES_IN_INSERT_ORDER, 'provider_catalog_state'].join(', ')} CASCADE`));
     await insertSeed(buildSeed(), tx);
   };
   if (ex === pg) await transaction(run);

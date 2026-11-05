@@ -103,5 +103,5 @@ export interface ProviderInfo {
 export interface ProvidersResponse {
   providers: ProviderInfo[];
   /** Catalog sync state (null when the control plane uses bundled definitions only). */
-  catalog: { url: string; keyId: string; lastSuccessAt: string | null; lastError: string | null } | null;
+  catalog: { url: string; keyId: string; lastSuccessAt: string | null; lastError: string | null; restoredFrom: string | null } | null;
 }

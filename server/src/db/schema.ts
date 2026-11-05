@@ -351,3 +351,15 @@ export const grantRequests = pgTable(
   },
   (t) => [index('grant_requests_org_status_idx').on(t.organizationId, t.status), index('grant_requests_agent_idx').on(t.agentId)],
 );
+
+/**
+ * Last verified provider catalog (one row). Envelopes are re-verified against the pinned
+ * CMS key when loaded, so this row cannot inject a definition; high_water keeps replayed
+ * older versions refused across restarts.
+ */
+export const providerCatalogState = pgTable('provider_catalog_state', {
+  id: integer('id').primaryKey(),
+  envelopes: jsonb('envelopes').notNull(),
+  highWater: jsonb('high_water').$type<Record<string, number>>().notNull(),
+  savedAt: ts('saved_at').notNull(),
+});
