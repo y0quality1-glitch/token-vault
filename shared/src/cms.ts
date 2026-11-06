@@ -64,7 +64,19 @@ export interface CmsVersionDetail extends CmsVersionSummary {
   /** One signature per CMS key that has signed this version (published versions only). */
   signatures: { keyId: string; signedAt: string; active: boolean }[];
   /** What the current user may do with this version, and why not. */
-  can: { edit: boolean; submit: boolean; withdraw: boolean; review: boolean; reviewBlockedReason: string | null };
+  can: {
+    edit: boolean;
+    submit: boolean;
+    withdraw: boolean;
+    review: boolean;
+    reviewBlockedReason: string | null;
+    /** Administrators: publish this draft or review in one step, without a second person. */
+    publishDirectly: boolean;
+    /** Start a new draft copied from this (published or superseded) version. */
+    editAsNewVersion: boolean;
+  };
+  /** The application's open (draft or in review) version, if any: editing goes there. */
+  openVersion: number | null;
 }
 
 export interface CmsApplicationDetail extends CmsApplicationSummary {

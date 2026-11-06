@@ -13,9 +13,11 @@ The provider CMS (`cms/`) is where the platform team defines the applications th
 | --- | --- | --- |
 | `editor@cms.test` | Editor | Create applications, edit drafts, submit and withdraw |
 | `publisher@cms.test` | Publisher | Approve and publish, or request changes |
-| `admin@cms.test` | Administrator | Everything above, plus archive applications |
+| `admin@cms.test` | Administrator | Everything above, plus **publish directly**, one-click availability and archive applications |
 
-**Separation of duties:** anyone who created, edited or submitted a version cannot approve it, whatever their role. An administrator who edits a draft therefore needs a publisher to approve it.
+**Separation of duties:** anyone who created, edited or submitted a version cannot *approve* it, whatever their role.
+
+**Direct publishing (administrators):** an administrator can still take a draft (or a version in review) to published in one step with **Publish now**, without a second person. Validation, host confirmation and signing are the same as for an approval. The version's review note says "Published directly by an administrator", and the audit event carries `direct: true`. Set `CMS_ADMIN_DIRECT_PUBLISH=false` on the CMS API to turn this off and require two people for every publication, which is what you want in production.
 
 ## Workflow
 
@@ -25,6 +27,7 @@ New application ─► v1 DRAFT ──submit──► IN_REVIEW ──approve─
                       └──── withdraw / request changes (with note)
 ```
 
+- **Editing any application:** every application, including the seeded ones (GitHub, Google Workspace, Slack, OpenAI), is edited the same way. A published version is signed and frozen, because consumers never accept a different definition under a version number they already have. **Edit** on a published version (or **Edit (new version)** on the application) therefore starts the next version as a draft copied from it; edit that draft and publish it. If a version is already open, Edit takes you there.
 - **Draft:** edited with a **form** (the default) or as **JSON**. Both views change the same document, and the form keeps properties it does not show.
   - The form covers the general details, API (base URL, allowed hosts, static headers), the resource, auth methods (bearer, header, basic, OAuth 2.0), the credential test, and operations (add, duplicate, reorder, remove; request, query, body, inputs, response allow-list, mock response).
   - Request fields list the placeholders they may use.
@@ -91,6 +94,7 @@ Admin API (`/api/v1`, httpOnly session cookie):
 | PUT | `/applications/:key/versions/:v` | editor, admin | `{definition}` (drafts only) |
 | POST | `…/submit` · `…/withdraw` | editor, admin | |
 | POST | `…/approve` | publisher, admin | `{note?, acknowledgeHostChange?}`; separation of duties |
+| POST | `…/publish` | admin | `{note?, acknowledgeHostChange?}`; draft or in review → published in one step (`DIRECT_PUBLISH_DISABLED` when `CMS_ADMIN_DIRECT_PUBLISH=false`) |
 | POST | `…/reject` | publisher, admin | `{note}`; back to draft |
 | POST | `…/preview` | any | `{operation, resource, input}` → request preview + mock response |
 | POST | `/applications/:key/archive` | admin | `{reason}` |
