@@ -1,6 +1,6 @@
 # Connecting AI Agents
 
-An agent uses Token Vault with **its own Token Vault API key only**. It never receives the GitHub credential: Token Vault authorizes each request against the agent's grants and policies, and the customer webhook injects the credential into the upstream call. Every request, allowed or denied, is recorded in **Audit & Activity → Access Logs**.
+An agent uses Token Vault with **its own Token Vault API key only**. It never receives the provider credential (GitHub, Slack, …): Token Vault authorizes each request against the agent's grants and policies, and the customer webhook injects the credential into the upstream call. Every request, allowed or denied, is recorded in **Audit & Activity → Access Logs**.
 
 There are two ways to connect:
 
@@ -10,7 +10,7 @@ There are two ways to connect:
 ## 1. Give the agent an identity and a grant
 
 1. **Agents → Register agent** (or open an existing agent and choose **Rotate API credential**). Copy the `tvak_…` credential. It is shown once, and Token Vault keeps only a hash.
-2. **Access Grants → Create grant**: choose the agent, the GitHub integration, the operations it needs and, ideally, a repository restriction and an expiry.
+2. **Access Grants → Create grant**: choose the agent, the integration (GitHub or any application from the catalog), the operations it needs and, ideally, a resource restriction (repository, channel, …) and an expiry.
 
 Without a grant, every request is denied.
 
@@ -41,8 +41,19 @@ The one-line `claude mcp add …` command and the Claude Desktop JSON that the h
 | `github_read_file` | `github.contents.read` |
 | `github_list_issues` | `github.issues.list` |
 | `github_create_issue` | `github.issues.create` |
+| *one tool per catalog operation* | e.g. `slack_messages_post` → `slack.messages.post`, `google_events_list` → `google.events.list` (see below) |
 | `token_vault_request_access` | Asks a human for time-limited access (see below) |
 | `token_vault_check_access_request` | Status of a request: `PENDING`, `APPROVED`, `REJECTED` or `EXPIRED` |
+
+**Tools for every application in the catalog.** Besides the hand-written GitHub tools, the server offers one tool for each non-destructive operation of every application this agent has a grant on, as published in the provider CMS. No code changes are needed.
+
+- The tool name is the operation id with dots replaced, e.g. `slack.messages.post` becomes `slack_messages_post`. Its title is "<Application>: <operation label>".
+- Arguments are typed from the definition. The resource (`channel`, `calendar`, `page`, …) is checked against the definition's pattern, and the inputs carry their types, required flags and maximum lengths. An input whose name is already taken by a resource field becomes `input_<name>`. Every tool also takes an optional `integration`.
+- The definitions come from `GET /agent/v1/operations`, limited to the applications in the agent's own grants. A tool is offered for operations the agent is not granted too: calling it is denied (`SCOPE_DENIED`), and the agent may ask a human with `token_vault_request_access`.
+- The server re-reads them at start-up, every `TOKEN_VAULT_TOOLS_REFRESH_S` seconds, and when `token_vault_list_access` is called. When something changed (a newly published version, a new grant on another application), it updates its tools and notifies the client with `tools/list_changed`. If the catalog cannot be read, the GitHub and Token Vault tools keep working.
+- Destructive operations never become tools.
+
+`token_vault_request_access` works for any application: pass operation ids of one application and, ideally, a `resource` (`repository` still works for GitHub).
 
 Each GitHub tool takes `repository` (`owner/name`) and an optional `integration` (ID or name), which is needed only when the agent has more than one GitHub integration. Results include the Token Vault request ID. A denial comes back as a tool error that gives the reason, such as `GRANT_REVOKED`, `SCOPE_DENIED` or `RESOURCE_DENIED`, and tells the model not to work around it.
 
@@ -53,6 +64,7 @@ Each GitHub tool takes `repository` (`owner/name`) and an optional `integration`
 | `TOKEN_VAULT_API_KEY` | The agent's credential (required) |
 | `TOKEN_VAULT_URL` | Control plane URL (default `http://localhost:4000`) |
 | `TOKEN_VAULT_ORG` | Optional org slug, used only to attribute failed authentication in the audit log |
+| `TOKEN_VAULT_TOOLS_REFRESH_S` | How often to re-read the catalog for new or changed application tools (default 60; `0` = only at start-up) |
 
 The server speaks MCP over stdio and writes diagnostics to stderr only. It never prints the key.
 

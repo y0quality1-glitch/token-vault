@@ -4,12 +4,13 @@ import {
   type AccessRequest,
   type DecisionCheck,
   type AgentCapabilitiesBody,
+  type AgentOperationsBody,
   type CredentialUseInfo,
   type ExecuteResponseBody,
   type MatchedRule,
 } from '@token-vault/shared';
 import { config } from '../../config';
-import { getOperation } from '../providers/registry';
+import { getOperation, registry } from '../providers/registry';
 import { parseAgentCredential, verifySecret } from '../../lib/crypto';
 import { correlationId as newCorrelationId, nonce, requestId as newRequestId } from '../../lib/ids';
 import { transaction } from '../../db/client';
@@ -337,6 +338,39 @@ export async function getOwnRequest(authorization: string | undefined, id: strin
  * and /execute returns (and audits) the authoritative denial. Read-only; reveals nothing
  * about other agents.
  */
+/** Operation shapes for the providers of the agent's grants (for typed agent tools). */
+export async function getAgentOperations(authorization: string | undefined): Promise<{ status: 200; body: AgentOperationsBody } | { status: 401 }> {
+  const agent = await authenticate(authorization);
+  if (!agent) return { status: 401 };
+  const [grants, integrations] = await Promise.all([grantRepo.listGrants(agent.organizationId, { agentId: agent.id }), integrationRepo.listIntegrations(agent.organizationId)]);
+  const byId = new Map(integrations.map((i) => [i.id, i]));
+  const keys = [...new Set(grants.filter((g) => g.storedStatus !== 'SUPERSEDED' && byId.has(g.integrationId)).map((g) => byId.get(g.integrationId)!.provider))].sort();
+  const entries = keys.flatMap((k) => registry.entry(k) ?? []);
+  const field = (name: string, f: { label: string; pattern: string; caseInsensitive: boolean; example?: string }) => ({ name, label: f.label, pattern: f.pattern, case_insensitive: f.caseInsensitive, example: f.example ?? null });
+  return {
+    status: 200,
+    body: {
+      version: entries.map((e) => `${e.definition.key}@${e.definition.version}:${e.digest ?? 'bundled'}`).join(','),
+      providers: entries.map(({ definition: d }) => ({
+        key: d.key,
+        name: d.name,
+        description: d.description,
+        version: d.version,
+        resource: field(d.resource.name, d.resource),
+        resource_fields: Object.entries(d.resourceFields).map(([n, f]) => field(n, f)),
+        operations: d.operations.map((o) => ({
+          id: o.id,
+          label: o.label,
+          description: o.description,
+          risk: o.risk,
+          requires_resource: o.requiresResource,
+          input: Object.entries(o.input).map(([n, f]) => ({ name: n, type: f.type, label: f.label ?? null, required: f.required, max_length: f.maxLength ?? null })),
+        })),
+      })),
+    },
+  };
+}
+
 export async function getCapabilities(authorization: string | undefined): Promise<{ status: 200; body: AgentCapabilitiesBody } | { status: 401 }> {
   const agent = await authenticate(authorization);
   if (!agent) return { status: 401 };

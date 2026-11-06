@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { AgentAccessRequestBody, AgentCapabilitiesBody, ExecuteRequestBody, ExecuteResponseBody } from '@token-vault/shared';
+import type { AgentAccessRequestBody, AgentCapabilitiesBody, AgentOperationsBody, ExecuteRequestBody, ExecuteResponseBody } from '@token-vault/shared';
 import { AccessDeniedError, AuthenticationError, ExecutionFailedError, TokenVaultError } from './errors';
 
 export type GitHubOperation = 'github.repositories.read' | 'github.contents.read' | 'github.issues.list' | 'github.issues.create';
@@ -20,7 +20,8 @@ export interface TokenVaultOptions {
 export interface ExecuteOptions {
   integrationId: string;
   operation: GitHubOperation | (string & {});
-  resource?: { repository?: string; path?: string };
+  /** Resource fields named by the provider definition (GitHub: repository, path; Slack: channel; …). */
+  resource?: Record<string, string>;
   input?: Record<string, unknown>;
   /** Makes retries of creating operations safe. Generated automatically when omitted. */
   idempotencyKey?: string;
@@ -139,6 +140,18 @@ export class TokenVault {
     if (res.status === 401) throw new AuthenticationError('Agent credential is invalid, rotated or unknown', { code: 'AGENT_UNAUTHENTICATED', httpStatus: 401 });
     if (!res.ok) throw new TokenVaultError(`Capabilities request failed (HTTP ${res.status})`, { code: 'UNEXPECTED_RESPONSE', httpStatus: res.status });
     return body as AgentCapabilitiesBody;
+  }
+
+  /**
+   * The shape of every operation of the applications this agent has a grant on (resource
+   * fields, inputs, risk), from the signed provider definitions Token Vault uses.
+   */
+  async operations(): Promise<AgentOperationsBody> {
+    const res = await this.#request('GET', '/agent/v1/operations');
+    const body = await this.#json(res);
+    if (res.status === 401) throw new AuthenticationError('Agent credential is invalid, rotated or unknown', { code: 'AGENT_UNAUTHENTICATED', httpStatus: 401 });
+    if (!res.ok) throw new TokenVaultError(`Operations request failed (HTTP ${res.status})`, { code: 'UNEXPECTED_RESPONSE', httpStatus: res.status });
+    return body as AgentOperationsBody;
   }
 
   /**

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { normalizeIp } from '../../lib/net';
-import { authenticate, executeAgentRequest, getCapabilities, getOwnRequest } from './broker.service';
+import { authenticate, executeAgentRequest, getAgentOperations, getCapabilities, getOwnRequest } from './broker.service';
 import { createFromAgent, getForAgent } from '../grant-requests/grant-requests.service';
 
 /**
@@ -30,6 +30,12 @@ agentRouter.get('/requests/:id', async (req, res) => {
 
 agentRouter.get('/capabilities', async (req, res) => {
   const r = await getCapabilities(req.headers.authorization);
+  if (r.status === 401) return void res.status(401).json({ error: { code: 'AGENT_UNAUTHENTICATED', message: 'Invalid agent credential' } });
+  res.json(r.body);
+});
+
+agentRouter.get('/operations', async (req, res) => {
+  const r = await getAgentOperations(req.headers.authorization);
   if (r.status === 401) return void res.status(401).json({ error: { code: 'AGENT_UNAUTHENTICATED', message: 'Invalid agent credential' } });
   res.json(r.body);
 });

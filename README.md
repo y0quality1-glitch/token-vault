@@ -187,7 +187,7 @@ token-vault/
 ├── scripts/setup.mjs         generates server/.env, webhook/.env and cms/api/.env (random secrets, CMS signing key)
 ├── shared/                   @token-vault/shared: domain types, provider definitions (GitHub), RBAC matrix, decision codes
 ├── sdk/                      @token-vault/sdk: TypeScript client for the agent API (typed errors, key never logged)
-├── mcp/                      Token Vault MCP server (stdio): brokered GitHub tools for AI agents
+├── mcp/                      Token Vault MCP server (stdio): brokered GitHub tools, plus typed tools generated from the catalog for every granted application
 ├── server/                   Control plane (Express modular monolith)
 │   ├── src/
 │   │   ├── app.ts            router composition (admin API /api/v1, agent API /agent/v1)

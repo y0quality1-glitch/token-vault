@@ -395,6 +395,43 @@ export interface AgentCapabilitiesBody {
   }[];
 }
 
+/** A resource field an operation takes (the primary resource grants are scoped to, or an extra one). */
+export interface AgentResourceField {
+  name: string;
+  label: string;
+  /** Anchored regular expression every value must match. */
+  pattern: string;
+  case_insensitive: boolean;
+  example: string | null;
+}
+
+/**
+ * GET /agent/v1/operations: the shape of every operation of the applications this agent
+ * has a grant on, so clients (the MCP server) can offer them as typed tools. Definitions
+ * are not secret; whether a call is allowed is still decided per request.
+ */
+export interface AgentOperationsBody {
+  /** Changes whenever any of these definitions changes (digests of the versions in use). */
+  version: string;
+  providers: {
+    key: string;
+    name: string;
+    description: string;
+    version: number;
+    resource: AgentResourceField;
+    resource_fields: AgentResourceField[];
+    operations: {
+      id: string;
+      label: string;
+      description: string;
+      risk: 'read' | 'write' | 'destructive';
+      /** Whether the primary resource must be given. */
+      requires_resource: boolean;
+      input: { name: string; type: 'string' | 'number' | 'boolean'; label: string | null; required: boolean; max_length: number | null }[];
+    }[];
+  }[];
+}
+
 // ---------------------------------------------------------------- Just-in-time access requests
 export type GrantRequestStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'EXPIRED';
 

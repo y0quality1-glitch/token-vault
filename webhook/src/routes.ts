@@ -225,10 +225,19 @@ export function buildRouter() {
     });
   });
 
+  /**
+   * A definition by key. The control plane may have seen a newly published application
+   * before this webhook's next poll: refresh the catalog once before calling it unknown.
+   */
+  async function knownDefinition(provider: string) {
+    if (!registry.get(provider) && catalogSync) await catalogSync.refresh();
+    return registry.get(provider);
+  }
+
   // Register a credential: a PAT (encrypted immediately) or a GitHub App (App ID + private key).
   r.post('/internal/v1/credentials', requireSignature, async (req: SignedRequest, res) => {
     const { org_id, provider, secret, metadata, type } = req.json ?? {};
-    const def = typeof provider === 'string' ? registry.get(provider) : undefined;
+    const def = typeof provider === 'string' ? await knownDefinition(provider) : undefined;
     if (!str(org_id) || !def) {
       return signedJson(req, res, 400, { error: { code: 'INVALID_CREDENTIAL_REQUEST', message: 'org_id and a known provider are required' } });
     }
@@ -317,7 +326,7 @@ export function buildRouter() {
    */
   r.post('/internal/v1/oauth/start', requireSignature, async (req: SignedRequest, res) => {
     const { org_id, provider, auth_method, client_id, client_secret, redirect_uri, metadata } = req.json ?? {};
-    const def = typeof provider === 'string' ? registry.get(provider) : undefined;
+    const def = typeof provider === 'string' ? await knownDefinition(provider) : undefined;
     const method = def?.auth.find((a) => a.id === auth_method && a.kind === 'oauth2');
     let redirect: URL | null = null;
     try {
