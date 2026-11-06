@@ -13,6 +13,7 @@ import { PageHeader } from '@ui/navigation';
 import { DataTable } from '@ui/table';
 import { useApi, useMutation } from '@tv-hooks/useApi';
 import { useAuth } from '@/auth';
+import { AvailabilityBadge } from '@/components/AvailabilityBadge';
 import { VersionBadge } from '@/components/VersionBadge';
 import { api } from '@/lib/api';
 import { relativeTime } from '@/lib/utils';
@@ -66,9 +67,34 @@ export function ApplicationsPage() {
               {
                 key: 'published',
                 header: 'Published',
-                cell: (a) => (a.archived ? <Badge tone="red">Archived</Badge> : a.publishedVersion ? <span className="text-sm">v{a.publishedVersion}</span> : <span className="text-sm text-slate-400">Not yet</span>),
+                cell: (a) =>
+                  a.archived ? (
+                    <Badge tone="red">Archived</Badge>
+                  ) : a.publishedVersion && a.availability ? (
+                    <span className="flex items-center gap-2 text-sm" data-testid={`availability-${a.key}`}>
+                      v{a.publishedVersion} <AvailabilityBadge availability={a.availability} />
+                    </span>
+                  ) : (
+                    <span className="text-sm text-slate-400">Not yet</span>
+                  ),
               },
-              { key: 'open', header: 'Open version', cell: (a) => (a.openVersion ? <span className="flex items-center gap-2 text-sm">v{a.openVersion.version} <VersionBadge status={a.openVersion.status} /></span> : <span className="text-sm text-slate-400">—</span>) },
+              {
+                key: 'open',
+                header: 'Open version',
+                cell: (a) =>
+                  a.openVersion ? (
+                    <div className="space-y-0.5 text-sm">
+                      <span className="flex items-center gap-2">
+                        v{a.openVersion.version} <VersionBadge status={a.openVersion.status} />
+                      </span>
+                      {a.openVersion.availability !== (a.availability ?? 'available') && (
+                        <p className="text-xs text-slate-500">Changes it to {a.openVersion.availability === 'available' ? 'available' : 'coming soon'} when published</p>
+                      )}
+                    </div>
+                  ) : (
+                    <span className="text-sm text-slate-400">—</span>
+                  ),
+              },
               { key: 'ops', header: 'Operations', cell: (a) => <span className="text-sm">{a.operationCount}</span>, hideBelow: 'md' },
               { key: 'updated', header: 'Updated', cell: (a) => <span className="text-sm text-slate-500">{relativeTime(a.updatedAt)}</span>, hideBelow: 'lg' },
             ]}

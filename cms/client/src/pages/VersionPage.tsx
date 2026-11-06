@@ -13,6 +13,7 @@ import { JsonView } from '@ui/secret';
 import { useToast } from '@ui/toast';
 import { useApi, useMutation } from '@tv-hooks/useApi';
 import { DefinitionForm } from '@/components/DefinitionForm';
+import { AvailabilityBadge } from '@/components/AvailabilityBadge';
 import { VersionBadge } from '@/components/VersionBadge';
 import { api } from '@/lib/api';
 import { formatDateTime } from '@/lib/utils';
@@ -99,7 +100,14 @@ export function VersionPage() {
           { label: `v${d.version}` },
         ]}
         title={`${def.name ?? key} v${d.version}`}
-        badge={<VersionBadge status={d.status} />}
+        badge={
+          <>
+            <VersionBadge status={d.status} />
+            <span title="How this version appears in Token Vault's Integration Catalog once published">
+              <AvailabilityBadge availability={(def as { catalog?: { availability?: string } }).catalog?.availability === 'coming_soon' ? 'coming_soon' : 'available'} />
+            </span>
+          </>
+        }
         description={`Created by ${d.createdBy} ${formatDateTime(d.createdAt)}${d.submittedAt ? ` · submitted ${formatDateTime(d.submittedAt)}` : ''}${d.publishedAt ? ` · published ${formatDateTime(d.publishedAt)}` : ''}`}
         actions={
           <>

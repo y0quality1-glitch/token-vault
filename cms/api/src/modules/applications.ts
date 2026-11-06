@@ -58,7 +58,9 @@ function summarize(app: AppRow, rows: VersionRow[]): CmsApplicationSummary {
   const published = rows.find((v) => v.status === 'PUBLISHED');
   const open = rows.find((v) => v.status === 'DRAFT' || v.status === 'IN_REVIEW');
   const ops = (published?.definition as { operations?: unknown[] } | undefined)?.operations;
-  const shown = (published ?? open ?? rows[0])?.definition as { catalog?: { icon?: string; category?: string; availability?: string } } | undefined;
+  type Listing = { catalog?: { icon?: string; category?: string; availability?: string } } | undefined;
+  const shown = (published ?? open ?? rows[0])?.definition as Listing;
+  const availabilityOf = (v: VersionRow) => ((v.definition as Listing)?.catalog?.availability === 'coming_soon' ? ('coming_soon' as const) : ('available' as const));
   return {
     key: app.key,
     name: app.name,
@@ -66,11 +68,11 @@ function summarize(app: AppRow, rows: VersionRow[]): CmsApplicationSummary {
     archived: !!app.archivedAt,
     publishedVersion: published?.version ?? null,
     publishedAt: published?.publishedAt ?? null,
-    openVersion: open ? { version: open.version, status: open.status as 'DRAFT' | 'IN_REVIEW' } : null,
+    openVersion: open ? { version: open.version, status: open.status as 'DRAFT' | 'IN_REVIEW', availability: availabilityOf(open) } : null,
     operationCount: Array.isArray(ops) ? ops.length : 0,
     icon: shown?.catalog?.icon ?? 'plug',
     category: shown?.catalog?.category ?? 'Other',
-    availability: shown?.catalog?.availability === 'coming_soon' ? 'coming_soon' : 'available',
+    availability: published ? availabilityOf(published) : null,
     updatedAt: app.updatedAt,
   };
 }

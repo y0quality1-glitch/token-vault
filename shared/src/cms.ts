@@ -21,12 +21,14 @@ export interface CmsApplicationSummary {
   archived: boolean;
   publishedVersion: number | null;
   publishedAt: string | null;
-  openVersion: { version: number; status: 'DRAFT' | 'IN_REVIEW' } | null;
+  /** The open version, and the catalog availability it would publish. */
+  openVersion: { version: number; status: 'DRAFT' | 'IN_REVIEW'; availability: 'available' | 'coming_soon' } | null;
   operationCount: number;
   /** Catalog presentation of the published (or latest) version. */
   icon: string;
   category: string;
-  availability: 'available' | 'coming_soon';
+  /** Catalog availability of the published version (what Token Vault shows); null when nothing is published. */
+  availability: 'available' | 'coming_soon' | null;
   updatedAt: string;
 }
 
