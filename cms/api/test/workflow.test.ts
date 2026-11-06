@@ -207,5 +207,34 @@ suite('provider CMS workflow', () => {
     const actions = (await call(admin, 'GET', '/api/v1/audit')).body.items.map((e: { action: string }) => e.action);
     expect(actions).toEqual(expect.arrayContaining(['signing.key_activated', 'signing.versions_signed']));
   });
+
+  it('lets an administrator change only the availability in one click, as a signed new version', async () => {
+    const url = (k: string) => `/api/v1/applications/${k}/availability`;
+    expect((await call(editor, 'POST', url('google'), { availability: 'available' })).status).toBe(403);
+    expect((await call(publisher, 'POST', url('google'), { availability: 'available' })).status).toBe(403);
+
+    const before = (await catalog()).definitions.find((d) => (d.definition as { key: string }).key === 'google')!;
+    const r = await call(admin, 'POST', url('google'), { availability: 'available', note: 'Launch' });
+    expect(r.body).toEqual({ key: 'google', version: 2, availability: 'available' });
+
+    const after = (await catalog()).definitions.find((d) => (d.definition as { key: string }).key === 'google')!;
+    const { publicKeyId } = await import('@token-vault/shared/signing');
+    const { createPublicKey } = await import('node:crypto');
+    const { config } = await import('../src/config');
+    expect(publicKeyId(createPublicKey(config.publicKeyPem))).toBe(after.key_id);
+    const def = verifySignedDefinition(after, config.publicKeyPem);
+    expect(def).toMatchObject({ version: 2, catalog: { availability: 'available' } });
+    // Nothing but the version and availability changed.
+    const strip = (x: unknown) => ({ ...(x as object), version: 0, catalog: { ...(x as { catalog: object }).catalog, availability: 'x' } });
+    expect(strip(after.definition)).toEqual(strip(before.definition));
+    expect((await call(admin, 'GET', version('google', 1))).body.status).toBe('SUPERSEDED');
+    expect((await call(admin, 'GET', version('google', 2))).body.reviewNote).toMatch(/Availability changed to available by an administrator.*Launch/);
+
+    expect((await call(admin, 'POST', url('google'), { availability: 'available' })).body.error.code).toBe('UNCHANGED');
+    await call(editor, 'POST', '/api/v1/applications/google/versions', {});
+    expect((await call(admin, 'POST', url('google'), { availability: 'coming_soon' })).body.error.code).toBe('OPEN_VERSION_EXISTS');
+    const actions = (await call(admin, 'GET', '/api/v1/audit?application=google')).body.items;
+    expect(actions[1]).toMatchObject({ action: 'version.published', version: 2, details: { oneClick: true, availability: 'available' } });
+  });
 });
 
