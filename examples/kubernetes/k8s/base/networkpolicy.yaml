@@ -1,0 +1,24 @@
+# The pod never talks to Slack, Stripe or GitHub itself: Token Vault's customer webhook does.
+# So egress is limited to DNS, the Token Vault control plane and the database. Adjust the
+# selectors (or use ipBlock) to match where those run in your cluster.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: orders-api
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: orders-api }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports: [{ port: 8080, protocol: TCP }]
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector: { matchLabels: { k8s-app: kube-dns } }
+      ports: [{ port: 53, protocol: UDP }, { port: 53, protocol: TCP }]
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: token-vault } }
+      ports: [{ port: 443, protocol: TCP }, { port: 4000, protocol: TCP }]
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: databases } }
+      ports: [{ port: 5432, protocol: TCP }]

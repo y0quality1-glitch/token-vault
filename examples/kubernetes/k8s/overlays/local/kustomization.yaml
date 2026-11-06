@@ -1,0 +1,41 @@
+# Local cluster (kind, minikube, k3d) without a secrets manager: the Secret is generated from
+# config.env (copy config.env.example; config.env is git-ignored). Token Vault runs on your
+# machine (npm run dev); the pod reaches it through the host gateway.
+#
+#   docker build -f examples/kubernetes/orders-api/Dockerfile -t orders-api:dev .
+#   kind load docker-image orders-api:dev
+#   kubectl apply -k examples/kubernetes/k8s/overlays/local
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+secretGenerator:
+  - name: orders-api-config
+    namespace: orders
+    envs: [config.env]
+    options:
+      disableNameSuffixHash: true
+images:
+  - name: registry.example.com/orders-api
+    newName: orders-api
+    newTag: dev
+patches:
+  - target: { kind: Deployment, name: orders-api }
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+      - op: add
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: IfNotPresent
+      - op: replace
+        path: /spec/template/spec/containers/0/env/0/value
+        value: http://host.docker.internal:4000
+  # Local clusters reach Token Vault on the host, which the base policy does not allow.
+  - target: { kind: NetworkPolicy, name: orders-api }
+    patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: orders-api
