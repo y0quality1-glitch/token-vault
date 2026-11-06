@@ -94,7 +94,7 @@ async function runWithCredential(rec: store.CredentialRecord, secret: string, ca
   if (!app.isGitHubAppCredential(secret)) {
     const method = secretAuthMethod(def, rec.metadata);
     const auth = injectionFor(method, secret);
-    return isTest ? testCredential(config.githubMode, def, method, auth) : executeOperation(config.githubMode, def, call, auth);
+    return isTest ? testCredential(config.modeFor(def.key), def, method, auth) : executeOperation(config.modeFor(def.key), def, call, auth);
   }
   const method = def.auth.find((a) => a.kind === 'plugin' && a.plugin === 'github_app');
   if (!method) throw new ExecutionError('UNSUPPORTED_OPERATION', `${def.name} does not support GitHub App credentials`);
@@ -102,14 +102,14 @@ async function runWithCredential(rec: store.CredentialRecord, secret: string, ca
   const cred = JSON.parse(secret) as app.GitHubAppCredential;
   const key = app.resolvePrivateKey(cred, config.githubAppPrivateKey);
   const repository = call.resource[def.resource.name];
-  const minted = await app.mintInstallationToken(config.githubMode, cred, key, permissions, repository);
+  const minted = await app.mintInstallationToken(config.modeFor(def.key), cred, key, permissions, repository);
   try {
     const auth = { kind: 'bearer' as const, secret: minted.token };
-    const result = isTest ? await testCredential(config.githubMode, def, method, auth) : await executeOperation(config.githubMode, def, call, auth);
-    const revoked = await app.revokeInstallationToken(config.githubMode, minted.token);
+    const result = isTest ? await testCredential(config.modeFor(def.key), def, method, auth) : await executeOperation(config.modeFor(def.key), def, call, auth);
+    const revoked = await app.revokeInstallationToken(config.modeFor(def.key), minted.token);
     return { ...result, credential: { type: 'github_app_installation_token', repositories: minted.repositories, permissions: minted.permissions, expires_at: minted.expiresAt, revoked } };
   } catch (e) {
-    await app.revokeInstallationToken(config.githubMode, minted.token);
+    await app.revokeInstallationToken(config.modeFor(def.key), minted.token);
     throw e;
   }
 }
@@ -133,7 +133,7 @@ async function runWithOAuth(rec: store.CredentialRecord, def: ProviderDefinition
       const latest = latestRec ? (JSON.parse(await store.withSecret(latestRec, async (s) => s)) as oauth.OAuthCredential) : cred;
       // Another request already refreshed: use its token instead of spending the refresh token again.
       if (latest.accessToken !== used && !oauth.needsRefresh(latest)) return latest;
-      const next = await oauth.refresh(config.githubMode, def, method, latest, config.mockOAuthTokenTtlS);
+      const next = await oauth.refresh(config.modeFor(def.key), def, method, latest, config.mockOAuthTokenTtlS);
       await store.replaceSecret(rec.credentialRef, rec.orgId, JSON.stringify(next));
       console.log(`[vault] refreshed OAuth access token for ${rec.credentialRef}`);
       return next;
@@ -142,7 +142,7 @@ async function runWithOAuth(rec: store.CredentialRecord, def: ProviderDefinition
   };
   const run = () => {
     const auth = { kind: 'bearer' as const, secret: cred.accessToken! };
-    return call.operation === 'credential.test' ? testCredential(config.githubMode, def, method, auth) : executeOperation(config.githubMode, def, call, auth);
+    return call.operation === 'credential.test' ? testCredential(config.modeFor(def.key), def, method, auth) : executeOperation(config.modeFor(def.key), def, call, auth);
   };
   if (oauth.needsRefresh(cred)) await doRefresh();
   let result = await run();
@@ -156,7 +156,8 @@ async function runWithOAuth(rec: store.CredentialRecord, def: ProviderDefinition
 function oauthFailure(req: SignedRequest, res: Response, e: oauth.OAuthError) {
   console.warn(`[vault] OAuth: ${e.code}`);
   const status = e.code === 'OAUTH_REFRESH_FAILED' || e.code === 'OAUTH_EXCHANGE_FAILED' ? 502 : e.code === 'OAUTH_NOT_CONNECTED' ? 409 : 400;
-  return signedJson(req, res, status, { error: { code: e.code, message: e.message } });
+  // The provider's status (if any) lets the control plane tell a revoked grant from an outage.
+  return signedJson(req, res, status, { error: { code: e.code, message: e.message, upstream_status: e.upstreamStatus ?? null } });
 }
 
 /** Execution errors raised before or around the upstream call (never contain secrets). */
@@ -167,7 +168,7 @@ function executionFailure(req: SignedRequest, res: Response, e: ExecutionError) 
 }
 
 /** Validates a GitHub App registration request and resolves its installation. */
-async function prepareAppCredential(body: any): Promise<app.GitHubAppCredential> {
+async function prepareAppCredential(provider: string, body: any): Promise<app.GitHubAppCredential> {
   const appId = String(body?.app_id ?? '');
   if (!/^\d{1,12}$/.test(appId)) throw new app.GitHubAppError('APP_AUTH_FAILED', 'app_id must be the numeric GitHub App ID');
   const keySource = body?.key_source === 'webhook_env' ? 'webhook_env' : 'stored';
@@ -175,14 +176,14 @@ async function prepareAppCredential(body: any): Promise<app.GitHubAppCredential>
   if (installationId && !/^\d{1,15}$/.test(installationId)) throw new app.GitHubAppError('INSTALLATION_NOT_FOUND', 'installation_id must be numeric');
   const cred: app.GitHubAppCredential = { type: 'github_app', appId, installationId: installationId ?? '', keySource, ...(keySource === 'stored' ? { privateKey: String(body?.private_key ?? '') } : {}) };
   const key = app.resolvePrivateKey(cred, config.githubAppPrivateKey);
-  const found = await app.resolveInstallation(config.githubMode, appId, key, installationId);
+  const found = await app.resolveInstallation(config.modeFor(provider), appId, key, installationId);
   return { ...cred, installationId: found.installationId, account: found.account };
 }
 
 function appFailure(req: SignedRequest, res: Response, e: unknown) {
   if (e instanceof app.GitHubAppError) {
     console.warn(`[vault] GitHub App: ${e.code}`);
-    return signedJson(req, res, e.code === 'TOKEN_MINT_FAILED' || e.code === 'APP_AUTH_FAILED' ? 502 : 400, { error: { code: e.code, message: e.message } });
+    return signedJson(req, res, e.code === 'TOKEN_MINT_FAILED' || e.code === 'APP_AUTH_FAILED' ? 502 : 400, { error: { code: e.code, message: e.message, upstream_status: e.upstreamStatus ?? null } });
   }
   return credentialFailure(req, res, e, 'github app');
 }
@@ -217,6 +218,7 @@ export function buildRouter() {
       instance_id: config.instanceId,
       version: config.version,
       github_mode: config.githubMode,
+      provider_modes: config.providerModes,
       uptime_s: Math.round((Date.now() - startedAt) / 1000),
       credentials_stored: await store.countCredentials(),
       providers: registry.list().map((e) => ({ key: e.definition.key, version: e.definition.version, source: e.source, digest: (e.digest ?? createHash('sha256').update(JSON.stringify(e.definition)).digest('hex')).slice(0, 16) })),
@@ -247,7 +249,7 @@ export function buildRouter() {
     if (type === 'github_app') {
       if (!def.auth.some((a) => a.plugin === 'github_app')) return signedJson(req, res, 400, { error: { code: 'INVALID_CREDENTIAL_REQUEST', message: `${def.name} does not support GitHub App credentials` } });
       try {
-        const cred = await prepareAppCredential(req.json);
+        const cred = await prepareAppCredential(provider, req.json);
         const rec = await store.createCredential(org_id, provider, JSON.stringify(cred), { ...safeMeta, auth: 'github_app', app_id: cred.appId, installation_id: cred.installationId, account: cred.account ?? '', key_source: cred.keySource }, app.maskApp(cred));
         console.log(`[vault] stored GitHub App credential ${rec.credentialRef} app=${cred.appId} installation=${cred.installationId} key=${cred.keySource}`);
         return signedJson(req, res, 201, { ...store.publicView(rec), auth_type: 'GITHUB_APP', app_id: cred.appId, installation_id: cred.installationId, account: cred.account ?? null });
@@ -281,7 +283,7 @@ export function buildRouter() {
           return signedJson(req, res, 400, { error: { code: 'KEY_MANAGED_BY_WEBHOOK', message: 'This App key lives in the webhook environment (GITHUB_APP_PRIVATE_KEY); rotate it there.' } });
         }
         const key = app.parsePrivateKey(String(private_key ?? ''));
-        await app.resolveInstallation(config.githubMode, cred.appId, key, cred.installationId); // the new key must work
+        await app.resolveInstallation(config.modeFor(existing.provider), cred.appId, key, cred.installationId); // the new key must work
         const next: app.GitHubAppCredential = { ...cred, privateKey: String(private_key) };
         const rec = await store.rotateCredential(existing.credentialRef, str(org_id), JSON.stringify(next), app.maskApp(next));
         console.log(`[vault] rotated GitHub App key for ${existing.credentialRef}`);
@@ -308,7 +310,7 @@ export function buildRouter() {
       signedJson(req, res, 200, { valid: result.upstreamStatus === 200, upstream_status: result.upstreamStatus, simulated: result.simulated, ...store.publicView(rec) });
     } catch (e) {
       if (e instanceof app.GitHubAppError || e instanceof ExecutionError || e instanceof oauth.OAuthError) {
-        return signedJson(req, res, 200, { valid: false, upstream_status: e instanceof ExecutionError ? null : e.upstreamStatus, simulated: config.githubMode === 'mock', error_code: e.code, ...store.publicView(rec) });
+        return signedJson(req, res, 200, { valid: false, upstream_status: e instanceof ExecutionError ? null : e.upstreamStatus, simulated: config.modeFor(rec.provider) === 'mock', error_code: e.code, ...store.publicView(rec) });
       }
       credentialFailure(req, res, e, `test ${rec.credentialRef}`);
     }
@@ -342,7 +344,7 @@ export function buildRouter() {
     }
     const safeMeta: Record<string, string> = {};
     for (const [k, v] of Object.entries(metadata ?? {})) if (typeof v === 'string') safeMeta[k.slice(0, 40)] = v.slice(0, 200);
-    const started = oauth.start(config.githubMode, method, { clientId: client_id, clientSecret: client_secret, redirectUri: redirect.toString() });
+    const started = oauth.start(config.modeFor(def.key), method, { clientId: client_id, clientSecret: client_secret, redirectUri: redirect.toString() });
     const rec = await store.createCredential(org_id, def.key, JSON.stringify(started.credential), { ...safeMeta, auth: 'oauth2', auth_method: method.id }, oauth.maskOAuth(started.credential));
     console.log(`[vault] started OAuth connection ${rec.credentialRef} provider=${def.key}`);
     signedJson(req, res, 201, { ...store.publicView(rec), authorize_url: started.authorizeUrl, state: started.state });
@@ -363,7 +365,7 @@ export function buildRouter() {
       const def = definitionFor(rec.provider);
       const method = def.auth.find((a) => a.id === cred.authMethod && a.kind === 'oauth2');
       if (!method) throw new oauth.OAuthError('OAUTH_CONFIG', `${def.name} no longer offers the OAuth method ${cred.authMethod}`);
-      const connected = await oauth.complete(config.githubMode, def, method, cred, { code, state }, config.mockOAuthTokenTtlS);
+      const connected = await oauth.complete(config.modeFor(def.key), def, method, cred, { code, state }, config.mockOAuthTokenTtlS);
       const updated = await store.replaceSecret(rec.credentialRef, rec.orgId, JSON.stringify(connected));
       console.log(`[vault] completed OAuth connection ${rec.credentialRef} (tokens stored encrypted)`);
       signedJson(req, res, 200, { ...store.publicView(updated!), scopes: connected.scopes ?? [], expires_at: connected.expiresAt ?? null, refreshable: !!connected.refreshToken });

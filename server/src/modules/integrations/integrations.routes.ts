@@ -16,6 +16,7 @@ import { effectiveGrantStatus, loadLookups, toIntegration } from '../../store/vi
 import { recordEvent, userActor } from '../audit/audit.service';
 import { WebhookUnavailableError, callWebhook } from '../webhooks/webhook.client';
 import { GENERIC_RESOURCE, providerCatalog, registry, resourceProblem } from '../providers/registry';
+import { checkAllCredentials } from './credential-health';
 
 export const integrationsRouter = Router();
 
@@ -366,6 +367,17 @@ integrationsRouter.patch('/integrations/:id', requirePermission(PERMISSIONS.INTE
     return u;
   });
   res.json(await detail(updated));
+});
+
+/**
+ * Re-tests every stored credential of the organization now (the same check that runs on a
+ * schedule): revoked ones are marked invalid, recovered ones connected again, both audited.
+ */
+integrationsRouter.post('/integrations/check-credentials', requirePermission(PERMISSIONS.INTEGRATION_MANAGE), async (req, res) => {
+  const ctx = orgCtx(req);
+  const counts = await checkAllCredentials(ctx.org.id);
+  await recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: 'integration.credentials_checked', target: { type: 'organization', id: ctx.org.id, name: ctx.org.name }, outcome: counts.rejected ? 'FAILURE' : 'SUCCESS', severity: counts.rejected ? 'warning' : 'info', metadata: counts });
+  res.json(counts);
 });
 
 integrationsRouter.post('/integrations/:id/test', requirePermission(PERMISSIONS.INTEGRATION_MANAGE), async (req, res) => {

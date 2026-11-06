@@ -24,8 +24,8 @@ export function CredentialStatusPage() {
   async function test(i: Integration) {
     setTesting(i.id);
     try {
-      const r = await api.post<{ valid: boolean; upstreamStatus: number | null }>(`/integrations/${i.id}/test`);
-      if (r.valid) toast.success(`${i.displayName}: credential valid`, `Upstream responded ${r.upstreamStatus} (simulated).`);
+      const r = await api.post<{ valid: boolean; upstreamStatus: number | null; simulated: boolean }>(`/integrations/${i.id}/test`);
+      if (r.valid) toast.success(`${i.displayName}: credential valid`, `Upstream responded ${r.upstreamStatus}${r.simulated ? ' (simulated)' : ''}.`);
       else toast.error(`${i.displayName}: credential invalid`, `Upstream responded ${r.upstreamStatus ?? 'n/a'}.`);
       await reload();
     } catch (e) {
@@ -35,9 +35,36 @@ export function CredentialStatusPage() {
     }
   }
 
+  const [checkingAll, setCheckingAll] = useState(false);
+  async function checkAll() {
+    setCheckingAll(true);
+    try {
+      const r = await api.post<{ valid: number; rejected: number; unknown: number; skipped: number }>('/integrations/check-credentials');
+      const summary = `${r.valid} valid, ${r.rejected} rejected${r.unknown ? `, ${r.unknown} could not be checked` : ''}${r.skipped ? `, ${r.skipped} skipped (disabled or webhook unhealthy)` : ''}.`;
+      if (r.rejected) toast.error('Some credentials were rejected', `${summary} Rejected integrations are now marked invalid.`);
+      else toast.success('Credentials checked', summary);
+      await reload();
+    } catch (e) {
+      toast.error('Check failed', (e as Error).message);
+    } finally {
+      setCheckingAll(false);
+    }
+  }
+
   return (
     <div className="space-y-4">
-      <PageHeader title="Credential Status" description="Lifecycle and validation state of every credential held by your customer webhook." breadcrumbs={[{ label: 'Integrations' }, { label: 'Credential Status' }]} />
+      <PageHeader
+        title="Credential Status"
+        description="Lifecycle and validation state of every credential held by your customer webhook. Every credential is also re-tested with its provider on a schedule; one the provider rejects is marked invalid."
+        breadcrumbs={[{ label: 'Integrations' }, { label: 'Credential Status' }]}
+        actions={
+          can(PERMISSIONS.INTEGRATION_MANAGE) && (
+            <Button variant="outline" loading={checkingAll} onClick={checkAll}>
+              <RefreshCw className="h-4 w-4" /> Check all now
+            </Button>
+          )
+        }
+      />
       <Callout tone="security" title="What you are looking at">
         Token Vault never holds the secret value. The <strong>credential reference</strong> points to an AES-256-GCM encrypted record inside the customer webhook; the <strong>fingerprint</strong> is a keyed HMAC computed by the webhook so you can detect changes without seeing the secret.
       </Callout>

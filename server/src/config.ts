@@ -56,6 +56,8 @@ export const config = {
   webhookSigningSecretRef: 'env:WEBHOOK_SIGNING_SECRET',
   defaultWebhookUrl: process.env.DEFAULT_WEBHOOK_URL ?? 'http://localhost:4100',
   heartbeatIntervalMs: Number(process.env.HEARTBEAT_INTERVAL_MS ?? 30_000),
+  /** How often every stored credential is re-tested with its provider (default 6 h; 0 = never). */
+  credentialCheckIntervalMs: Number(process.env.CREDENTIAL_CHECK_INTERVAL_MS ?? 6 * 3600_000),
   sessionTtlMs: 8 * 60 * 60 * 1000,
   sessionCookie: 'tv_session',
   cookieSecure: process.env.NODE_ENV === 'production',

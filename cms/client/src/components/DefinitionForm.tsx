@@ -381,7 +381,7 @@ export function DefinitionForm({ value, onChange, readOnly, issues }: Props) {
         ))}
       </Section>
 
-      <Section title="Credential test" description="Request used to check a credential when it is connected." issues={issuesFor(issues, 'credentialTest')}>
+      <Section title="Credential test" description="Request used to check a credential when it is connected, and again on every scheduled credential check." issues={issuesFor(issues, 'credentialTest')}>
         <div className="grid gap-3 sm:grid-cols-[7rem_1fr]">
           <Field label="Method">
             <Select aria-label="Credential test method" value={def.credentialTest?.request?.method ?? 'GET'} disabled={ro} onChange={(e) => edit((d) => (((d.credentialTest ??= {}).request ??= {}).method = e.target.value))}>
@@ -393,6 +393,15 @@ export function DefinitionForm({ value, onChange, readOnly, issues }: Props) {
           <Text label="Path" mono value={def.credentialTest?.request?.path} readOnly={ro} placeholder="/me" onChange={(v) => edit((d) => (((d.credentialTest ??= {}).request ??= {}).path = v))} />
         </div>
         <Pairs label="Response fields kept" keyLabel="Output" valueLabel="Source path" value={def.credentialTest?.response?.fields} readOnly={ro} onChange={(v) => edit((d) => (((d.credentialTest ??= {}).response ??= {}).fields = v))} />
+        <Text
+          label="Credential test mock status"
+          mono
+          value={def.credentialTest?.mock?.status ?? ''}
+          readOnly={ro}
+          placeholder="200"
+          hint="Mock mode only: the simulated answer to this test. 401 simulates a revoked credential, which the scheduled credential check then reports."
+          onChange={(v) => edit((d) => ((d.credentialTest ??= {}).mock = v === '' ? undefined : { ...((d.credentialTest as { mock?: object }).mock ?? {}), status: Number(v) }))}
+        />
       </Section>
 
       <Section

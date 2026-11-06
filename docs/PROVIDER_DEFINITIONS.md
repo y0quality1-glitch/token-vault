@@ -83,6 +83,8 @@ When executing, the webhook:
 - refuses `destructive` operations;
 - refuses operations that belong to a different provider than the stored credential.
 
-In mock mode (`GITHUB_MODE=mock`), a host with a simulator (today `api.github.com`) gets a simulated HTTP API, so mock and live mode run the same request-building code. Other hosts answer with the operation's `mock` response.
+In mock mode, a host with a simulator (today `api.github.com`) gets a simulated HTTP API, so mock and live mode run the same request-building code. Other hosts answer with the operation's `mock` response, and the connection test with `credentialTest.mock` (or an auth method's `test.mock`); without one, they answer 200 with an empty body. A `credentialTest.mock` of `{"status": 401}` simulates a revoked credential: the next agent request, or the scheduled credential check, marks the integration invalid.
+
+Which applications are simulated is decided by the webhook: `UPSTREAM_MODE` (default `mock`) for all of them, overridden per application by `PROVIDER_MODES`, e.g. `github=live,slack=mock`.
 
 The webhook's signed health response lists the definitions it has loaded (`providers: [{key, version, digest}]`).

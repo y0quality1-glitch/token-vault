@@ -11,6 +11,7 @@ import {
 } from '@token-vault/shared';
 import { config } from '../../config';
 import { getOperation, registry } from '../providers/registry';
+import { isCredentialRejection, reportCredentialRejected } from '../integrations/credential-health';
 import { parseAgentCredential, verifySecret } from '../../lib/crypto';
 import { correlationId as newCorrelationId, nonce, requestId as newRequestId } from '../../lib/ids';
 import { transaction } from '../../db/client';
@@ -290,8 +291,15 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
     return respond({ ...allowArgs, status: 503, code: DECISION_CODES.WEBHOOK_UNAVAILABLE, reason: `Authorized, but execution failed safely: ${err.message}. No credential was exposed.`, executionStatus: 'FAILED', webhookStatus: reasonCode, upstreamStatus: null, result: null });
   }
 
+  const providerName = registry.get(integration.provider)?.name ?? integration.provider;
+  // The provider no longer accepts the stored credential: mark the integration invalid
+  // (later requests are denied until a test passes) and say so in this response.
+  const rejection = { upstreamStatus: wh.status === 200 ? Number(wh.body.upstream_status) : null, errorCode: wh.status === 200 ? null : (wh.body?.error?.code ?? null), errorUpstreamStatus: wh.status === 200 ? null : (wh.body?.error?.upstream_status ?? null) };
+  const rejected = isCredentialRejection(rejection) ? await reportCredentialRejected(integration, 'agent_request', { ...rejection, requestId }).then(() => true) : false;
+  const rejectedNote = rejected ? ` ${providerName} rejected the stored credential; the integration "${integration.displayName}" is now marked invalid until an administrator rotates or re-tests it.` : '';
+
   if (wh.status !== 200) {
-    return respond({ ...allowArgs, status: 502, code: DECISION_CODES.WEBHOOK_UNAVAILABLE, reason: `Authorized, but the webhook refused execution (${wh.body?.error?.code ?? wh.status}).`, executionStatus: 'FAILED', webhookStatus: wh.body?.error?.code ?? `HTTP_${wh.status}`, upstreamStatus: null, result: null });
+    return respond({ ...allowArgs, status: 502, code: DECISION_CODES.WEBHOOK_UNAVAILABLE, reason: `Authorized, but the webhook refused execution (${wh.body?.error?.code ?? wh.status}).${rejectedNote}`, executionStatus: 'FAILED', webhookStatus: wh.body?.error?.code ?? `HTTP_${wh.status}`, upstreamStatus: null, result: null });
   }
 
   const upstream = Number(wh.body.upstream_status);
@@ -300,7 +308,7 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
     ...allowArgs,
     status: ok ? 200 : 502,
     code: ok ? DECISION_CODES.ALLOWED : DECISION_CODES.UPSTREAM_ERROR,
-    reason: ok ? evaluation.reason : `Authorized, but GitHub returned HTTP ${upstream}${wh.body.result?.message ? ` (${wh.body.result.message})` : ''}.`,
+    reason: ok ? evaluation.reason : `Authorized, but ${providerName} returned HTTP ${upstream}${wh.body.result?.message ? ` (${wh.body.result.message})` : ''}.${rejectedNote}`,
     executionStatus: ok ? 'SUCCEEDED' : 'FAILED',
     webhookStatus: 'OK',
     upstreamStatus: upstream,
