@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "MCP server exposing Token Vault-brokered GitHub tools to AI agents (stdio)",
+  "description": "MCP server exposing Token Vault-brokered tools (GitHub and every catalog application) to AI agents (stdio)",
   "bin": { "token-vault-mcp": "./bin/token-vault-mcp.mjs" },
   "scripts": {
     "start": "tsx src/index.ts",

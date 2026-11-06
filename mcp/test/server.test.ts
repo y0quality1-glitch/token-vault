@@ -1,10 +1,49 @@
 import { describe, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import type { AgentCapabilitiesBody, ExecuteResponseBody } from '@token-vault/shared';
+import type { AgentCapabilitiesBody, AgentOperationsBody, ExecuteResponseBody } from '@token-vault/shared';
 import { TokenVault } from '@token-vault/sdk';
 import { createServer } from '../src/server';
 import { resolveIntegration } from '../src/resolve';
+import { catalogTools } from '../src/catalog-tools';
+
+const slackProvider: AgentOperationsBody['providers'][number] = {
+  key: 'slack',
+  name: 'Slack',
+  description: 'Chat',
+  version: 2,
+  resource: { name: 'channel', label: 'Channel', pattern: '^[CG][A-Z0-9]{8,12}$', case_insensitive: false, example: 'C0123456789' },
+  resource_fields: [],
+  operations: [
+    { id: 'slack.messages.post', label: 'Post a message', description: '', risk: 'write', requires_resource: true, input: [{ name: 'text', type: 'string', label: 'Message', required: true, max_length: 4000 }] },
+    { id: 'slack.channels.archive', label: 'Archive channel', description: '', risk: 'destructive', requires_resource: true, input: [] },
+  ],
+};
+const githubProvider: AgentOperationsBody['providers'][number] = {
+  key: 'github',
+  name: 'GitHub',
+  description: '',
+  version: 1,
+  resource: { name: 'repository', label: 'Repository', pattern: '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$', case_insensitive: true, example: 'demo-org/demo-repo' },
+  resource_fields: [{ name: 'path', label: 'Path', pattern: '^.{1,240}$', case_insensitive: false, example: 'README.md' }],
+  operations: [
+    { id: 'github.issues.create', label: 'Create issue', description: '', risk: 'write', requires_resource: true, input: [] },
+    { id: 'github.contents.write', label: 'Write file', description: '', risk: 'write', requires_resource: true, input: [{ name: 'content', type: 'string', label: null, required: true, max_length: null }, { name: 'path', type: 'string', label: null, required: false, max_length: null }] },
+  ],
+};
+const operationsBody = (providers = [githubProvider, slackProvider], version = 'v1'): AgentOperationsBody => ({ version, providers });
+
+describe('catalogTools', () => {
+  it('makes one typed tool per non-destructive operation, skipping the hand-written GitHub ones', () => {
+    const tools = catalogTools(operationsBody());
+    expect(tools.map((t) => t.name)).toEqual(['github_contents_write', 'slack_messages_post']);
+    const write = tools[0]!;
+    // "path" is both a resource field and an input: the input is renamed, and both reach Token Vault where they belong.
+    expect(Object.keys(write.inputSchema).sort()).toEqual(['content', 'input_path', 'integration', 'path', 'repository']);
+    expect(write.split({ repository: 'a/b', path: 'docs/x.md', content: 'hi', input_path: 'y' })).toEqual({ resource: { repository: 'a/b', path: 'docs/x.md' }, input: { content: 'hi', path: 'y' }, integration: undefined });
+    expect(tools[1]!.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false });
+  });
+});
 
 const KEY = 'tvak_0123456789ab_abcdefghijklmnopqrstuvwxyz012345';
 
@@ -41,7 +80,11 @@ describe('resolveIntegration', () => {
 });
 
 describe('MCP tools', () => {
+  const ops = { current: operationsBody() };
+  const capsNow = { current: caps() };
   async function connect(execute: Partial<ExecuteResponseBody> & { httpStatus?: number }) {
+    ops.current = operationsBody();
+    capsNow.current = caps([grant(), grant({ grant_id: 'grt_s', name: 'Slack posting', integration_id: 'int_slack_1', integration_name: 'Team Slack', provider: 'slack', operations: ['slack.messages.post'], repositories: ['C0123456789'] })]);
     const { httpStatus = 200, ...over } = execute;
     const body: ExecuteResponseBody = {
       request_id: 'req_abc',
@@ -60,15 +103,20 @@ describe('MCP tools', () => {
     const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       const u = String(url);
       calls.push({ url: u, body: init?.body ? JSON.parse(String(init.body)) : null });
-      const payload = u.endsWith('/capabilities') ? caps() : body;
+      if (u.endsWith('/operations')) return new Response(JSON.stringify(ops.current), { status: 200 });
+      if (u.endsWith('/access-requests')) return new Response(JSON.stringify({ access_request_id: 'gr_1', status: 'PENDING', expires_at: '2026-11-07T00:00:00.000Z' }), { status: 201 });
+      const payload = u.endsWith('/capabilities') ? capsNow.current : body;
       return new Response(JSON.stringify(payload), { status: u.endsWith('/capabilities') ? 200 : httpStatus });
     });
     const tv = new TokenVault({ apiKey: KEY, baseUrl: 'http://tv.test', fetch: fetchMock as unknown as typeof fetch });
     const [clientT, serverT] = InMemoryTransport.createLinkedPair();
-    await createServer(tv).connect(serverT);
+    const server = createServer(tv);
+    await server.connect(serverT);
     const client = new Client({ name: 'test', version: '1.0.0' });
+    const listChanged: number[] = [];
     await client.connect(clientT);
-    return { client, calls };
+    client.fallbackNotificationHandler = async (n) => void (n.method === 'notifications/tools/list_changed' && listChanged.push(Date.now()));
+    return { client, calls, server, listChanged };
   }
   const textOf = (r: unknown) => ((r as { content?: { text: string }[] }).content ?? []).map((c) => c.text).join('\n');
 
@@ -108,5 +156,46 @@ describe('MCP tools', () => {
     const r = await client.callTool({ name: 'github_list_issues', arguments: { repository: 'not a repo' } });
     expect(r.isError).toBe(true);
     expect(calls).toHaveLength(0);
+  });
+
+  it('adds tools for the applications in the catalog, typed from their definitions', async () => {
+    const { client, calls, server, listChanged } = await connect({ result: { ok: true, ts: '1767600000.000100' } });
+    expect(await server.refreshTools()).toBe(true);
+    const tools = (await client.listTools()).tools;
+    expect(tools.map((t) => t.name)).toContain('slack_messages_post');
+    expect(tools.map((t) => t.name)).not.toContain('slack_channels_archive'); // destructive operations never become tools
+    const post = tools.find((t) => t.name === 'slack_messages_post')!;
+    expect(post.inputSchema.required).toEqual(['channel', 'text']);
+    await vi.waitFor(() => expect(listChanged.length).toBeGreaterThan(0));
+
+    const bad = await client.callTool({ name: 'slack_messages_post', arguments: { channel: 'general', text: 'hi' } });
+    expect(bad.isError).toBe(true);
+    expect(calls.some((c) => c.url.endsWith('/execute'))).toBe(false);
+
+    const r = await client.callTool({ name: 'slack_messages_post', arguments: { channel: 'C0123456789', text: 'Deploy finished' } });
+    expect(r.isError).toBeFalsy();
+    expect(textOf(r)).toContain('Post a message succeeded (simulated Slack)');
+    expect(calls.at(-1)).toMatchObject({ url: 'http://tv.test/agent/v1/execute', body: { integration_id: 'int_slack_1', operation: 'slack.messages.post', resource: { channel: 'C0123456789' }, input: { text: 'Deploy finished' } } });
+  });
+
+  it('follows catalog changes: unchanged versions are free, removed applications lose their tools', async () => {
+    const { client, server } = await connect({});
+    await server.refreshTools();
+    expect(await server.refreshTools()).toBe(false);
+    ops.current = operationsBody([githubProvider], 'v2');
+    expect(await server.refreshTools()).toBe(true);
+    const names = (await client.listTools()).tools.map((t) => t.name);
+    expect(names).not.toContain('slack_messages_post');
+    expect(names).toContain('github_contents_write');
+    expect(names).toContain('github_create_issue'); // hand-written tools are unaffected
+  });
+
+  it('requests access for any application, narrowed to a resource', async () => {
+    const { client, calls } = await connect({});
+    const r = await client.callTool({ name: 'token_vault_request_access', arguments: { operations: ['slack.messages.post'], resource: 'C0123456789', justification: 'Post the release notes to the team channel' } });
+    expect(r.isError).toBeFalsy();
+    expect(calls.at(-1)).toMatchObject({ url: 'http://tv.test/agent/v1/access-requests', body: { integration_id: 'int_slack_1', operations: ['slack.messages.post'], repositories: ['C0123456789'] } });
+    const mixed = await client.callTool({ name: 'token_vault_request_access', arguments: { operations: ['slack.messages.post', 'github.issues.create'], justification: 'Needs both for the release' } });
+    expect(textOf(mixed)).toMatch(/one application at a time/);
   });
 });
