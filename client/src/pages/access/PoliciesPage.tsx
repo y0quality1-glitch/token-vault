@@ -142,7 +142,7 @@ export function PoliciesPage() {
 }
 
 function PolicyDialog({ policy, agents, integrations, onClose, onSaved }: { policy: Policy | 'new' | null; agents: Agent[]; integrations: Integration[]; onClose: () => void; onSaved: () => void }) {
-  const { operations } = useProviders();
+  const { operations, providers } = useProviders();
   const toast = useToast();
   const isNew = policy === 'new';
   const [f, setF] = useState({
@@ -282,14 +282,18 @@ function PolicyDialog({ policy, agents, integrations, onClose, onSaved }: { poli
           </Field>
           <Field label="Integration selector">
             <div className="flex gap-2">
-              <Select className="w-36" value={f.integrationType} onChange={(e) => setF({ ...f, integrationType: e.target.value as typeof f.integrationType, integrationValue: e.target.value === 'provider' ? 'github' : '' })}>
+              <Select className="w-36" value={f.integrationType} onChange={(e) => setF({ ...f, integrationType: e.target.value as typeof f.integrationType, integrationValue: e.target.value === 'provider' ? (providers[0]?.key ?? '') : '' })}>
                 <option value="any">Any</option>
                 <option value="provider">Provider</option>
                 <option value="integration">Specific</option>
               </Select>
               {f.integrationType === 'provider' && (
                 <Select value={f.integrationValue} onChange={(e) => setF({ ...f, integrationValue: e.target.value })}>
-                  <option value="github">GitHub</option>
+                  {providers.map((p) => (
+                    <option key={p.key} value={p.key}>
+                      {p.name}
+                    </option>
+                  ))}
                 </Select>
               )}
               {f.integrationType === 'integration' && (

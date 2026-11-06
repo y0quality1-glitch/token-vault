@@ -56,22 +56,25 @@ export function ApplicationPage() {
             {isEditor && !a.archived && !a.openVersion && (
               <Button
                 loading={newVersion.pending}
+                title={a.publishedVersion ? `Published versions are frozen: starts a draft copied from v${a.versions[0]?.version}` : undefined}
                 onClick={async () => {
                   const r = await newVersion.run();
                   if (r) navigate(`/applications/${key}/versions/${r.version}`);
                 }}
               >
-                <GitBranchPlus className="h-4 w-4" /> New version
+                <GitBranchPlus className="h-4 w-4" /> Edit (new version)
               </Button>
             )}
             {a.openVersion && (
-              <Button onClick={() => navigate(`/applications/${key}/versions/${a.openVersion!.version}`)}>Open v{a.openVersion.version}</Button>
+              <Button onClick={() => navigate(`/applications/${key}/versions/${a.openVersion!.version}`)}>
+                Continue editing v{a.openVersion.version}
+              </Button>
             )}
             {user?.role === 'ADMIN' && !a.archived && a.availability && (
               <Button
                 variant={a.availability === 'coming_soon' ? 'primary' : 'outline'}
                 disabled={!!a.openVersion}
-                title={a.openVersion ? `v${a.openVersion.version} is open: set the availability in that version, or withdraw it first` : undefined}
+                title={a.openVersion ? `v${a.openVersion.version} is open: set the availability in that version and publish it` : undefined}
                 onClick={() => setAvailabilityTarget(a.availability === 'coming_soon' ? 'available' : 'coming_soon')}
               >
                 {a.availability === 'coming_soon' ? (
@@ -96,7 +99,7 @@ export function ApplicationPage() {
       <FormError error={newVersion.error} />
       <div className="grid gap-6 lg:grid-cols-3">
         <Card className="lg:col-span-2">
-          <CardHeader title="Versions" description="Only one version can be open (draft or in review) at a time. Published versions are immutable." />
+          <CardHeader title="Versions" description={`Only one version can be open (draft or in review) at a time. Published versions are frozen: edit by starting a new version${user?.role === 'ADMIN' ? ', which you can publish directly as an administrator' : ', then submit it for review'}.`} />
           <DataTable
             rows={a.versions}
             rowKey={(v) => String(v.version)}

@@ -28,7 +28,12 @@ const publicKey = createPublicKey(signingKey);
 const seedMode = process.env.SEED_MODE ?? 'if-empty';
 if (seedMode !== 'if-empty' && seedMode !== 'reset') fail('SEED_MODE must be "if-empty" (default) or "reset".');
 
+// Administrators may publish a version directly (no second reviewer). Set to "false" to
+// require two people for every publication (separation of duties), as in production.
+const adminDirectPublish = (process.env.CMS_ADMIN_DIRECT_PUBLISH ?? 'true') !== 'false';
+
 export const config = {
+  adminDirectPublish,
   port: Number(process.env.PORT ?? 4200),
   databaseUrl,
   dbPoolMax: Number(process.env.DB_POOL_MAX ?? 5),

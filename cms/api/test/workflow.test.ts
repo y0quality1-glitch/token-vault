@@ -236,5 +236,50 @@ suite('provider CMS workflow', () => {
     const actions = (await call(admin, 'GET', '/api/v1/audit?application=google')).body.items;
     expect(actions[1]).toMatchObject({ action: 'version.published', version: 2, details: { oneClick: true, availability: 'available' } });
   });
+  it('lets an administrator edit a seeded application (from its published v1) and publish it directly', async () => {
+    const v1 = (await call(admin, 'GET', version('slack', 1))).body;
+    expect(v1.can).toMatchObject({ edit: false, editAsNewVersion: true, publishDirectly: false });
+    expect(v1.openVersion).toBeNull();
+    expect((await call(publisher, 'GET', version('slack', 1))).body.can.editAsNewVersion).toBe(false);
+
+    expect((await call(admin, 'POST', '/api/v1/applications/slack/versions', { from: 1 })).body).toEqual({ key: 'slack', version: 2 });
+    expect((await call(admin, 'GET', version('slack', 1))).body.openVersion).toBe(2);
+    const draft = (await call(admin, 'GET', version('slack', 2))).body;
+    const edited = { ...draft.definition, description: 'Edited by the admin', catalog: { ...draft.definition.catalog, availability: 'available' } };
+    const saved = (await call(admin, 'PUT', version('slack', 2), { definition: edited })).body;
+    expect(saved.can).toMatchObject({ edit: true, publishDirectly: true });
+
+    // Only administrators, and only for open versions.
+    expect((await call(editor, 'POST', `${version('slack', 2)}/publish`, {})).status).toBe(403);
+    expect((await call(admin, 'POST', `${version('slack', 1)}/publish`, {})).body.error.code).toBe('INVALID_STATE');
+
+    const r = await call(admin, 'POST', `${version('slack', 2)}/publish`, { note: 'Pilot' });
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body).toMatchObject({ status: 'PUBLISHED', reviewNote: 'Published directly by an administrator (no separate review): Pilot' });
+    expect((await call(admin, 'GET', version('slack', 1))).body.status).toBe('SUPERSEDED');
+
+    const served = (await catalog()).definitions.find((d) => (d.definition as { key: string }).key === 'slack')!;
+    const { config } = await import('../src/config');
+    expect(verifySignedDefinition(served, config.publicKeyPem)).toMatchObject({ version: 2, description: 'Edited by the admin', catalog: { availability: 'available' } });
+    const [published] = (await call(admin, 'GET', '/api/v1/audit?application=slack')).body.items;
+    expect(published).toMatchObject({ action: 'version.published', version: 2, details: { direct: true } });
+  });
+
+  it('still asks to confirm new hosts when publishing directly, and can be turned off', async () => {
+    await call(admin, 'POST', '/api/v1/applications/openai/versions', {});
+    const draft = (await call(admin, 'GET', version('openai', 2))).body;
+    await call(admin, 'PUT', version('openai', 2), { definition: { ...draft.definition, api: { ...draft.definition.api, allowedHosts: ['api.openai.com', 'files.openai.com'] } } });
+    expect((await call(admin, 'POST', `${version('openai', 2)}/publish`, {})).body.error.code).toBe('HOST_CHANGE_UNACKNOWLEDGED');
+
+    const { config } = await import('../src/config');
+    config.adminDirectPublish = false;
+    try {
+      expect((await call(admin, 'GET', version('openai', 2))).body.can.publishDirectly).toBe(false);
+      expect((await call(admin, 'POST', `${version('openai', 2)}/publish`, { acknowledgeHostChange: true })).body.error.code).toBe('DIRECT_PUBLISH_DISABLED');
+    } finally {
+      config.adminDirectPublish = true;
+    }
+    expect((await call(admin, 'POST', `${version('openai', 2)}/publish`, { acknowledgeHostChange: true })).body.status).toBe('PUBLISHED');
+  });
 });
 

@@ -85,6 +85,16 @@ function reviewBlock(user: CmsUser, v: VersionRow): string | null {
   return null;
 }
 
+/** Why the user may not publish this version directly, or null if they may. */
+function directPublishBlock(user: CmsUser, app: AppRow, v: VersionRow, issues: string[]): string | null {
+  if (user.role !== 'ADMIN') return 'Only administrators can publish directly.';
+  if (!config.adminDirectPublish) return 'Direct publishing is turned off (CMS_ADMIN_DIRECT_PUBLISH=false): submit the version for review.';
+  if (app.archivedAt) return 'This application is archived.';
+  if (v.status !== 'DRAFT' && v.status !== 'IN_REVIEW') return 'Only drafts and versions in review can be published.';
+  if (issues.length) return 'Fix the validation problems first.';
+  return null;
+}
+
 /**
  * What a version is compared with: the current publication for open versions, and the
  * publication it replaced for published or superseded ones.
@@ -106,6 +116,7 @@ async function detail(ex: Executor, user: CmsUser, app: AppRow, v: VersionRow): 
   const sigs = await ex.select().from(versionSignatures).where(eq(versionSignatures.versionId, v.id)).orderBy(asc(versionSignatures.signedAt));
   const isEditor = user.role === 'EDITOR' || user.role === 'ADMIN';
   const block = reviewBlock(user, v);
+  const [open] = await ex.select({ version: versions.version }).from(versions).where(and(eq(versions.applicationId, app.id), inArray(versions.status, ['DRAFT', 'IN_REVIEW'])));
   return {
     ...toVersionSummary(v),
     key: app.key,
@@ -119,7 +130,10 @@ async function detail(ex: Executor, user: CmsUser, app: AppRow, v: VersionRow): 
       withdraw: isEditor && v.status === 'IN_REVIEW',
       review: block === null,
       reviewBlockedReason: block,
+      publishDirectly: directPublishBlock(user, app, v, issues) === null,
+      editAsNewVersion: isEditor && (v.status === 'PUBLISHED' || v.status === 'SUPERSEDED') && !app.archivedAt,
     },
+    openVersion: open?.version ?? null,
   };
 }
 
@@ -255,31 +269,59 @@ applicationsRouter.post('/applications/:key/versions/:version/approve', reviewer
     const v = await getVersion(tx, app, Number(req.params.version), true);
     const block = reviewBlock(user, v);
     if (block) throw v.status !== 'IN_REVIEW' ? conflict(block, 'INVALID_STATE') : forbidden(block, 'SEPARATION_OF_DUTIES');
-    const { normalized, issues } = check(v.definition);
-    if (!normalized) throw new HttpError(400, 'DEFINITION_INVALID', 'The definition no longer passes validation', { issues });
-    const published = await publishedOf(tx, app.id);
-    const diff = diffDefinitions(normalized, published?.definition ?? null, published?.version ?? null);
-    if (diff.hostChange && !body.acknowledgeHostChange) {
-      throw new HttpError(409, 'HOST_CHANGE_UNACKNOWLEDGED', published ? 'This version changes where credentials are sent (api.baseUrl or allowedHosts). Confirm the new hosts to publish.' : 'First publication: confirm the hosts credentials will be sent to.', {
-        baseUrl: normalized.api.baseUrl,
-        allowedHosts: normalized.api.allowedHosts,
-      });
-    }
-    const t = now();
-    if (published) await tx.update(versions).set({ status: 'SUPERSEDED', updatedAt: t }).where(eq(versions.id, published.id));
-    const signed = signDefinition(normalized);
-    await tx
-      .update(versions)
-      .set({ status: 'PUBLISHED', definition: normalized, ...signed, reviewedBy: user.id, reviewedAt: t, reviewNote: body.note || null, publishedAt: t, updatedAt: t, hostChangeAcknowledged: diff.hostChange })
-      .where(eq(versions.id, v.id));
-    await registerActiveKey(tx);
-    await addSignature(tx, v.id, signed.digest, signed.signature);
-    await tx.update(applications).set({ name: normalized.name, description: normalized.description, updatedAt: t }).where(eq(applications.id, app.id));
-    await audit(tx, user, 'version.published', { key: app.key, version: v.version }, { digest: signed.digest, keyId: signed.keyId, supersedes: published?.version ?? null, hostChange: diff.hostChange, hosts: normalized.api.allowedHosts });
-    return detail(tx, user, app, { ...v, status: 'PUBLISHED', definition: normalized, ...signed, reviewedBy: user.id, reviewedAt: t, reviewNote: body.note || null, publishedAt: t });
+    return publishVersion(tx, user, app, v, { note: body.note, acknowledgeHostChange: body.acknowledgeHostChange, direct: false });
   });
   res.json(out);
 });
+
+/**
+ * DRAFT or IN_REVIEW -> PUBLISHED in one step, by an administrator, without a second
+ * reviewer (unless CMS_ADMIN_DIRECT_PUBLISH=false). Validation, host-change confirmation
+ * and signing are the same as for an approval; the audit log records it as direct.
+ */
+applicationsRouter.post('/applications/:key/versions/:version/publish', requireRole('ADMIN'), async (req, res) => {
+  const body = parse(z.object({ note: z.string().trim().max(1000).default(''), acknowledgeHostChange: z.boolean().default(false) }), req.body ?? {});
+  const user = req.user!;
+  const out = await transaction(async (tx) => {
+    const app = await getApp(tx, String(req.params.key));
+    const v = await getVersion(tx, app, Number(req.params.version), true);
+    const block = directPublishBlock(user, app, v, check(v.definition).issues);
+    if (block) {
+      if (!config.adminDirectPublish) throw forbidden(block, 'DIRECT_PUBLISH_DISABLED');
+      if (app.archivedAt) throw conflict(block, 'ARCHIVED');
+      if (v.status !== 'DRAFT' && v.status !== 'IN_REVIEW') throw conflict(block, 'INVALID_STATE');
+      throw new HttpError(400, 'DEFINITION_INVALID', block, { issues: check(v.definition).issues });
+    }
+    return publishVersion(tx, user, app, v, { note: body.note, acknowledgeHostChange: body.acknowledgeHostChange, direct: true });
+  });
+  res.json(out);
+});
+
+/** Signs a version and makes it the published one (superseding the previous). */
+async function publishVersion(tx: Executor, user: CmsUser, app: AppRow, v: VersionRow, opts: { note: string; acknowledgeHostChange: boolean; direct: boolean }) {
+  const { normalized, issues } = check(v.definition);
+  if (!normalized) throw new HttpError(400, 'DEFINITION_INVALID', 'The definition no longer passes validation', { issues });
+  const published = await publishedOf(tx, app.id);
+  const diff = diffDefinitions(normalized, published?.definition ?? null, published?.version ?? null);
+  if (diff.hostChange && !opts.acknowledgeHostChange) {
+    throw new HttpError(409, 'HOST_CHANGE_UNACKNOWLEDGED', published ? 'This version changes where credentials are sent (api.baseUrl or allowedHosts). Confirm the new hosts to publish.' : 'First publication: confirm the hosts credentials will be sent to.', {
+      baseUrl: normalized.api.baseUrl,
+      allowedHosts: normalized.api.allowedHosts,
+    });
+  }
+  const t = now();
+  const reviewNote = opts.direct ? `Published directly by an administrator (no separate review)${opts.note ? `: ${opts.note}` : ''}` : opts.note || null;
+  const submitted = v.submittedBy ? {} : { submittedBy: user.id, submittedAt: t };
+  if (published) await tx.update(versions).set({ status: 'SUPERSEDED', updatedAt: t }).where(eq(versions.id, published.id));
+  const signed = signDefinition(normalized);
+  const changes = { status: 'PUBLISHED' as const, definition: normalized, ...signed, ...submitted, reviewedBy: user.id, reviewedAt: t, reviewNote, publishedAt: t, updatedAt: t, hostChangeAcknowledged: diff.hostChange };
+  await tx.update(versions).set(changes).where(eq(versions.id, v.id));
+  await registerActiveKey(tx);
+  await addSignature(tx, v.id, signed.digest, signed.signature);
+  await tx.update(applications).set({ name: normalized.name, description: normalized.description, updatedAt: t }).where(eq(applications.id, app.id));
+  await audit(tx, user, 'version.published', { key: app.key, version: v.version }, { digest: signed.digest, keyId: signed.keyId, supersedes: published?.version ?? null, hostChange: diff.hostChange, hosts: normalized.api.allowedHosts, ...(opts.direct ? { direct: true } : {}) });
+  return detail(tx, user, app, { ...v, ...changes });
+}
 
 applicationsRouter.post('/applications/:key/versions/:version/reject', reviewers, async (req, res) => {
   const { note } = parse(z.object({ note: z.string().trim().min(3, 'Explain what needs to change').max(1000) }), req.body ?? {});

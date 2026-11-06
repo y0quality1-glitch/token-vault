@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, FileCheck2, Play, Save, Send, Undo2, XCircle } from 'lucide-react';
-import { useParams } from 'react-router-dom';
+import { CheckCircle2, FileCheck2, Pencil, Play, Rocket, Save, Send, Undo2, XCircle } from 'lucide-react';
+import { useNavigate, useParams } from 'react-router-dom';
 import { DefinitionError, validateProviderDefinition, type CmsPreviewResult, type CmsVersionDetail } from '@token-vault/shared';
 import { Badge } from '@ui/badge';
 import { Button } from '@ui/button';
@@ -49,11 +49,12 @@ export function VersionPage() {
   const { key, version } = useParams() as { key: string; version: string };
   const path = `/applications/${key}/versions/${version}`;
   const toast = useToast();
+  const navigate = useNavigate();
   const v = useApi<CmsVersionDetail>(path);
   const [tab, setTab] = useState<Tab>('definition');
   const [text, setText] = useState('');
   const [view, setView] = useState<'form' | 'json'>('form');
-  const [dialog, setDialog] = useState<null | 'approve' | 'reject'>(null);
+  const [dialog, setDialog] = useState<null | 'approve' | 'reject' | 'publish'>(null);
 
   useEffect(() => {
     if (v.data) setText(pretty(v.data.definition));
@@ -80,6 +81,7 @@ export function VersionPage() {
 
   const save = useMutation(() => api.put<CmsVersionDetail>(path, { definition: parsed.value }));
   const action = useMutation((name: 'submit' | 'withdraw') => api.post<CmsVersionDetail>(`${path}/${name}`, {}));
+  const startEdit = useMutation((from: number) => api.post<{ version: number }>(`/applications/${key}/versions`, { from }));
 
   if (v.error) return <ErrorState error={v.error} onRetry={v.reload} />;
   if (!v.data) return <PageSkeleton />;
@@ -111,8 +113,30 @@ export function VersionPage() {
         description={`Created by ${d.createdBy} ${formatDateTime(d.createdAt)}${d.submittedAt ? ` · submitted ${formatDateTime(d.submittedAt)}` : ''}${d.publishedAt ? ` · published ${formatDateTime(d.publishedAt)}` : ''}`}
         actions={
           <>
+            {d.can.editAsNewVersion && (
+              <Button
+                loading={startEdit.pending}
+                title={d.openVersion ? `v${d.openVersion} is already open: continue editing there` : 'Published versions are frozen: this starts a new draft copied from this version'}
+                onClick={async () => {
+                  if (d.openVersion) return navigate(`/applications/${key}/versions/${d.openVersion}`);
+                  const r = await startEdit.run(d.version);
+                  if (r) {
+                    toast.success(`Draft v${r.version} created`, `Copied from v${d.version}. Edit it, then publish.`);
+                    navigate(`/applications/${key}/versions/${r.version}`);
+                  }
+                }}
+              >
+                <Pencil className="h-4 w-4" /> {d.openVersion ? `Edit (open v${d.openVersion})` : 'Edit'}
+              </Button>
+            )}
+            {d.can.publishDirectly && (
+              <Button disabled={dirty} title={dirty ? 'Save your changes first' : 'Sign and publish this version now (administrator)'} onClick={() => setDialog('publish')}>
+                <Rocket className="h-4 w-4" /> Publish now
+              </Button>
+            )}
             {d.can.submit && (
               <Button
+                variant={d.can.publishDirectly ? 'outline' : undefined}
                 loading={action.pending}
                 disabled={dirty}
                 title={dirty ? 'Save your changes first' : undefined}
@@ -137,9 +161,11 @@ export function VersionPage() {
                 <Button variant="outline" disabled={!d.can.review} onClick={() => setDialog('reject')}>
                   <XCircle className="h-4 w-4" /> Request changes
                 </Button>
-                <Button disabled={!d.can.review} onClick={() => setDialog('approve')}>
-                  <CheckCircle2 className="h-4 w-4" /> Approve & publish
-                </Button>
+                {!d.can.publishDirectly && (
+                  <Button disabled={!d.can.review} onClick={() => setDialog('approve')}>
+                    <CheckCircle2 className="h-4 w-4" /> Approve & publish
+                  </Button>
+                )}
               </>
             )}
           </>
@@ -147,19 +173,19 @@ export function VersionPage() {
       />
 
       <div className="mb-4 space-y-3">
-        <FormError error={action.error} />
+        <FormError error={action.error ?? startEdit.error} />
         {d.status === 'DRAFT' && d.reviewNote && (
           <Callout tone="warning" title="Changes requested">
             {d.reviewNote}
           </Callout>
         )}
-        {d.status === 'IN_REVIEW' && d.can.reviewBlockedReason && <Callout tone="info">{d.can.reviewBlockedReason}</Callout>}
+        {d.status === 'IN_REVIEW' && d.can.reviewBlockedReason && !d.can.publishDirectly && <Callout tone="info">{d.can.reviewBlockedReason}</Callout>}
         {d.status === 'IN_REVIEW' && d.diff.hostChange && (
           <Callout tone="warning" title={d.diff.againstVersion ? 'This version changes where credentials are sent' : 'First publication'}>
             Credentials will be sent to <span className="font-mono">{def.api?.baseUrl}</span> (allowed hosts: <span className="font-mono">{def.api?.allowedHosts?.join(', ')}</span>). The approver must confirm these hosts.
           </Callout>
         )}
-        {d.status === 'PUBLISHED' && <Callout tone="security">Published and signed. This version is frozen; changes need a new version.</Callout>}
+        {d.status === 'PUBLISHED' && <Callout tone="security">Published and signed. This version is frozen: Edit starts a new draft copied from it, which you then publish.</Callout>}
       </div>
 
       <Tabs
@@ -302,7 +328,7 @@ export function VersionPage() {
         )}
       </div>
 
-      <ApproveDialog open={dialog === 'approve'} path={path} d={d} onClose={() => setDialog(null)} onDone={(r) => (update(r), setDialog(null), toast.success(`Published v${r.version}`, 'Signed and now served in the catalog.'))} />
+      <ApproveDialog open={dialog === 'approve' || dialog === 'publish'} direct={dialog === 'publish'} path={path} d={d} onClose={() => setDialog(null)} onDone={(r) => (update(r), setDialog(null), toast.success(`Published v${r.version}`, 'Signed and now served in the catalog.'))} />
       <RejectDialog open={dialog === 'reject'} path={path} onClose={() => setDialog(null)} onDone={(r) => (update(r), setDialog(null), toast.info('Changes requested', 'The version is back in draft.'))} />
     </>
   );
@@ -440,24 +466,25 @@ function Preview({ path, def, valid }: { path: string; def: DefShape; valid: boo
   );
 }
 
-function ApproveDialog({ open, path, d, onClose, onDone }: { open: boolean; path: string; d: CmsVersionDetail; onClose: () => void; onDone: (r: CmsVersionDetail) => void }) {
+function ApproveDialog({ open, direct, path, d, onClose, onDone }: { open: boolean; direct: boolean; path: string; d: CmsVersionDetail; onClose: () => void; onDone: (r: CmsVersionDetail) => void }) {
   const [note, setNote] = useState('');
   const [ack, setAck] = useState(false);
-  const approve = useMutation(() => api.post<CmsVersionDetail>(`${path}/approve`, { note, acknowledgeHostChange: ack }));
+  const approve = useMutation(() => api.post<CmsVersionDetail>(`${path}/${direct ? 'publish' : 'approve'}`, { note, acknowledgeHostChange: ack }));
+  const label = direct ? 'Publish now' : 'Approve & publish';
   const def = d.definition as DefShape;
   return (
     <Dialog
       open={open}
       onClose={onClose}
-      title={`Approve and publish v${d.version}`}
-      description="The definition is signed with the CMS key and replaces the published version in the catalog."
+      title={direct ? `Publish v${d.version}` : `Approve and publish v${d.version}`}
+      description={`The definition is signed with the CMS key and replaces the published version in the catalog.${direct ? ' As an administrator you publish it without a second reviewer; the audit log records that.' : ''}`}
       footer={
         <>
           <Button variant="outline" onClick={onClose}>
             Cancel
           </Button>
           <Button loading={approve.pending} disabled={d.diff.hostChange && !ack} onClick={async () => (await approve.run().then((r) => r && onDone(r)))}>
-            Approve & publish
+            {label}
           </Button>
         </>
       }
