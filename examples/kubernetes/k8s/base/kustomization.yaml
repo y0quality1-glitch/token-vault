@@ -1,0 +1,21 @@
+# orders-api: base manifests. Choose an overlay for where the configuration comes from:
+#   overlays/vault  HashiCorp Vault through External Secrets Operator (production pattern)
+#   overlays/local  a Secret generated from a local file (kind, minikube, k3d)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: orders
+resources:
+  - namespace.yaml
+  - serviceaccount.yaml
+  - deployment.yaml
+  - service.yaml
+  - poddisruptionbudget.yaml
+  - networkpolicy.yaml
+labels:
+  - pairs:
+      app.kubernetes.io/name: orders-api
+      app.kubernetes.io/part-of: token-vault-example
+    # Labels only: selectors are written out in each manifest, so they never leak into
+    # selectors for other pods (such as the DNS rule in the NetworkPolicy).
+    includeSelectors: false
+    includeTemplates: true

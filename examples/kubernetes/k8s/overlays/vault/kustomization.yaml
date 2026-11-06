@@ -1,0 +1,16 @@
+# Production pattern: configuration comes from HashiCorp Vault through External Secrets
+# Operator (https://external-secrets.io). Requires ESO installed in the cluster, and in Vault:
+#   - a KV v2 secret at secret/orders-api with keys DATABASE_URL, TOKEN_VAULT_API_KEY,
+#     SLACK_INTEGRATION_ID, SLACK_CHANNEL
+#   - Kubernetes auth with a role "orders-api" bound to the orders/orders-api service account,
+#     allowed to read only that path
+# AWS Secrets Manager, GCP Secret Manager or Azure Key Vault work the same: change only the SecretStore.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+  - secretstore.yaml
+  - externalsecret.yaml
+images:
+  - name: registry.example.com/orders-api
+    newTag: "1.0.0"
