@@ -124,5 +124,60 @@ suite('PostgreSQL storage', () => {
     await m.seed.resetDatabase();
     expect(await pgCatalogCache.load()).toBeNull();
   });
-});
 
+  it('accepts a rotated agent key only during its grace period, and says when it expires', async () => {
+    const { IDS } = m.seed;
+    const { generateAgentCredential } = await import('../src/lib/crypto');
+    const oldCred = generateAgentCredential();
+    const newCred = generateAgentCredential();
+    const later = new Date(Date.now() + 15 * 60_000).toISOString();
+    await m.repos.agentRepo.updateAgent(IDS.agtAssistant, {
+      credentialKeyId: newCred.keyId,
+      credentialHash: newCred.hash,
+      previousCredentialKeyId: oldCred.keyId,
+      previousCredentialHash: oldCred.hash,
+      previousCredentialExpiresAt: later,
+      previousCredentialLastUsedAt: null,
+    });
+
+    expect(await m.broker.verifyAgentKey(newCred.apiKey)).toMatchObject({ ok: true, previousKeyExpiresAt: null });
+    expect(await m.broker.verifyAgentKey(oldCred.apiKey)).toMatchObject({ ok: true, previousKeyExpiresAt: later });
+    expect((await m.repos.agentRepo.getAgent(IDS.demoOrg, IDS.agtAssistant))!.previousCredentialLastUsedAt).not.toBeNull();
+
+    // The old key id with a wrong secret is still refused.
+    const forged = oldCred.apiKey.slice(0, -4) + (oldCred.apiKey.endsWith('aaaa') ? 'bbbb' : 'aaaa');
+    expect(await m.broker.verifyAgentKey(forged)).toMatchObject({ ok: false });
+
+    // An agent request with the old key succeeds the authentication step and reports the expiry.
+    let notice: string | null = null;
+    const r = await m.broker.executeAgentRequest({
+      authorization: `Bearer ${oldCred.apiKey}`,
+      orgHint: undefined,
+      sourceIp: '127.0.0.1',
+      source: 'agent-api',
+      body: { integration_id: IDS.intDemo, operation: 'github.contents.read', resource: { repository: 'demo-org/demo-repo' } },
+      onPreviousKey: (at) => (notice = at),
+    });
+    expect(r.body.decision_code).not.toBe('AGENT_UNAUTHENTICATED');
+    expect(notice).toBe(later);
+    expect(r.body.checks[0]!.detail).toContain(`this key was rotated and stops working at ${later}`);
+
+    // Once the grace period is over, the old key is refused with a reason that says so.
+    await m.repos.agentRepo.updateAgent(IDS.agtAssistant, { previousCredentialExpiresAt: new Date(Date.now() - 1000).toISOString() });
+    const expired = await m.broker.verifyAgentKey(oldCred.apiKey);
+    expect(expired).toMatchObject({ ok: false });
+    expect(expired.reason).toMatch(/was rotated and its grace period ended/);
+    const denied = await m.broker.executeAgentRequest({ authorization: `Bearer ${oldCred.apiKey}`, orgHint: undefined, sourceIp: '127.0.0.1', source: 'agent-api', body: {} });
+    expect(denied.body).toMatchObject({ decision_code: 'AGENT_UNAUTHENTICATED' });
+    expect(denied.body.reason).toMatch(/grace period ended/);
+    expect(await m.broker.verifyAgentKey(newCred.apiKey)).toMatchObject({ ok: true });
+
+    // The console view never includes the hashes, and hides an expired previous key.
+    const { toAgent, loadLookups } = await import('../src/store/views');
+    const view = toAgent((await m.repos.agentRepo.getAgent(IDS.demoOrg, IDS.agtAssistant))!, await loadLookups(IDS.demoOrg));
+    expect(JSON.stringify(view)).not.toContain(oldCred.hash);
+    expect(view).toMatchObject({ previousCredentialKeyId: null, previousCredentialExpiresAt: null });
+    expect(view).not.toHaveProperty('previousCredentialHash');
+    expect(view).not.toHaveProperty('credentialHash');
+  });
+});

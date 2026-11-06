@@ -41,11 +41,24 @@ function assertCanManage(ctx: AdminContext, agent: AgentRecord) {
 }
 
 /** New API credential: the plaintext is returned once; only the scrypt hash is persisted. */
-function issueCredential() {
+/**
+ * A new API key. With `previous` and a grace period, the replaced key keeps working until
+ * then, so the agent can switch without failed requests; otherwise it stops at once.
+ */
+function issueCredential(previous?: { keyId: string; hash: string; graceMinutes: number }) {
   const cred = generateAgentCredential();
   const issuedAt = new Date().toISOString();
+  const grace = previous && previous.graceMinutes > 0;
   return {
-    patch: { credentialKeyId: cred.keyId, credentialHash: cred.hash, credentialIssuedAt: issuedAt },
+    patch: {
+      credentialKeyId: cred.keyId,
+      credentialHash: cred.hash,
+      credentialIssuedAt: issuedAt,
+      previousCredentialKeyId: grace ? previous.keyId : null,
+      previousCredentialHash: grace ? previous.hash : null,
+      previousCredentialExpiresAt: grace ? new Date(Date.parse(issuedAt) + previous.graceMinutes * 60_000).toISOString() : null,
+      previousCredentialLastUsedAt: null,
+    },
     credential: { apiKey: cred.apiKey, keyId: cred.keyId, issuedAt } satisfies IssuedCredential,
   };
 }
@@ -94,13 +107,50 @@ agentsRouter.post('/agents/:id/rotate-credential', requirePermission(PERMISSIONS
   const ctx = orgCtx(req);
   const a = await getAgent(ctx.org.id, String(req.params.id));
   assertCanManage(ctx, a);
-  const { patch, credential } = issueCredential();
+  // graceMinutes: how long the replaced key keeps working (0 = stops at once; at most 24 h).
+  // A key still in an earlier grace period stops now: only the key being replaced gets one.
+  const { graceMinutes } = parse(z.object({ graceMinutes: z.number().int().min(0).max(1440).default(0) }), req.body ?? {});
+  const { patch, credential } = issueCredential({ keyId: a.credentialKeyId, hash: a.credentialHash, graceMinutes });
   const updated = await transaction(async (tx) => {
     const u = await agentRepo.updateAgent(a.id, patch, tx);
-    await recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: 'agent.credential_rotated', target: { type: 'agent', id: a.id, name: a.name }, severity: 'warning', metadata: { previousKeyId: a.credentialKeyId, keyId: credential.keyId } }, tx);
+    await recordEvent(
+      {
+        orgId: ctx.org.id,
+        actor: userActor(ctx),
+        eventType: 'agent.credential_rotated',
+        target: { type: 'agent', id: a.id, name: a.name },
+        severity: 'warning',
+        metadata: { previousKeyId: a.credentialKeyId, keyId: credential.keyId, graceMinutes, previousKeyValidUntil: patch.previousCredentialExpiresAt },
+      },
+      tx,
+    );
     return u;
   });
   res.json({ agent: await agentView(updated), credential });
+});
+
+/** Ends a rotation's grace period now: the previous key stops working at once. */
+agentsRouter.post('/agents/:id/revoke-previous-credential', requirePermission(PERMISSIONS.AGENT_MANAGE), async (req, res) => {
+  const ctx = orgCtx(req);
+  const a = await getAgent(ctx.org.id, String(req.params.id));
+  assertCanManage(ctx, a);
+  if (!a.previousCredentialKeyId || !a.previousCredentialExpiresAt || Date.parse(a.previousCredentialExpiresAt) <= Date.now()) throw conflict('This agent has no previous key in a grace period');
+  const updated = await transaction(async (tx) => {
+    const u = await agentRepo.updateAgent(a.id, { previousCredentialKeyId: null, previousCredentialHash: null, previousCredentialExpiresAt: null, previousCredentialLastUsedAt: null }, tx);
+    await recordEvent(
+      {
+        orgId: ctx.org.id,
+        actor: userActor(ctx),
+        eventType: 'agent.previous_credential_revoked',
+        target: { type: 'agent', id: a.id, name: a.name },
+        severity: 'warning',
+        metadata: { previousKeyId: a.previousCredentialKeyId, wasValidUntil: a.previousCredentialExpiresAt, lastUsedAt: a.previousCredentialLastUsedAt },
+      },
+      tx,
+    );
+    return u;
+  });
+  res.json({ agent: await agentView(updated) });
 });
 
 async function setAgentStatus(req: import('express').Request, status: 'ACTIVE' | 'DISABLED') {

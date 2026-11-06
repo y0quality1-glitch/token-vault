@@ -69,6 +69,8 @@ export interface ExecuteContext {
   sourceIp: string;
   source: 'agent-api' | 'playground';
   body: unknown;
+  /** Called with the expiry when the caller used a rotated key during its grace period. */
+  onPreviousKey?: (expiresAt: string) => void;
 }
 
 export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status: number; body: ExecuteResponseBody }> {
@@ -172,13 +174,12 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
 
   // ---- Step 1: authenticate the caller from its credential (never from a caller-supplied agent id)
   const token = /^Bearer\s+(\S+)$/i.exec(ctx.authorization ?? '')?.[1] ?? '';
-  const parsed = parseAgentCredential(token);
-  const agent = parsed ? await agentRepo.findAgentByKeyId(parsed.keyId) : null;
-  const authenticated = !!agent && verifySecret(token, agent.credentialHash);
-  if (!authenticated) {
+  const verified = await verifyAgentKey(token);
+  const agent = verified.agent;
+  if (!verified.ok || !agent) {
     // Attribute to an org only for audit visibility: the key's org if the key id is known, else the non-authoritative hint.
     const orgId = agent?.organizationId ?? (ctx.orgHint ? (await orgRepo.findOrganizationBySlug(ctx.orgHint))?.id ?? null : null);
-    const reason = !token ? 'Missing agent credential (Authorization: Bearer tvak_...).' : 'Agent credential is invalid, rotated or unknown.';
+    const reason = !token ? 'Missing agent credential (Authorization: Bearer tvak_...).' : (verified.reason ?? 'Agent credential is invalid, rotated or unknown.');
     return respond({
       ...base,
       status: 401,
@@ -194,8 +195,14 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
     });
   }
   await agentRepo.updateAgent(agent.id, { lastAccessAt: new Date().toISOString() });
+  if (verified.previousKeyExpiresAt) ctx.onPreviousKey?.(verified.previousKeyExpiresAt);
   const orgId = agent.organizationId;
-  const authCheck: DecisionCheck = { step: 1, name: CHECK_NAMES[0], passed: true, detail: `Authenticated as ${agent.name} (${agent.id}) from credential` };
+  const authCheck: DecisionCheck = {
+    step: 1,
+    name: CHECK_NAMES[0],
+    passed: true,
+    detail: `Authenticated as ${agent.name} (${agent.id}) from credential${verified.previousKeyExpiresAt ? `; this key was rotated and stops working at ${verified.previousKeyExpiresAt}` : ''}`,
+  };
 
   // ---- Request validation (malformed requests are denied and audited)
   const parsedBody = bodySchema.safeParse(ctx.body);
@@ -322,17 +329,40 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
   return out;
 }
 
-/** Resolves the agent from its own credential (the only source of agent identity). */
-export async function authenticate(authorization: string | undefined): Promise<AgentRecord | null> {
-  const token = /^Bearer\s+(\S+)$/i.exec(authorization ?? '')?.[1] ?? '';
+/**
+ * Checks an agent API key: the agent's current key, or the key replaced by its last
+ * rotation while that rotation's grace period lasts (one hash verification either way).
+ * `agent` is set whenever the key id is known, for audit attribution, even if the key fails.
+ */
+export async function verifyAgentKey(token: string): Promise<{ agent: AgentRecord | null; ok: boolean; previousKeyExpiresAt: string | null; reason?: string }> {
   const parsed = parseAgentCredential(token);
   const agent = parsed ? await agentRepo.findAgentByKeyId(parsed.keyId) : null;
-  return agent && verifySecret(token, agent.credentialHash) ? agent : null;
+  if (!parsed || !agent) return { agent: null, ok: false, previousKeyExpiresAt: null };
+  if (agent.credentialKeyId === parsed.keyId) return { agent, ok: verifySecret(token, agent.credentialHash), previousKeyExpiresAt: null };
+  const until = agent.previousCredentialExpiresAt;
+  if (!agent.previousCredentialHash || !until || Date.parse(until) <= Date.now()) {
+    return { agent, ok: false, previousKeyExpiresAt: null, reason: `Agent credential was rotated${until ? ` and its grace period ended at ${until}` : ''}; use the new key.` };
+  }
+  if (!verifySecret(token, agent.previousCredentialHash)) return { agent, ok: false, previousKeyExpiresAt: null };
+  await agentRepo.updateAgent(agent.id, { previousCredentialLastUsedAt: new Date().toISOString() });
+  return { agent, ok: true, previousKeyExpiresAt: until };
+}
+
+/**
+ * Resolves the agent from its own credential (the only source of agent identity).
+ * `onPreviousKey` is called with the expiry when the caller used a rotated key in its grace period.
+ */
+export async function authenticate(authorization: string | undefined, onPreviousKey?: (expiresAt: string) => void): Promise<AgentRecord | null> {
+  const token = /^Bearer\s+(\S+)$/i.exec(authorization ?? '')?.[1] ?? '';
+  const v = await verifyAgentKey(token);
+  if (!v.ok || !v.agent) return null;
+  if (v.previousKeyExpiresAt) onPreviousKey?.(v.previousKeyExpiresAt);
+  return v.agent;
 }
 
 /** Agents may look up only their own requests. */
-export async function getOwnRequest(authorization: string | undefined, id: string) {
-  const agent = await authenticate(authorization);
+export async function getOwnRequest(authorization: string | undefined, id: string, onPreviousKey?: (expiresAt: string) => void) {
+  const agent = await authenticate(authorization, onPreviousKey);
   if (!agent) return { status: 401 as const };
   const r = await auditRepo.getAccessRequestForAgent(agent.id, id);
   if (!r) return { status: 404 as const };
@@ -347,8 +377,8 @@ export async function getOwnRequest(authorization: string | undefined, id: strin
  * about other agents.
  */
 /** Operation shapes for the providers of the agent's grants (for typed agent tools). */
-export async function getAgentOperations(authorization: string | undefined): Promise<{ status: 200; body: AgentOperationsBody } | { status: 401 }> {
-  const agent = await authenticate(authorization);
+export async function getAgentOperations(authorization: string | undefined, onPreviousKey?: (expiresAt: string) => void): Promise<{ status: 200; body: AgentOperationsBody } | { status: 401 }> {
+  const agent = await authenticate(authorization, onPreviousKey);
   if (!agent) return { status: 401 };
   const [grants, integrations] = await Promise.all([grantRepo.listGrants(agent.organizationId, { agentId: agent.id }), integrationRepo.listIntegrations(agent.organizationId)]);
   const byId = new Map(integrations.map((i) => [i.id, i]));
@@ -379,8 +409,8 @@ export async function getAgentOperations(authorization: string | undefined): Pro
   };
 }
 
-export async function getCapabilities(authorization: string | undefined): Promise<{ status: 200; body: AgentCapabilitiesBody } | { status: 401 }> {
-  const agent = await authenticate(authorization);
+export async function getCapabilities(authorization: string | undefined, onPreviousKey?: (expiresAt: string) => void): Promise<{ status: 200; body: AgentCapabilitiesBody } | { status: 401 }> {
+  const agent = await authenticate(authorization, onPreviousKey);
   if (!agent) return { status: 401 };
   const [org, grants, integrations] = await Promise.all([
     orgRepo.getOrganization(agent.organizationId),

@@ -20,6 +20,15 @@ export interface HealthOutcome {
  * Signed health-check challenge. The webhook proves it holds the signing secret by
  * returning HMAC("health:<challenge>:<instance_id>"), and the response itself is signed.
  */
+/** Key status the webhook reports (key ids only): tells an admin whether a previous key is still needed. */
+function encryptionNote(enc: { key_id?: unknown; records_by_key?: Record<string, number>; last_reencryption?: { unreadable?: number } | null } | undefined): string {
+  if (!enc || typeof enc.key_id !== 'string') return '';
+  const byKey = enc.records_by_key ?? {};
+  const onOld = Object.entries(byKey).reduce((n, [id, c]) => (id === enc.key_id ? n : n + (Number(c) || 0)), 0);
+  const unreadable = Number(enc.last_reencryption?.unreadable) || 0;
+  return `. Credentials encrypted with key ${enc.key_id}${onOld ? `; ${onOld} still on an older key` : ''}${unreadable ? `; ${unreadable} unreadable with the configured keys` : ''}`;
+}
+
 export async function checkHealth(webhook: WebhookRecord): Promise<HealthOutcome> {
   const challenge = webhook.registrationChallenge ?? randomToken(16);
   try {
@@ -34,7 +43,7 @@ export async function checkHealth(webhook: WebhookRecord): Promise<HealthOutcome
     if (webhook.instanceId && webhook.instanceId !== instance_id) {
       return { ok: false, latencyMs: res.latencyMs, detail: `Webhook identity changed (expected ${webhook.instanceId}, got ${instance_id}).` };
     }
-    return { ok: true, latencyMs: res.latencyMs, detail: 'Signed health challenge verified', instanceId: instance_id, version, githubMode: github_mode };
+    return { ok: true, latencyMs: res.latencyMs, detail: `Signed health challenge verified${encryptionNote(res.body?.encryption)}`, instanceId: instance_id, version, githubMode: github_mode };
   } catch (e) {
     const err = e as Error;
     const hint = err instanceof WebhookUnavailableError && err.reason === 'UNREACHABLE' ? ' Is the webhook runtime running (npm run dev -w webhook)?' : '';

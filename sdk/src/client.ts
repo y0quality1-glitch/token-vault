@@ -15,6 +15,11 @@ export interface TokenVaultOptions {
   organization?: string;
   /** Custom fetch (tests, proxies). Default: global fetch. */
   fetch?: typeof fetch;
+  /**
+   * Called (once per expiry) when Token Vault says this key was rotated and is only
+   * accepted until `expiresAt` (a rotation grace period): switch to the new key before then.
+   */
+  onKeyExpiry?: (expiresAt: string) => void;
 }
 
 export interface ExecuteOptions {
@@ -67,6 +72,8 @@ export class TokenVault {
   readonly #timeoutMs: number;
   readonly #organization: string | undefined;
   readonly #fetch: typeof fetch;
+  readonly #onKeyExpiry: ((expiresAt: string) => void) | undefined;
+  #keyExpiresAt: string | null = null;
 
   constructor(options: TokenVaultOptions = {}) {
     const apiKey = options.apiKey ?? process.env.TOKEN_VAULT_API_KEY ?? '';
@@ -78,6 +85,15 @@ export class TokenVault {
     this.#timeoutMs = options.timeoutMs ?? 30_000;
     this.#organization = options.organization;
     this.#fetch = options.fetch ?? fetch;
+    this.#onKeyExpiry = options.onKeyExpiry;
+  }
+
+  /**
+   * Set when Token Vault reported that this key was rotated and stops working at this time
+   * (grace period); null while the key is the agent's current one.
+   */
+  get keyExpiresAt(): string | null {
+    return this.#keyExpiresAt;
   }
 
   /** Public key identifier of the configured credential (safe to log). */
@@ -197,12 +213,19 @@ export class TokenVault {
     const headers: Record<string, string> = { authorization: `Bearer ${this.#apiKey}`, accept: 'application/json' };
     if (body !== undefined) headers['content-type'] = 'application/json';
     if (this.#organization) headers['x-token-vault-org'] = this.#organization;
+    let res: Response;
     try {
-      return await this.#fetch(`${this.baseUrl}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(this.#timeoutMs) });
+      res = await this.#fetch(`${this.baseUrl}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(this.#timeoutMs) });
     } catch (e) {
       const timeout = (e as Error).name === 'TimeoutError';
       throw new TokenVaultError(timeout ? `Token Vault did not respond within ${this.#timeoutMs} ms` : `Cannot reach Token Vault at ${this.baseUrl}`, { code: timeout ? 'TIMEOUT' : 'NETWORK_ERROR' });
     }
+    if (res.status !== 401) {
+      const expires = res.headers?.get?.('token-vault-key-expires') ?? null;
+      if (expires && expires !== this.#keyExpiresAt) this.#onKeyExpiry?.(expires);
+      this.#keyExpiresAt = expires;
+    }
+    return res;
   }
 
   async #json(res: Response): Promise<unknown> {

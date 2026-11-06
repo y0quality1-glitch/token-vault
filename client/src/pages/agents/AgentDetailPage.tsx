@@ -12,6 +12,7 @@ import { Card, CardBody, CardHeader, DetailList } from '@/components/ui/card';
 import { Badge, DecisionBadge, EnvBadge, StatusBadge } from '@/components/ui/badge';
 import { Callout, EmptyState, ErrorState, FormError, PageSkeleton } from '@/components/ui/feedback';
 import { ConfirmDialog } from '@/components/ui/dialog';
+import { Select } from '@/components/ui/form';
 import { DataTable } from '@/components/ui/table';
 import { PageHeader, Tabs } from '@/components/ui/navigation';
 import { Mono, SecretOnceDialog } from '@/components/ui/secret';
@@ -30,7 +31,8 @@ export function AgentDetailPage() {
   const { setCredential } = usePlayground();
   const { data: a, error, loading, reload } = useApi<AgentDetail>(`/agents/${id}`);
   const [tab, setTab] = useState<Tab>('overview');
-  const [confirm, setConfirm] = useState<null | 'rotate' | 'disable' | 'revoke'>(null);
+  const [confirm, setConfirm] = useState<null | 'rotate' | 'disable' | 'revoke' | 'revokePrevious'>(null);
+  const [graceMinutes, setGraceMinutes] = useState(15);
   const [busy, setBusy] = useState(false);
   const [issued, setIssued] = useState<IssuedCredential | null>(null);
 
@@ -138,7 +140,21 @@ export function AgentDetailPage() {
                   { label: 'Issued', value: formatDateTime(a.credentialIssuedAt) },
                 ]}
               />
-              <Callout tone="security">Only a scrypt hash is stored. The full credential was shown once at issuance; rotate to issue a new one (the old one stops working immediately).</Callout>
+              {a.previousCredentialKeyId && a.previousCredentialExpiresAt && (
+                <div className="space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900" data-testid="previous-key">
+                  <p className="font-medium">Old key still accepted until {formatDateTime(a.previousCredentialExpiresAt)}</p>
+                  <p>
+                    Key ID <span className="font-mono">{a.previousCredentialKeyId}</span>,{' '}
+                    {a.previousCredentialLastUsedAt ? `last used ${relativeTime(a.previousCredentialLastUsedAt)}` : 'not used since the rotation'}. Once it is no longer used, the agent has switched to the new key.
+                  </p>
+                  {canManage && (
+                    <Button size="sm" variant="outline" onClick={() => setConfirm('revokePrevious')}>
+                      Revoke old key now
+                    </Button>
+                  )}
+                </div>
+              )}
+              <Callout tone="security">Only scrypt hashes are stored. The full credential was shown once at issuance. Rotating issues a new one; the old one can keep working for a grace period so the agent switches without failed requests.</Callout>
             </CardBody>
           </Card>
           <Card className="xl:col-span-3">
@@ -221,13 +237,41 @@ export function AgentDetailPage() {
         onClose={() => setConfirm(null)}
         tone="primary"
         title="Rotate API credential?"
-        description="A new credential is issued and shown once. The current credential stops working immediately; update the agent's secret store."
+        description="A new credential is issued and shown once. Update the agent's secret store with it before the old one stops working."
         confirmLabel="Rotate credential"
         loading={busy}
         onConfirm={() =>
           act(async () => {
-            const r = await api.post<{ credential: IssuedCredential }>(`/agents/${a.id}/rotate-credential`);
+            const r = await api.post<{ credential: IssuedCredential }>(`/agents/${a.id}/rotate-credential`, { graceMinutes });
             setIssued(r.credential);
+          })
+        }
+      >
+        <div className="space-y-1.5">
+          <label htmlFor="graceMinutes" className="text-sm font-medium text-slate-800">
+            Keep the old key working for
+          </label>
+          <Select id="graceMinutes" value={String(graceMinutes)} onChange={(e) => setGraceMinutes(Number(e.target.value))}>
+            <option value="0">No grace period: it stops now</option>
+            <option value="15">15 minutes</option>
+            <option value="60">1 hour</option>
+            <option value="240">4 hours</option>
+            <option value="1440">24 hours</option>
+          </Select>
+          <p className="text-xs text-slate-500">Requests with the old key say when it expires (Token-Vault-Key-Expires header). Any key still in an earlier grace period stops now.</p>
+        </div>
+      </ConfirmDialog>
+      <ConfirmDialog
+        open={confirm === 'revokePrevious'}
+        onClose={() => setConfirm(null)}
+        title="Revoke the old key now?"
+        description={`The key ${a.previousCredentialKeyId ?? ''} stops working immediately instead of at the end of its grace period. Anything still using it gets AGENT_UNAUTHENTICATED.`}
+        confirmLabel="Revoke old key"
+        loading={busy}
+        onConfirm={() =>
+          act(async () => {
+            await api.post(`/agents/${a.id}/revoke-previous-credential`);
+            toast.success('Old key revoked');
           })
         }
       />

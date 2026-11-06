@@ -18,7 +18,10 @@ import { createServer } from './server';
 async function main() {
   let tv: TokenVault;
   try {
-    tv = new TokenVault({ organization: process.env.TOKEN_VAULT_ORG || undefined });
+    tv = new TokenVault({
+      organization: process.env.TOKEN_VAULT_ORG || undefined,
+      onKeyExpiry: (at) => console.error(`[token-vault-mcp] warning: this API key was rotated and stops working at ${at}. Set TOKEN_VAULT_API_KEY to the new key and restart.`),
+    });
   } catch (e) {
     console.error(`[token-vault-mcp] ${(e as Error).message}`);
     process.exit(1);

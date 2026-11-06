@@ -28,7 +28,8 @@
     "db:init": "docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U token_vault -d postgres -f /docker-entrypoint-initdb.d/pg-init.sql",
     "mcp:config": "node scripts/mcp-config.mjs",
     "mcp": "npm run start -w mcp",
-    "cms:rotate-key": "node scripts/rotate-cms-key.mjs"
+    "cms:rotate-key": "node scripts/rotate-cms-key.mjs",
+    "vault:rotate-key": "node scripts/rotate-vault-key.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",

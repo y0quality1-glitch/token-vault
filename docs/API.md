@@ -40,7 +40,8 @@ Errors use one shape: `{ "error": { "code": "…", "message": "…", "details": 
 | GET | `/agents` · `/agents/:id` | any role | |
 | POST | `/agents` | `agent:manage` | returns `{agent, credential: {apiKey, keyId, issuedAt}}`. **The key is shown once** |
 | PATCH | `/agents/:id` | `agent:manage` (owner) | |
-| POST | `/agents/:id/rotate-credential` | `agent:manage` (owner) | returns the new key once |
+| POST | `/agents/:id/rotate-credential` | `agent:manage` (owner) | `{graceMinutes?}` (0–1440, default 0): how long the old key keeps working; returns the new key once |
+| POST | `/agents/:id/revoke-previous-credential` | `agent:manage` (owner) | ends the grace period: the old key stops working now |
 | POST | `/agents/:id/disable` · `/enable` | `agent:manage` (owner) | |
 | POST | `/agents/:id/revoke-grants` | `grant:revoke` | |
 | GET | `/api-clients` | any role | key IDs and masked keys only |

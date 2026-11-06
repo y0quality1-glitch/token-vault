@@ -131,5 +131,52 @@ suite('customer credential store (PostgreSQL)', () => {
     await m.store.initStore();
     expect(await pgCatalogCache.load()).toBeNull();
   });
-});
 
+  it('rotates the encryption key: re-encrypts every record under the new key, keeps fingerprints, then works without the old key', async () => {
+    const { config } = await import('../src/config');
+    const { buildKeyring, sealWith, LEGACY_KEY_REF } = await import('../src/security/keyring');
+    const { credentials } = m.schema;
+    const original = config.keyring;
+    const oldKey = config.keyring.current.key;
+    try {
+      const rec = await m.store.createCredential('org_rot', 'stripe', 'sk_test_rotationValue1234567890', {});
+      expect(rec.encryptionKeyRef).toBe(config.keyring.current.ref);
+      // A record written by a version without key ids.
+      const legacySealed = sealWith(buildKeyring(oldKey), 'sk_test_legacyRecord12345678901', 'cref_rot_legacy').sealed;
+      await m.client.db.insert(credentials).values({ credentialRef: 'cref_rot_legacy', orgId: 'org_rot', provider: 'stripe', iv: legacySealed.iv, ciphertext: legacySealed.ciphertext, authTag: legacySealed.authTag, encryptionKeyRef: LEGACY_KEY_REF, maskedIdentifier: 'sk_test_••••8901', fingerprint: 'fp_legacy00000000', metadata: {}, status: 'ACTIVE', createdAt: new Date().toISOString(), rotatedAt: null });
+
+      // A record no configured key can open: counted, never touched.
+      const broken = await m.store.createCredential('org_rot', 'stripe', 'sk_test_brokenRecord12345678901', {});
+      await m.client.db.update(credentials).set({ authTag: randomBytes(16).toString('base64') }).where(m.orm.eq(credentials.credentialRef, broken.credentialRef));
+
+      // Rotate: new current key, the old one kept as a previous key.
+      const newKey = randomBytes(32);
+      config.keyring = buildKeyring(newKey, [oldKey]);
+      const before = (await m.store.get(rec.credentialRef, 'org_rot'))!;
+      expect(await m.store.withSecret(before, async (s) => s)).toBe('sk_test_rotationValue1234567890'); // still readable before re-encryption
+
+      const result = await m.store.reencryptStore();
+      expect(result).toMatchObject({ unreadable: 1 });
+      expect(result.reencrypted).toBeGreaterThanOrEqual(2);
+      const brokenAfter = (await m.store.get(broken.credentialRef, 'org_rot'))!;
+      expect(brokenAfter.sealed.ciphertext).toBe(broken.sealed.ciphertext); // left as it was
+      const after = (await m.store.get(rec.credentialRef, 'org_rot'))!;
+      expect(after.encryptionKeyRef).toBe(config.keyring.current.ref);
+      expect(after.sealed.ciphertext).not.toBe(before.sealed.ciphertext);
+      expect(after.fingerprint).toBe(before.fingerprint);
+      expect(after.maskedIdentifier).toBe(before.maskedIdentifier);
+      expect((await m.store.get('cref_rot_legacy', 'org_rot'))!.encryptionKeyRef).toBe(config.keyring.current.ref);
+      const byKey = await m.store.recordsByKey();
+      // Only the unreadable record is left on the old key.
+      expect(Object.entries(byKey).filter(([id]) => id !== config.keyring.current.id)).toEqual([[buildKeyring(oldKey).current.id, 1]]);
+
+      // Retire the old key: everything that was readable still is.
+      config.keyring = buildKeyring(newKey);
+      expect(await m.store.withSecret((await m.store.get(rec.credentialRef, 'org_rot'))!, async (s) => s)).toBe('sk_test_rotationValue1234567890');
+      expect(await m.store.withSecret((await m.store.get('cref_rot_legacy', 'org_rot'))!, async (s) => s)).toBe('sk_test_legacyRecord12345678901');
+      expect(await m.store.reencryptStore()).toMatchObject({ reencrypted: 0, unreadable: 1 });
+    } finally {
+      config.keyring = original;
+    }
+  });
+});

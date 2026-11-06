@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, or } from 'drizzle-orm';
 import { db, type Executor } from '../../db/client';
 import { agents } from '../../db/schema';
 import type { AgentRecord } from '../types';
@@ -14,7 +14,8 @@ export async function getAgent(organizationId: string, id: string, ex: Executor 
 
 /** Credential lookup by the public key ID embedded in tvak_<keyId>_<secret>. */
 export async function findAgentByKeyId(keyId: string, ex: Executor = db): Promise<AgentRecord | null> {
-  const [row] = await ex.select().from(agents).where(eq(agents.credentialKeyId, keyId));
+  // The current key, or the previous one during a rotation's grace period (the caller checks expiry and hash).
+  const [row] = await ex.select().from(agents).where(or(eq(agents.credentialKeyId, keyId), eq(agents.previousCredentialKeyId, keyId)));
   return row ?? null;
 }
 

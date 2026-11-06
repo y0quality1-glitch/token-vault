@@ -143,6 +143,11 @@ export interface Agent {
   /** Public key identifier embedded in the API credential prefix. */
   credentialKeyId: string;
   credentialIssuedAt: ISODate;
+  /** Key replaced by the last rotation, still accepted until previousCredentialExpiresAt (grace period). */
+  previousCredentialKeyId: string | null;
+  previousCredentialExpiresAt: ISODate | null;
+  /** Last time the previous key was used: when it stops changing, the agent has switched. */
+  previousCredentialLastUsedAt: ISODate | null;
   status: AgentStatus;
   activeGrants: number;
   lastAccessAt: ISODate | null;
