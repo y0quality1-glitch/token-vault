@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { KeyRound, RefreshCw } from 'lucide-react';
-import { PERMISSIONS, type Integration } from '@token-vault/shared';
+import { PERMISSIONS, rotationState, type Integration } from '@token-vault/shared';
 import { useApi } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
 import { api } from '@/lib/api';
@@ -85,6 +85,20 @@ export function CredentialStatusPage() {
               { key: 'status', header: 'Status', cell: (i) => <StatusBadge status={i.credentialStatus} /> },
               { key: 'validated', header: 'Last validated', cell: (i) => <span title={formatDateTime(i.lastValidatedAt)} className="text-slate-500">{relativeTime(i.lastValidatedAt)}</span>, hideBelow: 'md' },
               { key: 'rotated', header: 'Rotated', cell: (i) => <span className="text-slate-500">{i.rotatedAt ? relativeTime(i.rotatedAt) : 'Never'}</span>, hideBelow: 'xl' },
+              {
+                key: 'rotateBy',
+                header: 'Rotate by',
+                cell: (i) => {
+                  const r = rotationState(i);
+                  if (r.state === 'none') return <span className="text-slate-400">No reminder</span>;
+                  return (
+                    <span title={formatDateTime(r.dueAt)} className={r.state === 'overdue' ? 'font-medium text-amber-700' : r.state === 'due_soon' ? 'text-sky-700' : 'text-slate-500'}>
+                      {r.state === 'overdue' ? `Overdue ${r.days}d` : `In ${r.days}d`}
+                    </span>
+                  );
+                },
+                hideBelow: 'lg',
+              },
               {
                 key: 'actions',
                 header: '',

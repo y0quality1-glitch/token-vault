@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import type { DashboardSummary } from '@token-vault/shared';
+import { rotationState, type DashboardSummary } from '@token-vault/shared';
 import { orgCtx } from '../../middleware/auth';
 import { agentRepo, auditRepo, grantRepo, grantRequestRepo, integrationRepo, webhookRepo } from '../../store/repos';
 import { effectiveStatus as requestStatus } from '../grant-requests/grant-requests.service';
@@ -44,6 +44,15 @@ dashboardRouter.get('/dashboard', async (req, res) => {
   }
   for (const i of integrations.filter((x) => x.credentialStatus === 'INVALID' || x.credentialStatus === 'DISABLED')) {
     alerts.push({ id: `int-${i.id}`, severity: 'warning', title: `Integration "${i.displayName}" is ${i.credentialStatus.toLowerCase()}`, detail: 'Agents cannot use this integration until it is re-enabled or rotated.', link: `/integrations/${i.id}`, at: i.updatedAt });
+  }
+  // Rotation reminders: overdue (warning) and due within ROTATION_REMINDER_DAYS (info). Credentials keep working.
+  for (const i of integrations.filter((x) => x.credentialStatus !== 'DISABLED')) {
+    const r = rotationState(i, now);
+    if (r.state === 'overdue') {
+      alerts.push({ id: `rot-${i.id}`, severity: 'warning', title: `Rotate the credential of "${i.displayName}"`, detail: `Rotation was due ${r.days} day${r.days === 1 ? '' : 's'} ago (every ${i.rotationIntervalDays} days). It keeps working until it is rotated.`, link: `/integrations/${i.id}`, at: r.dueAt });
+    } else if (r.state === 'due_soon') {
+      alerts.push({ id: `rot-${i.id}`, severity: 'info', title: `"${i.displayName}" is due for rotation in ${r.days} day${r.days === 1 ? '' : 's'}`, detail: `Rotate its credential by ${new Date(r.dueAt).toUTCString()} (every ${i.rotationIntervalDays} days).`, link: `/integrations/${i.id}`, at: new Date(now).toISOString() });
+    }
   }
   const activeGrants = grants.filter((g) => effectiveGrantStatus(g) === 'ACTIVE');
   const reviewsDue = activeGrants.filter((g) => reviewDueAt(g).getTime() <= now);

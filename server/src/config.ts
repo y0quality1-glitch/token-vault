@@ -9,6 +9,12 @@ if (signingSecret.length < 32) {
   console.error('[api] WEBHOOK_SIGNING_SECRET is missing or too short. Run "npm run setup" at the repo root.');
   process.exit(1);
 }
+// Signing-secret rotation: previous secrets are still accepted on webhook responses until removed.
+const previousSigningSecrets = (process.env.WEBHOOK_PREVIOUS_SIGNING_SECRETS ?? '').split(',').map((v) => v.trim()).filter((v) => v && v !== signingSecret);
+if (previousSigningSecrets.some((v) => v.length < 32)) {
+  console.error('[api] every WEBHOOK_PREVIOUS_SIGNING_SECRETS entry must be at least 32 characters.');
+  process.exit(1);
+}
 
 // HMAC key for audit-chain signatures. Kept outside the database, so someone who can write
 // to the database cannot forge signatures for altered or inserted audit records.
@@ -52,7 +58,10 @@ export const config = {
   /** if-empty: seed demo data only into an empty database. reset: wipe and reseed on start (tests). */
   seedMode: seedMode as 'if-empty' | 'reset',
   /** Shared HMAC secret for control plane <-> webhook signing. Held in env, never in the database. */
+  /** Signs every request to customer webhooks. */
   webhookSigningSecret: signingSecret,
+  /** Accepted on webhook responses and health challenges: the current secret, then previous ones during a rotation. */
+  webhookAcceptedSecrets: [signingSecret, ...previousSigningSecrets],
   webhookSigningSecretRef: 'env:WEBHOOK_SIGNING_SECRET',
   defaultWebhookUrl: process.env.DEFAULT_WEBHOOK_URL ?? 'http://localhost:4100',
   heartbeatIntervalMs: Number(process.env.HEARTBEAT_INTERVAL_MS ?? 30_000),

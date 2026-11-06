@@ -30,6 +30,7 @@ Errors use one shape: `{ "error": { "code": "…", "message": "…", "details": 
 | GET | `/integrations/:id` | any role | includes granted agents |
 | PATCH | `/integrations/:id` | `integration:manage` | metadata only |
 | POST | `/integrations/:id/test` | `integration:manage` | webhook decrypts the credential and calls the provider |
+| PUT | `/integrations/:id/rotation-policy` | `integration:manage` | `{intervalDays}` (7–730, or `null` to remove): rotation reminder; the detail returns `rotationIntervalDays`; audited |
 | POST | `/integrations/check-credentials` | `integration:manage` | re-tests every credential of the organization now (the scheduled check): returns `{valid, rejected, unknown, skipped}`; rejected → Invalid, recovered → Connected, both audited |
 | POST | `/integrations/:id/rotate` | `integration:manage` | PAT: `{secret}`. GitHub App: `{privateKey}` (400 `KEY_MANAGED_BY_WEBHOOK` if the key lives in the webhook's environment). OAuth: 400 `RECONNECT_REQUIRED` |
 | POST | `/integrations/oauth/start` | `integration:manage` | `{provider, authType, webhookId, displayName, environment, clientId, clientSecret, allowedResources, …}` → `{authorizeUrl}` (see [OAUTH.md](OAUTH.md)) |

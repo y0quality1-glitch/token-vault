@@ -20,6 +20,14 @@ export interface HealthOutcome {
  * Signed health-check challenge. The webhook proves it holds the signing secret by
  * returning HMAC("health:<challenge>:<instance_id>"), and the response itself is signed.
  */
+/** Signing-secret rotation status: tells the admin which step of a rotation is next. */
+function signingNote(s: { request_signed_with?: unknown; previous_secrets?: unknown } | undefined): string {
+  if (!s) return '';
+  if (s.request_signed_with === 'previous') return ". Signing-secret rotation in progress: the webhook has the new secret, Token Vault still signs with the old one (switch Token Vault next)";
+  if (Number(s.previous_secrets) > 0) return '. Signing-secret rotation in progress: both sides use the new secret; the old one can be retired';
+  return '';
+}
+
 /** Key status the webhook reports (key ids only): tells an admin whether a previous key is still needed. */
 function encryptionNote(enc: { key_id?: unknown; records_by_key?: Record<string, number>; last_reencryption?: { unreadable?: number } | null } | undefined): string {
   if (!enc || typeof enc.key_id !== 'string') return '';
@@ -36,14 +44,14 @@ export async function checkHealth(webhook: WebhookRecord): Promise<HealthOutcome
     if (res.status === 401) return { ok: false, latencyMs: res.latencyMs, detail: `Webhook rejected the signed challenge (${res.body?.error?.message ?? 'unauthorized'}). Check that WEBHOOK_SIGNING_SECRET matches on both sides.` };
     if (res.status !== 200) return { ok: false, latencyMs: res.latencyMs, detail: `Unexpected HTTP ${res.status} from webhook health endpoint` };
     const { instance_id, version, challenge_response, github_mode } = res.body ?? {};
-    const expected = hmacHex(config.webhookSigningSecret, `health:${challenge}:${instance_id}`);
-    if (typeof challenge_response !== 'string' || !safeEqualHex(expected, challenge_response)) {
+    const proven = typeof challenge_response === 'string' && config.webhookAcceptedSecrets.some((secret) => safeEqualHex(hmacHex(secret, `health:${challenge}:${instance_id}`), challenge_response));
+    if (!proven) {
       return { ok: false, latencyMs: res.latencyMs, detail: 'Challenge response signature is invalid; webhook identity could not be verified.' };
     }
     if (webhook.instanceId && webhook.instanceId !== instance_id) {
       return { ok: false, latencyMs: res.latencyMs, detail: `Webhook identity changed (expected ${webhook.instanceId}, got ${instance_id}).` };
     }
-    return { ok: true, latencyMs: res.latencyMs, detail: `Signed health challenge verified${encryptionNote(res.body?.encryption)}`, instanceId: instance_id, version, githubMode: github_mode };
+    return { ok: true, latencyMs: res.latencyMs, detail: `Signed health challenge verified${signingNote(res.body?.signing)}${encryptionNote(res.body?.encryption)}`, instanceId: instance_id, version, githubMode: github_mode };
   } catch (e) {
     const err = e as Error;
     const hint = err instanceof WebhookUnavailableError && err.reason === 'UNREACHABLE' ? ' Is the webhook runtime running (npm run dev -w webhook)?' : '';

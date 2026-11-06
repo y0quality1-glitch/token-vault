@@ -79,12 +79,23 @@ try {
 }
 const { defaultMode, providerModes } = modes;
 
+// Signing-secret rotation: previous secrets are accepted (and answered with) until removed,
+// so the webhook can switch first and the control plane after, without failed requests.
+const signingSecret = required('WEBHOOK_SIGNING_SECRET', 32);
+const previousSigningSecrets = (process.env.WEBHOOK_PREVIOUS_SIGNING_SECRETS ?? '').split(',').map((v) => v.trim()).filter((v) => v && v !== signingSecret);
+if (previousSigningSecrets.some((v) => v.length < 32)) {
+  console.error('[vault] every WEBHOOK_PREVIOUS_SIGNING_SECRETS entry must be at least 32 characters.');
+  process.exit(1);
+}
+
 export const config = {
   /** Whether calls for this application go to the real API ("live") or the simulators ("mock"). */
   modeFor: (provider: string): UpstreamMode => providerModes[provider] ?? defaultMode,
   providerModes,
   port: Number(process.env.PORT ?? 4100),
-  signingSecret: required('WEBHOOK_SIGNING_SECRET', 32),
+  signingSecret,
+  /** Accepted when verifying the control plane: the current secret, then previous ones during a rotation. */
+  signingSecrets: [signingSecret, ...previousSigningSecrets],
   /** Current AES-256 key (new records, fingerprints). */
   encryptionKey,
   /** Current and previous keys; records name the key that encrypted them. */
