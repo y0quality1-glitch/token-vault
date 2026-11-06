@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Ban, Github, Pencil, Play, Power, RefreshCw, Trash2 } from 'lucide-react';
-import { PERMISSIONS, type IntegrationDetail } from '@token-vault/shared';
+import { PERMISSIONS, ROTATION_INTERVAL_OPTIONS, rotationState, type IntegrationDetail } from '@token-vault/shared';
 import { getProvider, operationLabel } from '@/lib/providers';
 import { useApi, useMutation } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
@@ -9,7 +9,7 @@ import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardBody, CardHeader, DetailList } from '@/components/ui/card';
 import { Badge, EnvBadge, StatusBadge } from '@/components/ui/badge';
-import { Field, Input, Textarea } from '@/components/ui/form';
+import { Field, Input, Select, Textarea } from '@/components/ui/form';
 import { Callout, EmptyState, ErrorState, FormError, PageSkeleton } from '@/components/ui/feedback';
 import { ConfirmDialog, Dialog } from '@/components/ui/dialog';
 import { DataTable } from '@/components/ui/table';
@@ -147,6 +147,7 @@ export function IntegrationDetailPage() {
                 { label: 'Customer webhook', value: <Link to="/webhook/health" className="text-brand-700 hover:underline">{i.webhookName}</Link> },
               ]}
             />
+            <RotationReminder i={i} manage={manage} oauth={getProvider(i.provider)?.auth.find((a) => a.id === i.authType)?.kind === 'oauth2'} onSaved={setData} />
             <Callout tone="security">The secret value is not stored in Token Vault and cannot be displayed. Only the webhook can decrypt it, and only to inject it into an authorized upstream call.</Callout>
           </CardBody>
         </Card>
@@ -339,5 +340,52 @@ function RotateDialog({ open, integration, onClose, onSaved }: { open: boolean; 
         </p>
       </div>
     </Dialog>
+  );
+}
+
+/** Rotation reminder: how often this credential should be rotated, and when it is next due. */
+function RotationReminder({ i, manage, oauth, onSaved }: { i: IntegrationDetail; manage: boolean; oauth: boolean; onSaved: (next: IntegrationDetail) => void }) {
+  const toast = useToast();
+  const save = useMutation((intervalDays: number | null) => api.put<IntegrationDetail>(`/integrations/${i.id}/rotation-policy`, { intervalDays }));
+  const r = rotationState(i);
+  const options = ROTATION_INTERVAL_OPTIONS.includes(i.rotationIntervalDays as (typeof ROTATION_INTERVAL_OPTIONS)[number]) || !i.rotationIntervalDays ? ROTATION_INTERVAL_OPTIONS : [...ROTATION_INTERVAL_OPTIONS, i.rotationIntervalDays];
+  const tone = r.state === 'overdue' ? 'border-amber-300 bg-amber-50 text-amber-900' : r.state === 'due_soon' ? 'border-sky-200 bg-sky-50 text-sky-900' : 'border-slate-200 bg-slate-50 text-slate-700';
+  return (
+    <div className={`space-y-2 rounded-lg border p-3 text-sm ${tone}`} data-testid="rotation-reminder">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <label htmlFor="rotationInterval" className="font-medium">
+          Rotation reminder
+        </label>
+        <Select
+          id="rotationInterval"
+          className="w-44"
+          disabled={!manage || save.pending}
+          value={i.rotationIntervalDays ? String(i.rotationIntervalDays) : ''}
+          onChange={async (e) => {
+            const next = await save.run(e.target.value ? Number(e.target.value) : null);
+            if (next) {
+              onSaved(next);
+              toast.success(next.rotationIntervalDays ? `Reminder set: every ${next.rotationIntervalDays} days` : 'Reminder removed');
+            }
+          }}
+        >
+          <option value="">No reminder</option>
+          {options.map((d) => (
+            <option key={d} value={d}>
+              Every {d} days
+            </option>
+          ))}
+        </Select>
+      </div>
+      <p>
+        {r.state === 'none'
+          ? 'No rotation schedule. Set one to get dashboard reminders before the credential is due.'
+          : r.state === 'overdue'
+            ? `Rotation overdue by ${r.days} day${r.days === 1 ? '' : 's'} (was due ${formatDateTime(r.dueAt)}). The credential keeps working until it is rotated.`
+            : `Next rotation due ${formatDateTime(r.dueAt)} (in ${r.days} day${r.days === 1 ? '' : 's'}), counted from the ${i.rotatedAt ? 'last rotation' : 'connection'}.`}
+        {r.state !== 'none' && oauth ? ' OAuth connections are renewed by connecting again.' : ''}
+      </p>
+      <FormError error={save.error} />
+    </div>
   );
 }

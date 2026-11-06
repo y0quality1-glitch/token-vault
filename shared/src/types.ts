@@ -118,6 +118,8 @@ export interface Integration {
   updatedAt: ISODate;
   lastValidatedAt: ISODate | null;
   rotatedAt: ISODate | null;
+  /** Rotation reminder: the credential is due this many days after its last rotation (null = no reminder). */
+  rotationIntervalDays: number | null;
 }
 
 export interface IntegrationDetail extends Integration {

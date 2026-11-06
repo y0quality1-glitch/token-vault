@@ -18,6 +18,9 @@ const startedAt = Date.now();
 interface SignedRequest extends Request {
   rawBody?: Buffer;
   tvNonce?: string;
+  /** The signing secret this request was signed with (current or previous); the response uses it too. */
+  tvSecret?: string;
+  tvSecretIndex?: number;
   json?: any;
 }
 
@@ -25,7 +28,7 @@ interface SignedRequest extends Request {
 async function requireSignature(req: SignedRequest, res: Response, next: NextFunction) {
   const raw = req.rawBody ?? Buffer.alloc(0);
   const result = await verifySignedRequest({
-    secret: config.signingSecret,
+    secret: config.signingSecrets,
     method: req.method,
     path: req.originalUrl,
     body: raw,
@@ -39,6 +42,8 @@ async function requireSignature(req: SignedRequest, res: Response, next: NextFun
     return;
   }
   req.tvNonce = result.nonce;
+  req.tvSecret = result.secret;
+  req.tvSecretIndex = result.secretIndex;
   try {
     req.json = raw.length ? JSON.parse(raw.toString('utf8')) : {};
   } catch {
@@ -51,7 +56,7 @@ async function requireSignature(req: SignedRequest, res: Response, next: NextFun
 /** Signs the response body so the control plane can verify it came from this webhook. */
 function signedJson(req: SignedRequest, res: Response, status: number, body: unknown) {
   const text = JSON.stringify(body);
-  res.status(status).set('x-tv-response-signature', signResponse(config.signingSecret, req.tvNonce ?? '', text)).type('application/json').send(text);
+  res.status(status).set('x-tv-response-signature', signResponse(req.tvSecret ?? config.signingSecret, req.tvNonce ?? '', text)).type('application/json').send(text);
 }
 
 /** Maps credential-use failures to signed, non-revealing responses. */
@@ -230,7 +235,9 @@ export function buildRouter() {
       },
       providers: registry.list().map((e) => ({ key: e.definition.key, version: e.definition.version, source: e.source, digest: (e.digest ?? createHash('sha256').update(JSON.stringify(e.definition)).digest('hex')).slice(0, 16) })),
       catalog: catalogSync ? { key_ids: catalogSync.status.keyIds, last_success_at: catalogSync.status.lastSuccessAt, last_error: catalogSync.status.lastError, restored_from: catalogSync.status.restored?.savedAt ?? null } : null,
-      challenge_response: hmacHex(config.signingSecret, `health:${challenge}:${config.instanceId}`),
+      challenge_response: hmacHex(req.tvSecret ?? config.signingSecret, `health:${challenge}:${config.instanceId}`),
+      // During a signing-secret rotation: whether the control plane already signs with the new secret.
+      signing: { request_signed_with: req.tvSecretIndex ? 'previous' : 'current', previous_secrets: config.signingSecrets.length - 1 },
     });
   });
 

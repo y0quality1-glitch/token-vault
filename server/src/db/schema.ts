@@ -141,6 +141,8 @@ export const integrations = pgTable(
     updatedAt: ts('updated_at').notNull(),
     lastValidatedAt: ts('last_validated_at'),
     rotatedAt: ts('rotated_at'),
+    /** Rotation reminder interval in days (null = none). Reminders only; nothing is blocked. */
+    rotationIntervalDays: integer('rotation_interval_days'),
     /** Soft delete: grants and audit records keep referring to the integration. */
     deletedAt: ts('deleted_at'),
   },

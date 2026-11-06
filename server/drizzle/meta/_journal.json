@@ -50,6 +50,13 @@
       "when": 1793986405600,
       "tag": "0006_agent_key_grace",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1793987352224,
+      "tag": "0007_integration_rotation_interval",
+      "breakpoints": true
     }
   ]
 }

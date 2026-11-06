@@ -46,7 +46,8 @@ export class NonceCache implements NonceStore {
 }
 
 export interface VerifyInput {
-  secret: string;
+  /** Accepted secrets, current first. Several during a signing-secret rotation. */
+  secret: string | string[];
   method: string;
   path: string;
   body: string | Buffer;
@@ -56,7 +57,8 @@ export interface VerifyInput {
   now?: number;
 }
 
-export type VerifyResult = { ok: true; nonce: string } | { ok: false; reason: string };
+/** On success, `secret` is the one that matched: answer with it, so a rotation needs no ordering beyond "webhook first". */
+export type VerifyResult = { ok: true; nonce: string; secret: string; secretIndex: number } | { ok: false; reason: string };
 
 export async function verifySignedRequest(input: VerifyInput): Promise<VerifyResult> {
   const now = input.now ?? Date.now();
@@ -66,11 +68,14 @@ export async function verifySignedRequest(input: VerifyInput): Promise<VerifyRes
   if (!ts || !nonce || !sig) return { ok: false, reason: 'missing_signature_headers' };
   if (!/^\d+$/.test(ts) || Math.abs(now - Number(ts)) > input.maxSkewMs) return { ok: false, reason: 'timestamp_outside_window' };
   if (!/^[A-Za-z0-9_-]{16,128}$/.test(nonce)) return { ok: false, reason: 'invalid_nonce' };
-  const expected = hmacHex(input.secret, canonicalString(input.method, input.path, ts, nonce, input.body));
-  if (!/^[0-9a-f]{64}$/.test(sig) || !safeEqualHex(expected, sig)) return { ok: false, reason: 'bad_signature' };
+  if (!/^[0-9a-f]{64}$/.test(sig)) return { ok: false, reason: 'bad_signature' };
+  const canonical = canonicalString(input.method, input.path, ts, nonce, input.body);
+  const secrets = Array.isArray(input.secret) ? input.secret : [input.secret];
+  const secretIndex = secrets.findIndex((s) => safeEqualHex(hmacHex(s, canonical), sig));
+  if (secretIndex < 0) return { ok: false, reason: 'bad_signature' };
   // Only consume the nonce once the signature is proven, so attackers cannot burn nonces.
   if (!(await input.nonces.use(nonce, now))) return { ok: false, reason: 'replayed_nonce' };
-  return { ok: true, nonce };
+  return { ok: true, nonce, secret: secrets[secretIndex]!, secretIndex };
 }
 
 /** Signature the webhook attaches to its response so the control plane can verify origin. */

@@ -29,7 +29,8 @@
     "mcp:config": "node scripts/mcp-config.mjs",
     "mcp": "npm run start -w mcp",
     "cms:rotate-key": "node scripts/rotate-cms-key.mjs",
-    "vault:rotate-key": "node scripts/rotate-vault-key.mjs"
+    "vault:rotate-key": "node scripts/rotate-vault-key.mjs",
+    "webhook:rotate-secret": "node scripts/rotate-webhook-secret.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",

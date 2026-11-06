@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { PERMISSIONS, type AuthMethodDefinition, type CatalogEntry, type IntegrationDetail, type ProviderDefinition } from '@token-vault/shared';
+import { PERMISSIONS, ROTATION_INTERVAL_MAX_DAYS, ROTATION_INTERVAL_MIN_DAYS, rotationDueAt, type AuthMethodDefinition, type CatalogEntry, type IntegrationDetail, type ProviderDefinition } from '@token-vault/shared';
 import { and, eq, lt } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
 import { config } from '../../config';
@@ -122,6 +122,7 @@ async function finishIntegration(ctx: ReturnType<typeof orgCtx>, webhook: { id: 
         updatedAt: now,
         lastValidatedAt,
         rotatedAt: null,
+        rotationIntervalDays: null,
         deletedAt: null,
       },
       tx,
@@ -378,6 +379,31 @@ integrationsRouter.post('/integrations/check-credentials', requirePermission(PER
   const counts = await checkAllCredentials(ctx.org.id);
   await recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: 'integration.credentials_checked', target: { type: 'organization', id: ctx.org.id, name: ctx.org.name }, outcome: counts.rejected ? 'FAILURE' : 'SUCCESS', severity: counts.rejected ? 'warning' : 'info', metadata: counts });
   res.json(counts);
+});
+
+/** Sets or clears the rotation reminder (days after the last rotation). Reminders only: nothing is blocked. */
+integrationsRouter.put('/integrations/:id/rotation-policy', requirePermission(PERMISSIONS.INTEGRATION_MANAGE), async (req, res) => {
+  const ctx = orgCtx(req);
+  const i = await getIntegration(ctx.org.id, String(req.params.id));
+  const { intervalDays } = parse(
+    z.object({ intervalDays: z.number().int().min(ROTATION_INTERVAL_MIN_DAYS, `At least ${ROTATION_INTERVAL_MIN_DAYS} days`).max(ROTATION_INTERVAL_MAX_DAYS, `At most ${ROTATION_INTERVAL_MAX_DAYS} days`).nullable() }),
+    req.body ?? {},
+  );
+  const updated = await transaction(async (tx) => {
+    const u = await integrationRepo.updateIntegration(i.id, { rotationIntervalDays: intervalDays, updatedAt: new Date().toISOString() }, tx);
+    await recordEvent(
+      {
+        orgId: ctx.org.id,
+        actor: userActor(ctx),
+        eventType: 'integration.rotation_policy_updated',
+        target: { type: 'integration', id: i.id, name: i.displayName },
+        metadata: { intervalDays, previousIntervalDays: i.rotationIntervalDays, dueAt: rotationDueAt(u) },
+      },
+      tx,
+    );
+    return u;
+  });
+  res.json(await detail(updated));
 });
 
 integrationsRouter.post('/integrations/:id/test', requirePermission(PERMISSIONS.INTEGRATION_MANAGE), async (req, res) => {

@@ -247,7 +247,7 @@ token-vault/
 | Provider secrets | Sent browser → control plane (TLS in prod) → webhook, **never persisted** by the control plane. They are removed from the request object after forwarding and are not logged. | Same, or direct browser → webhook upload |
 | Encryption at rest | AES-256-GCM in the webhook, with the credential ref bound as AAD. Ciphertext lives in the customer's own Postgres database (`token_vault_customer`, separate role). The key comes from the environment and is never stored in the database; each record names the key that encrypted it by a one-way key id. The key can be rotated without losing credentials (see *Rotating keys*). | KMS/HSM envelope encryption |
 | Replay protection | Nonces of signed requests are recorded in the customer database, so a replay is rejected even when it reaches a different webhook instance | Same |
-| Control plane ↔ webhook | Shared-secret HMAC-SHA256 over method, path, timestamp, nonce and body hash. Responses are signed too. 60 s skew window and a nonce replay cache. | mTLS or asymmetric signatures with rotation |
+| Control plane ↔ webhook | Shared-secret HMAC-SHA256 over method, path, timestamp, nonce and body hash. Responses are signed too. 60 s skew window and a nonce replay cache. The secret can be rotated with no failed requests: the webhook accepts the old and new secret and answers with the one each request used (see *Rotating keys*). | mTLS or asymmetric signatures |
 | Webhook identity | A signed challenge/response at registration and on every heartbeat. The instance ID is pinned. | Certificate-bound identity |
 | Agent credentials | `tvak_<keyId>_<secret>`. Only a **scrypt hash** is stored. Shown once. Rotation can keep the old key working for a grace period (up to 24 h) so the agent switches without failed requests; requests with it carry `Token-Vault-Key-Expires`, and an administrator can end the grace period early. | Same, plus optional workload identity federation |
 | Admin sessions | Opaque token in an **httpOnly, SameSite=Strict** cookie. Nothing is kept in `localStorage`. | Enterprise SSO (out of scope) |
@@ -284,7 +284,8 @@ token-vault/
 | Variable | Purpose |
 | --- | --- |
 | `PORT` | API port (4000) |
-| `WEBHOOK_SIGNING_SECRET` | HMAC secret shared with the webhook (32+ bytes) |
+| `WEBHOOK_SIGNING_SECRET` | HMAC secret shared with the webhook (32+ bytes); signs every request |
+| `WEBHOOK_PREVIOUS_SIGNING_SECRETS` | Optional, comma-separated: old secrets still accepted on webhook responses during a rotation |
 | `DEFAULT_WEBHOOK_URL` | Pre-filled webhook URL and the seeded webhook endpoint |
 | `DATABASE_URL` | PostgreSQL connection string (required) |
 | `AUDIT_SIGNING_KEY` | HMAC key (32+ characters) for the audit chain signatures (required). Never stored in the database. Changing it makes existing signatures fail verification; key rotation is not supported in the POC |
@@ -302,7 +303,8 @@ token-vault/
 | Variable | Purpose |
 | --- | --- |
 | `PORT` | Webhook port (4100) |
-| `WEBHOOK_SIGNING_SECRET` | Must match the control plane |
+| `WEBHOOK_SIGNING_SECRET` | Must match the control plane (except during a rotation) |
+| `WEBHOOK_PREVIOUS_SIGNING_SECRETS` | Optional, comma-separated: old secrets still accepted during a rotation. Each response is signed with the secret its request used |
 | `VAULT_ENCRYPTION_KEY` | Base64 of 32 random bytes. AES-256 key for the credential store: encrypts every new or changed credential |
 | `VAULT_PREVIOUS_ENCRYPTION_KEYS` | Optional, comma-separated. Earlier keys, kept only to read credentials written before a rotation; at start-up the webhook re-encrypts those under the current key |
 | `WEBHOOK_INSTANCE_ID` | Identity pinned by the control plane (signature audience) |
@@ -337,13 +339,23 @@ Elsewhere, do the same with your secret manager: new key in `VAULT_ENCRYPTION_KE
 
 If a credential cannot be decrypted with any configured key (a key was removed too early, or replaced without keeping the old one), the webhook logs how many are affected but **never deletes them** (a misconfigured key must not destroy customer credentials). Requests that use them fail with `CREDENTIAL_UNREADABLE` until the key that encrypted them is added back as a previous key, or the credential is rotated. The seeded mock credentials are recreated automatically.
 
+**Webhook signing secret** (no failed requests; restart the webhook first):
+
+1. `npm run webhook:rotate-secret` gives the webhook a new secret and keeps accepting the old one (`WEBHOOK_PREVIOUS_SIGNING_SECRETS`). Restart the webhook. It answers each request with the secret that signed it, so the control plane keeps working on the old secret.
+2. `npm run webhook:rotate-secret -- --switch` makes the control plane sign with the new secret, still accepting the old one on responses. Restart the control plane.
+3. `npm run webhook:rotate-secret -- --retire` removes the old secret from both. Restart both.
+
+The last health check on **Webhook Health** says which step is next ("the webhook has the new secret, Token Vault still signs with the old one", then "both sides use the new secret; the old one can be retired"). The script refuses steps out of order and never prints secrets. Elsewhere, do the same with your secret manager, in the same order.
+
+**Rotation reminders:** on an integration's page, **Rotation reminder** sets how often its credential should be rotated (30 to 365 days; the API accepts 7 to 730). The due date counts from the last rotation, or from the connection. **Credential Status** shows it under *Rotate by*, and the dashboard reminds a week ahead (info) and once it is overdue (warning). Reminders never block agents: an overdue credential keeps working until it is rotated.
+
 **Agent API keys:** **Agents → agent → Rotate API credential** issues a new key and can keep the old one working for 15 minutes to 24 hours. Requests with the old key succeed and carry a `Token-Vault-Key-Expires` header (the SDK exposes it as `tv.keyExpiresAt` and calls `onKeyExpiry`; the MCP server logs a warning). The agent page shows when the old key was last used, and **Revoke old key now** ends the grace period early. Rotating again ends any earlier grace period.
 
 **Upgrading from the JSON store:** on first start, the webhook imports any records from `webhook/data/vault-store.json` that the current key can decrypt, then renames the file to `vault-store.json.imported`. For a Docker volume created before this change, run `npm run db:init` once to create the customer role and databases.
 
 ## Troubleshooting
 
-- **Webhook shows Unhealthy / verification fails:** make sure the webhook process is running on :4100 and that `WEBHOOK_SIGNING_SECRET` is identical in both `.env` files. Delete both files and run `npm run setup` to regenerate them as a pair.
+- **Webhook shows Unhealthy / verification fails:** make sure the webhook process is running on :4100 and that `WEBHOOK_SIGNING_SECRET` is identical in both `.env` files, or, during a rotation, that the webhook lists the control plane's secret in `WEBHOOK_PREVIOUS_SIGNING_SECRETS`. Delete both files and run `npm run setup` to regenerate them as a pair.
 - **Playground says "Agent credential required":** click **Get a credential**. Keys live only in page memory and are cleared on reload.
 - **"Agent credential is invalid, rotated or unknown":** the key was rotated, or the demo was reset. Issue a new one.
 - **Webhook exits with "WEBHOOK_DATABASE_URL is missing" or "permission denied to connect":** run `npm run db:init` (existing Docker volume) and `npm run setup` (adds `WEBHOOK_DATABASE_URL` to an older `webhook/.env`).

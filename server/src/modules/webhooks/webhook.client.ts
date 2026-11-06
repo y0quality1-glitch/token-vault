@@ -57,8 +57,9 @@ export async function callWebhook<T = any>(webhook: Pick<WebhookRecord, 'endpoin
 
   // Verify the response really came from a webhook holding the signing secret.
   const respSig = res.headers.get('x-tv-response-signature') ?? '';
-  const expected = hmacHex(config.webhookSigningSecret, ['response', nonce, sha256Hex(text)].join('\n'));
-  if (res.status !== 401 && !safeEqualHex(expected, respSig)) {
+  const signed = ['response', nonce, sha256Hex(text)].join('\n');
+  const verified = config.webhookAcceptedSecrets.some((secret) => safeEqualHex(hmacHex(secret, signed), respSig));
+  if (res.status !== 401 && !verified) {
     throw new WebhookUnavailableError('BAD_SIGNATURE', 'Webhook response signature could not be verified');
   }
   let json: any = {};

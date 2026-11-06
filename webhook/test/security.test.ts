@@ -39,4 +39,18 @@ describe('signed request verification', () => {
     const stale = sign('{}', 'nonce_cccccccccccccccc', String(Date.now() - 120_000));
     expect(await verifySignedRequest({ ...base, body: '{}', headers: stale })).toEqual({ ok: false, reason: 'timestamp_outside_window' });
   });
+  it('accepts the previous secret during a rotation and says which one matched', async () => {
+    const next = 'n'.repeat(40);
+    const nonces = new NonceCache(120_000);
+    const base = { method: 'POST', path: '/internal/v1/execute', body: '{}', nonces, maxSkewMs: 60_000 };
+    // The webhook holds the new secret first; the control plane still signs with the old one.
+    const old = await verifySignedRequest({ ...base, secret: [next, secret], headers: sign('{}', 'nonce_dddddddddddddddd') });
+    expect(old).toMatchObject({ ok: true, secret, secretIndex: 1 });
+    const ts = String(Date.now());
+    const headers = { 'x-tv-timestamp': ts, 'x-tv-nonce': 'nonce_eeeeeeeeeeeeeeee', 'x-tv-signature': hmacHex(next, canonicalString('POST', '/internal/v1/execute', ts, 'nonce_eeeeeeeeeeeeeeee', '{}')) };
+    expect(await verifySignedRequest({ ...base, secret: [next, secret], headers })).toMatchObject({ ok: true, secret: next, secretIndex: 0 });
+    // Once retired, the old secret is refused, and a wrong one never burns a nonce.
+    expect(await verifySignedRequest({ ...base, secret: [next], headers: sign('{}', 'nonce_ffffffffffffffff') })).toEqual({ ok: false, reason: 'bad_signature' });
+    expect((await verifySignedRequest({ ...base, secret: [next, secret], headers: sign('{}', 'nonce_ffffffffffffffff') })).ok).toBe(true);
+  });
 });
