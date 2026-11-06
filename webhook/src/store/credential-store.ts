@@ -1,11 +1,12 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, renameSync } from 'node:fs';
-import { and, count, eq, sql } from 'drizzle-orm';
+import { and, count, eq, ne, sql } from 'drizzle-orm';
 import { SEED_CREDENTIAL_REFS } from '@token-vault/shared';
 import { config } from '../config';
 import { db } from '../db/client';
 import { credentials } from '../db/schema';
-import { fingerprint, mask, open, seal, type Sealed } from '../security/encryption';
+import { fingerprint, mask, type Sealed } from '../security/encryption';
+import { openWith, sealWith } from '../security/keyring';
 
 /**
  * Customer-controlled credential store (PostgreSQL, customer trust zone). Only
@@ -53,24 +54,19 @@ function toRecord(r: Row): CredentialRecord {
 
 /** Encrypts a secret into the column set for one row. The plaintext goes no further. */
 function encrypted(ref: string, secret: string, masked?: string) {
-  const sealed = seal(config.encryptionKey, secret, ref);
+  const { sealed, ref: keyRef } = sealWith(config.keyring, secret, ref);
   return {
     iv: sealed.iv,
     ciphertext: sealed.ciphertext,
     authTag: sealed.authTag,
-    encryptionKeyRef: config.encryptionKeyRef,
+    encryptionKeyRef: keyRef,
     maskedIdentifier: masked ?? mask(secret),
     fingerprint: fingerprint(config.encryptionKey, secret),
   };
 }
 
-function readable(r: Pick<CredentialRecord, 'credentialRef' | 'sealed'>): boolean {
-  try {
-    open(config.encryptionKey, r.sealed, r.credentialRef);
-    return true;
-  } catch {
-    return false;
-  }
+function readable(r: Pick<CredentialRecord, 'credentialRef' | 'sealed' | 'encryptionKeyRef'>): boolean {
+  return openWith(config.keyring, r.sealed, r.credentialRef, r.encryptionKeyRef ?? '') !== null;
 }
 
 const mockSecret = () => `mock_ghp_${randomBytes(18).toString('base64url')}`;
@@ -100,10 +96,58 @@ export async function initStore() {
       .onConflictDoUpdate({ target: credentials.credentialRef, set: { ...encrypted(seed.ref, mockSecret()), rotatedAt: now, status: 'ACTIVE' } });
   }
 
-  const unreadable = (await db.select().from(credentials)).map(toRecord).filter((r) => !readable(r));
-  if (unreadable.length) {
-    console.warn(`[vault] ${unreadable.length} credential(s) cannot be decrypted with the configured VAULT_ENCRYPTION_KEY; requests using them will fail until the original key is restored or they are rotated`);
+  const result = await reencryptStore();
+  if (result.reencrypted) console.log(`[vault] re-encrypted ${result.reencrypted} credential(s) under the current key ${config.keyring.current.id}`);
+  if (result.unreadable) {
+    console.warn(
+      `[vault] ${result.unreadable} credential(s) cannot be decrypted with VAULT_ENCRYPTION_KEY or VAULT_PREVIOUS_ENCRYPTION_KEYS; requests using them fail until the key that encrypted them is added back (as a previous key) or they are rotated. They are kept, never deleted.`,
+    );
   }
+}
+
+/** Outcome of the last re-encryption pass (reported by /internal/v1/health). */
+export let lastReencryption: { at: string; reencrypted: number; unreadable: number } | null = null;
+
+/**
+ * Re-encrypts every record that is not under the current key: records written before a
+ * key rotation (named previous key) or by older versions (legacy ref). Each update is
+ * conditional on the ciphertext being unchanged, so a concurrent write (an OAuth refresh,
+ * a rotation) is never overwritten with an older secret; such a row is picked up next time.
+ * Records no configured key can open are counted and left untouched.
+ */
+export async function reencryptStore(): Promise<{ reencrypted: number; unreadable: number }> {
+  const current = config.keyring.current.ref;
+  const rows = await db.select().from(credentials).where(ne(credentials.encryptionKeyRef, current));
+  let reencrypted = 0;
+  let unreadable = 0;
+  for (const r of rows) {
+    const opened = openWith(config.keyring, { iv: r.iv, ciphertext: r.ciphertext, authTag: r.authTag }, r.credentialRef, r.encryptionKeyRef);
+    if (!opened) {
+      unreadable++;
+      continue;
+    }
+    const { sealed, ref } = sealWith(config.keyring, opened.plaintext, r.credentialRef);
+    // The fingerprint and masked identifier stay: the secret itself did not change.
+    const done = await db
+      .update(credentials)
+      .set({ iv: sealed.iv, ciphertext: sealed.ciphertext, authTag: sealed.authTag, encryptionKeyRef: ref })
+      .where(and(eq(credentials.credentialRef, r.credentialRef), eq(credentials.ciphertext, r.ciphertext)))
+      .returning({ ref: credentials.credentialRef });
+    reencrypted += done.length;
+  }
+  lastReencryption = { at: new Date().toISOString(), reencrypted, unreadable };
+  return { reencrypted, unreadable };
+}
+
+/** How many records each key holds (by key id; "legacy" for records from before key ids). */
+export async function recordsByKey(): Promise<Record<string, number>> {
+  const rows = await db.select({ ref: credentials.encryptionKeyRef, n: count() }).from(credentials).groupBy(credentials.encryptionKeyRef);
+  const out: Record<string, number> = {};
+  for (const r of rows) {
+    const id = /#(kid_[0-9a-f]{16})$/.exec(r.ref)?.[1] ?? 'legacy';
+    out[id] = (out[id] ?? 0) + r.n;
+  }
+  return out;
 }
 
 /** Imports ciphertext records from webhook/data/vault-store.json (pre-PostgreSQL store), once. */
@@ -171,10 +215,10 @@ export async function rotateCredential(ref: string, orgId: string, secret: strin
  * fingerprint or rotation date (OAuth token refreshes and connection completion).
  */
 export async function replaceSecret(ref: string, orgId: string, secret: string, masked?: string): Promise<CredentialRecord | null> {
-  const sealed = seal(config.encryptionKey, secret, ref);
+  const { sealed, ref: keyRef } = sealWith(config.keyring, secret, ref);
   const [row] = await db
     .update(credentials)
-    .set({ iv: sealed.iv, ciphertext: sealed.ciphertext, authTag: sealed.authTag, encryptionKeyRef: config.encryptionKeyRef, ...(masked ? { maskedIdentifier: masked } : {}) })
+    .set({ iv: sealed.iv, ciphertext: sealed.ciphertext, authTag: sealed.authTag, encryptionKeyRef: keyRef, ...(masked ? { maskedIdentifier: masked } : {}) })
     .where(and(eq(credentials.credentialRef, ref), eq(credentials.orgId, orgId)))
     .returning();
   return row ? toRecord(row) : null;
@@ -198,13 +242,9 @@ export async function get(ref: string, orgId: string): Promise<CredentialRecord 
 
 /** Decrypts in memory only for the duration of one upstream call. */
 export async function withSecret<T>(rec: CredentialRecord, fn: (secret: string) => Promise<T>): Promise<T> {
-  let secret: string;
-  try {
-    secret = open(config.encryptionKey, rec.sealed, rec.credentialRef);
-  } catch {
-    throw new CredentialUnreadableError(rec.credentialRef);
-  }
-  return fn(secret);
+  const opened = openWith(config.keyring, rec.sealed, rec.credentialRef, rec.encryptionKeyRef);
+  if (!opened) throw new CredentialUnreadableError(rec.credentialRef);
+  return fn(opened.plaintext);
 }
 
 export function publicView(rec: CredentialRecord) {

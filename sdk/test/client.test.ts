@@ -81,4 +81,20 @@ describe('TokenVault SDK', () => {
     const bad = client({ error: { code: 'VALIDATION_ERROR', message: 'Destructive operations cannot be requested: github.repositories.delete' } }, 400);
     await expect(bad.tv.requestAccess({ integrationId: 'int_1', operations: ['github.repositories.delete'], justification: 'Cleanup old repos.' })).rejects.toMatchObject({ code: 'VALIDATION_ERROR', httpStatus: 400 });
   });
+
+  it('reports a rotated key in its grace period once, and clears it after the switch', async () => {
+    const expiry = '2026-11-06T12:00:00.000Z';
+    let header: string | null = expiry;
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(body()), { status: 200, headers: { 'content-type': 'application/json', ...(header ? { 'token-vault-key-expires': header } : {}) } }));
+    const seen: string[] = [];
+    const tv = new TokenVault({ apiKey: KEY, baseUrl: 'http://tv.test', fetch: fetchMock as unknown as typeof fetch, onKeyExpiry: (at) => seen.push(at) });
+    expect(tv.keyExpiresAt).toBeNull();
+    await tv.execute({ integrationId: 'int_1', operation: 'github.issues.list', resource: { repository: 'a/b' } });
+    await tv.execute({ integrationId: 'int_1', operation: 'github.issues.list', resource: { repository: 'a/b' } });
+    expect(tv.keyExpiresAt).toBe(expiry);
+    expect(seen).toEqual([expiry]); // once per expiry, not per request
+    header = null;
+    await tv.execute({ integrationId: 'int_1', operation: 'github.issues.list', resource: { repository: 'a/b' } });
+    expect(tv.keyExpiresAt).toBeNull();
+  });
 });

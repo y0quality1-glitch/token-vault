@@ -168,6 +168,14 @@ export const agents = pgTable(
     /** scrypt hash of the agent API key; the key itself is never stored. */
     credentialHash: text('credential_hash').notNull(),
     credentialIssuedAt: ts('credential_issued_at').notNull(),
+    /**
+     * The key replaced by the last rotation, still accepted until previous_credential_expires_at
+     * (grace period, so the agent can switch without failed requests). Hash only, like the current key.
+     */
+    previousCredentialKeyId: text('previous_credential_key_id').unique(),
+    previousCredentialHash: text('previous_credential_hash'),
+    previousCredentialExpiresAt: ts('previous_credential_expires_at'),
+    previousCredentialLastUsedAt: ts('previous_credential_last_used_at'),
     status: text('status').$type<AgentStatus>().notNull(),
     lastAccessAt: ts('last_access_at'),
     createdAt: ts('created_at').notNull(),

@@ -9,7 +9,7 @@ There are two ways to connect:
 
 ## 1. Give the agent an identity and a grant
 
-1. **Agents → Register agent** (or open an existing agent and choose **Rotate API credential**). Copy the `tvak_…` credential. It is shown once, and Token Vault keeps only a hash.
+1. **Agents → Register agent** (or open an existing agent and choose **Rotate API credential**). Copy the `tvak_…` credential. It is shown once, and Token Vault keeps only a hash. When rotating, choose a grace period so the old key keeps working while you deploy the new one: requests with the old key return a `Token-Vault-Key-Expires` header, the SDK reports it (`tv.keyExpiresAt`, `onKeyExpiry`), and the MCP server logs a warning.
 2. **Access Grants → Create grant**: choose the agent, the integration (GitHub or any application from the catalog), the operations it needs and, ideally, a resource restriction (repository, channel, …) and an expiry.
 
 Without a grant, every request is denied.

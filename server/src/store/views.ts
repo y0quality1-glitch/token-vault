@@ -58,7 +58,10 @@ export function toGrant(g: GrantRecord, l: Lookups): Grant {
 }
 
 export function toAgent(a: AgentRecord, l: Lookups): Agent {
-  const { credentialHash: _hash, ...rest } = a;
+  const { credentialHash: _hash, previousCredentialHash: _previousHash, ...rest } = a;
+  // A previous key whose grace period is over is no longer shown.
+  const graceOver = !rest.previousCredentialExpiresAt || Date.parse(rest.previousCredentialExpiresAt) <= Date.now();
+  if (graceOver) Object.assign(rest, { previousCredentialKeyId: null, previousCredentialExpiresAt: null, previousCredentialLastUsedAt: null });
   return { ...rest, ownerName: userName(l, a.ownerUserId), activeGrants: l.activeGrantsByAgent.get(a.id) ?? 0 };
 }
 

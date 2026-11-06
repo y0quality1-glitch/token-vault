@@ -74,6 +74,8 @@ if (!existsSync(webhookEnv)) {
       'PORT=4100',
       `WEBHOOK_SIGNING_SECRET=${signing}`,
       `VAULT_ENCRYPTION_KEY=${randomBytes(32).toString('base64')}`,
+      '# Earlier encryption keys during a rotation (npm run vault:rotate-key); empty otherwise.',
+      'VAULT_PREVIOUS_ENCRYPTION_KEYS=',
       'WEBHOOK_INSTANCE_ID=whi_local_customer_vault',
       '# Customer-side Postgres (separate database and role from the control plane). Development credentials only.',
       `WEBHOOK_DATABASE_URL=${DEFAULT_WEBHOOK_DATABASE_URL}`,

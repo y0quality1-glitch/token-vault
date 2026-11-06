@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { DEFAULT_WEBHOOK_INSTANCE_ID } from '@token-vault/shared';
 import { parseUpstreamModes, type UpstreamMode } from './upstream-modes';
+import { buildKeyring, parseKey, type Keyring } from './security/keyring';
 
 const envFile = resolve(import.meta.dirname, '../.env');
 if (existsSync(envFile)) process.loadEnvFile(envFile);
@@ -15,11 +16,20 @@ function required(name: string, minLength: number): string {
   return v;
 }
 
-const encryptionKey = Buffer.from(required('VAULT_ENCRYPTION_KEY', 40), 'base64');
-if (encryptionKey.length !== 32) {
-  console.error('[vault] VAULT_ENCRYPTION_KEY must be base64 of exactly 32 bytes (AES-256).');
+// The current key encrypts everything new. Previous keys (comma-separated) only decrypt
+// records written before a rotation; the store re-encrypts those under the current key at
+// start-up, after which a previous key can be removed (see docs: encryption key rotation).
+let keyring: Keyring;
+try {
+  keyring = buildKeyring(
+    parseKey(required('VAULT_ENCRYPTION_KEY', 40), 'VAULT_ENCRYPTION_KEY'),
+    (process.env.VAULT_PREVIOUS_ENCRYPTION_KEYS ?? '').split(',').map((k) => k.trim()).filter(Boolean).map((k, i) => parseKey(k, `VAULT_PREVIOUS_ENCRYPTION_KEYS (entry ${i + 1})`)),
+  );
+} catch (e) {
+  console.error(`[vault] ${(e as Error).message}.`);
   process.exit(1);
 }
+const encryptionKey = keyring.current.key;
 
 // A dedicated name (not DATABASE_URL) so the customer zone is never pointed at the
 // control plane's database by accident.
@@ -75,8 +85,11 @@ export const config = {
   providerModes,
   port: Number(process.env.PORT ?? 4100),
   signingSecret: required('WEBHOOK_SIGNING_SECRET', 32),
+  /** Current AES-256 key (new records, fingerprints). */
   encryptionKey,
-  encryptionKeyRef: 'env:VAULT_ENCRYPTION_KEY#v1',
+  /** Current and previous keys; records name the key that encrypted them. */
+  keyring,
+  encryptionKeyRef: keyring.current.ref,
   instanceId: process.env.WEBHOOK_INSTANCE_ID ?? DEFAULT_WEBHOOK_INSTANCE_ID,
   /** The default upstream mode (applications without an override in PROVIDER_MODES). */
   githubMode: defaultMode,

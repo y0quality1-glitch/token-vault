@@ -28,5 +28,5 @@ export interface SessionRecord {
 
 export type WebhookRecord = Webhook;
 export type IntegrationRecord = Omit<Integration, 'webhookName' | 'createdByName'> & { deletedAt: string | null };
-export type AgentRecord = Omit<Agent, 'ownerName' | 'activeGrants'> & { credentialHash: string };
+export type AgentRecord = Omit<Agent, 'ownerName' | 'activeGrants'> & { credentialHash: string; previousCredentialHash: string | null };
 export type GrantRecord = Omit<Grant, 'agentName' | 'integrationName' | 'status' | 'createdByName'>;
