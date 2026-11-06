@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Archive, GitBranchPlus } from 'lucide-react';
+import { Archive, Eye, EyeOff, GitBranchPlus } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import type { CmsApplicationDetail } from '@token-vault/shared';
 import { Badge } from '@ui/badge';
@@ -13,6 +13,7 @@ import { DataTable } from '@ui/table';
 import { useToast } from '@ui/toast';
 import { useApi, useMutation } from '@tv-hooks/useApi';
 import { useAuth } from '@/auth';
+import { AvailabilityBadge } from '@/components/AvailabilityBadge';
 import { VersionBadge } from '@/components/VersionBadge';
 import { api } from '@/lib/api';
 import { formatDateTime } from '@/lib/utils';
@@ -25,6 +26,7 @@ export function ApplicationPage() {
   const app = useApi<CmsApplicationDetail>(`/applications/${key}`);
   const newVersion = useMutation(() => api.post<{ version: number }>(`/applications/${key}/versions`, {}));
   const [archiving, setArchiving] = useState(false);
+  const [availabilityTarget, setAvailabilityTarget] = useState<'available' | 'coming_soon' | null>(null);
 
   if (app.error) return <ErrorState error={app.error} onRetry={app.reload} />;
   if (!app.data) return <PageSkeleton />;
@@ -36,7 +38,18 @@ export function ApplicationPage() {
       <PageHeader
         breadcrumbs={[{ label: 'Applications', to: '/applications' }, { label: a.name }]}
         title={a.name}
-        badge={a.archived ? <Badge tone="red">Archived</Badge> : a.publishedVersion ? <Badge tone="green">Published v{a.publishedVersion}</Badge> : <Badge>Not published</Badge>}
+        badge={
+          a.archived ? (
+            <Badge tone="red">Archived</Badge>
+          ) : a.publishedVersion ? (
+            <>
+              <Badge tone="green">Published v{a.publishedVersion}</Badge>
+              {a.availability && <AvailabilityBadge availability={a.availability} />}
+            </>
+          ) : (
+            <Badge>Not published</Badge>
+          )
+        }
         description={a.description}
         actions={
           <>
@@ -53,6 +66,24 @@ export function ApplicationPage() {
             )}
             {a.openVersion && (
               <Button onClick={() => navigate(`/applications/${key}/versions/${a.openVersion!.version}`)}>Open v{a.openVersion.version}</Button>
+            )}
+            {user?.role === 'ADMIN' && !a.archived && a.availability && (
+              <Button
+                variant={a.availability === 'coming_soon' ? 'primary' : 'outline'}
+                disabled={!!a.openVersion}
+                title={a.openVersion ? `v${a.openVersion.version} is open: set the availability in that version, or withdraw it first` : undefined}
+                onClick={() => setAvailabilityTarget(a.availability === 'coming_soon' ? 'available' : 'coming_soon')}
+              >
+                {a.availability === 'coming_soon' ? (
+                  <>
+                    <Eye className="h-4 w-4" /> Make available
+                  </>
+                ) : (
+                  <>
+                    <EyeOff className="h-4 w-4" /> Mark as coming soon
+                  </>
+                )}
+              </Button>
             )}
             {user?.role === 'ADMIN' && !a.archived && (
               <Button variant="outline" onClick={() => setArchiving(true)}>
@@ -94,6 +125,20 @@ export function ApplicationPage() {
           </CardBody>
         </Card>
       </div>
+      {availabilityTarget && (
+        <AvailabilityDialog
+          appKey={key}
+          name={a.name}
+          nextVersion={Math.max(0, ...a.versions.map((v) => v.version)) + 1}
+          target={availabilityTarget}
+          onClose={() => setAvailabilityTarget(null)}
+          onDone={(r) => {
+            setAvailabilityTarget(null);
+            toast.success(`Published v${r.version}`, r.availability === 'available' ? 'Token Vault offers it for connection after its next sync (about 30 seconds).' : 'Token Vault lists it as coming soon after its next sync.');
+            void app.reload();
+          }}
+        />
+      )}
       <ArchiveDialog
         open={archiving}
         appKey={key}
@@ -137,3 +182,40 @@ function ArchiveDialog({ open, appKey, onClose, onDone }: { open: boolean; appKe
     </Dialog>
   );
 }
+
+function AvailabilityDialog({ appKey, name, nextVersion, target, onClose, onDone }: { appKey: string; name: string; nextVersion: number; target: 'available' | 'coming_soon'; onClose: () => void; onDone: (r: { version: number; availability: string }) => void }) {
+  const [note, setNote] = useState('');
+  const change = useMutation(() => api.post<{ version: number; availability: string }>(`/applications/${appKey}/availability`, { availability: target, note }));
+  const available = target === 'available';
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title={available ? `Make ${name} available` : `Mark ${name} as coming soon`}
+      description={`Publishes v${nextVersion} right away with only the availability changed. It is signed and recorded in the audit log.`}
+      footer={
+        <>
+          <Button variant="outline" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant={available ? 'primary' : 'danger'} loading={change.pending} onClick={async () => (await change.run().then((r) => r && onDone(r)))}>
+            {available ? 'Make available' : 'Mark as coming soon'}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <FormError error={change.error} />
+        <p className="text-sm text-slate-600">
+          {available
+            ? 'Admins in Token Vault can then connect it from the Integration Catalog. Its API hosts, authentication and operations stay exactly as reviewed.'
+            : 'It stays in the Integration Catalog, but nobody can connect it. Integrations that are already connected keep working.'}
+        </p>
+        <Field label="Note (optional)" htmlFor="availabilityNote" hint="Recorded with the version and in the audit log">
+          <Textarea id="availabilityNote" rows={2} value={note} onChange={(e) => setNote(e.target.value)} />
+        </Field>
+      </div>
+    </Dialog>
+  );
+}
+

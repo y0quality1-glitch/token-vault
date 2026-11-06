@@ -309,6 +309,61 @@ applicationsRouter.post('/applications/:key/versions/:version/preview', async (r
   res.json(preview(normalized, body.operation, body.resource, body.input));
 });
 
+/**
+ * One-click availability (administrators). Publishes the next version with only
+ * catalog.availability changed: signed, audited, and picked up by Token Vault on its next
+ * sync. Because nothing else can change (no hosts, auth or operations), this skips the
+ * editor/publisher review. It is refused while a version is open: publishing past it would
+ * leave the open version with a lower number, which consumers refuse as a rollback.
+ */
+applicationsRouter.post('/applications/:key/availability', requireRole('ADMIN'), async (req, res) => {
+  const body = parse(z.object({ availability: z.enum(['available', 'coming_soon']), note: z.string().trim().max(500).default('') }), req.body ?? {});
+  const user = req.user!;
+  const out = await transaction(async (tx) => {
+    const app = await getApp(tx, String(req.params.key));
+    if (app.archivedAt) throw conflict('This application is archived', 'ARCHIVED');
+    const rows = await tx.select().from(versions).where(eq(versions.applicationId, app.id)).orderBy(desc(versions.version)).for('update');
+    const open = rows.find((v) => v.status === 'DRAFT' || v.status === 'IN_REVIEW');
+    if (open) throw conflict(`Version ${open.version} is ${open.status === 'DRAFT' ? 'a draft' : 'in review'}. Set the availability in that version, or withdraw it first.`, 'OPEN_VERSION_EXISTS');
+    const published = rows.find((v) => v.status === 'PUBLISHED');
+    if (!published) throw conflict('Nothing is published yet: publish a first version through review', 'NOT_PUBLISHED');
+    const current = published.definition as { catalog?: { availability?: string } };
+    if ((current.catalog?.availability ?? 'available') === body.availability) throw conflict(`It is already ${body.availability === 'available' ? 'available' : 'coming soon'}`, 'UNCHANGED');
+
+    const version = rows[0]!.version + 1;
+    const { normalized, issues } = check({ ...(published.definition as object), version, catalog: { ...(current.catalog ?? {}), availability: body.availability } });
+    if (!normalized) throw new HttpError(400, 'DEFINITION_INVALID', 'The published definition no longer passes validation; publish a corrected version through review', { issues });
+    const t = new Date().toISOString();
+    const signed = signDefinition(normalized);
+    await tx.update(versions).set({ status: 'SUPERSEDED', updatedAt: t }).where(eq(versions.id, published.id));
+    const id = newId('ver');
+    const label = body.availability === 'available' ? 'available' : 'coming soon';
+    await tx.insert(versions).values({
+      id,
+      applicationId: app.id,
+      version,
+      status: 'PUBLISHED',
+      definition: normalized,
+      ...signed,
+      createdBy: user.fullName,
+      createdAt: t,
+      updatedAt: t,
+      authors: [],
+      reviewedBy: user.id,
+      reviewedAt: t,
+      reviewNote: `Availability changed to ${label} by an administrator; nothing else changed${body.note ? `. ${body.note}` : ''}`,
+      publishedAt: t,
+      hostChangeAcknowledged: false,
+    });
+    await registerActiveKey(tx);
+    await addSignature(tx, id, signed.digest, signed.signature);
+    await tx.update(applications).set({ updatedAt: t }).where(eq(applications.id, app.id));
+    await audit(tx, user, 'version.published', { key: app.key, version }, { digest: signed.digest, keyId: signed.keyId, supersedes: published.version, availability: body.availability, oneClick: true, note: body.note || null });
+    return { key: app.key, version, availability: body.availability };
+  });
+  res.json(out);
+});
+
 /** Archived applications disappear from the catalog; their versions stay for the record. */
 applicationsRouter.post('/applications/:key/archive', requireRole('ADMIN'), async (req, res) => {
   const { reason } = parse(z.object({ reason: z.string().trim().min(3, 'Give a reason').max(500) }), req.body ?? {});
