@@ -70,6 +70,9 @@ const inputField = z
   })
   .strict();
 
+/** A simulated upstream response, used in mock mode when no simulator exists for the provider's host. */
+const mockResponse = z.object({ status: z.number().int().min(100).max(599), body: z.unknown() }).strict();
+
 const operation = z
   .object({
     id: z.string().regex(/^[a-z][a-z0-9_-]*(\.[a-z][a-z0-9_-]*){2,3}$/, 'use <provider>.<area>.<action>'),
@@ -84,7 +87,7 @@ const operation = z
     request: requestTemplate,
     response: responseMap,
     /** Simulated response used in mock mode when no simulator exists for the provider's host. */
-    mock: z.object({ status: z.number().int().min(100).max(599), body: z.unknown() }).strict().optional(),
+    mock: mockResponse.optional(),
   })
   .strict();
 export type OperationDefinition = z.infer<typeof operation>;
@@ -127,7 +130,7 @@ const authMethod = z
     secretPattern: z.string().max(300).optional(),
     secretHint: z.string().max(200).optional(),
     /** Request used to verify the credential; defaults to the definition's credentialTest. */
-    test: z.object({ request: requestTemplate, response: responseMap }).strict().optional(),
+    test: z.object({ request: requestTemplate, response: responseMap, mock: mockResponse.optional() }).strict().optional(),
   })
   .strict()
   .superRefine((a, ctx) => {
@@ -188,7 +191,8 @@ export const providerDefinitionSchema = z
     resource: z.object({ name: z.string().regex(NAME) }).merge(resourceField).strict(),
     resourceFields: z.record(z.string().regex(NAME), resourceField).default({}),
     auth: z.array(authMethod).min(1).max(5),
-    credentialTest: z.object({ request: requestTemplate, response: responseMap }).strict(),
+    /** Request used to check a credential. Its optional mock is the simulated answer (e.g. 401 to simulate a revoked credential). */
+    credentialTest: z.object({ request: requestTemplate, response: responseMap, mock: mockResponse.optional() }).strict(),
     operations: z.array(operation).min(1).max(100),
   })
   .strict();

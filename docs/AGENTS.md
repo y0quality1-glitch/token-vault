@@ -68,7 +68,7 @@ Each GitHub tool takes `repository` (`owner/name`) and an optional `integration`
 
 The server speaks MCP over stdio and writes diagnostics to stderr only. It never prints the key.
 
-**Try it in the demo:** register an agent, grant it *Create issue* on `demo-org/demo-repo`, connect Claude Code, and ask it to file an issue. Then revoke the grant in the console and ask again: the next tool call is denied with `GRANT_REVOKED`. Both requests appear in Access Logs. GitHub is simulated unless the webhook runs with `GITHUB_MODE=live`.
+**Try it in the demo:** register an agent, grant it *Create issue* on `demo-org/demo-repo`, connect Claude Code, and ask it to file an issue. Then revoke the grant in the console and ask again: the next tool call is denied with `GRANT_REVOKED`. Both requests appear in Access Logs. GitHub is simulated unless the webhook runs GitHub live (`PROVIDER_MODES=github=live`).
 
 ## Just-in-time access requests
 

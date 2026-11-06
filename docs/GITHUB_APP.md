@@ -45,7 +45,7 @@ If GitHub refuses to mint a token for the repository (the App is not installed o
 
 Leave **Installation ID** empty if the App is installed on exactly one account; the webhook finds it.
 
-To call the real API, set `GITHUB_MODE=live` in `webhook/.env`, and make sure the webhook can reach `api.github.com`.
+To call the real API, set `PROVIDER_MODES=github=live` (or `UPSTREAM_MODE=live` for every application) in `webhook/.env`, and make sure the webhook can reach `api.github.com`.
 
 ## Rotating the key
 
@@ -53,4 +53,4 @@ Generate a new key in the App settings, use **Rotate / replace** on the integrat
 
 ## Mock mode
 
-With `GITHUB_MODE=mock` (the default) no network access is needed. JWTs are still really signed with the key you provide, so an invalid key is rejected. The simulated GitHub has installation `1` on `demo-org`, and it enforces each minted token's scope: a read token cannot create issues (403), other repositories are invisible (404), and a revoked token is rejected (401).
+In mock mode (the default) no network access is needed. JWTs are still really signed with the key you provide, so an invalid key is rejected. The simulated GitHub has installation `1` on `demo-org`, and it enforces each minted token's scope: a read token cannot create issues (403), other repositories are invisible (404), and a revoked token is rejected (401).

@@ -172,5 +172,5 @@ export async function executeOperation(mode: 'mock' | 'live', def: ProviderDefin
 /** Verifies a credential with the auth method's test request (or the definition's default). */
 export async function testCredential(mode: 'mock' | 'live', def: ProviderDefinition, method: AuthMethodDefinition, auth: AuthInjection): Promise<ProviderResult> {
   const test = method.test ?? def.credentialTest;
-  return run(mode, def, test.request, test.response, { operation: 'credential.test', resource: {}, input: {} }, auth);
+  return run(mode, def, test.request, test.response, { operation: 'credential.test', resource: {}, input: {} }, auth, test.mock);
 }

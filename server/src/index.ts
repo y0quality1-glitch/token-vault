@@ -6,6 +6,7 @@ import { closeDatabase, runMigrations } from './db/client';
 import { DEMO_PASSWORD, resetDatabase, seedIfEmpty } from './store/seed';
 import { sessionRepo } from './store/repos';
 import { startHeartbeat } from './modules/webhooks/webhook.service';
+import { startCredentialChecks } from './modules/integrations/credential-health';
 import { catalogSync } from './modules/providers/registry';
 
 async function main() {
@@ -28,10 +29,12 @@ async function main() {
     console.log(`[api] Demo sign-in: owner@demo.test / ${DEMO_PASSWORD} (mock account, development only)`);
   });
   const heartbeat = startHeartbeat();
+  const credentialChecks = startCredentialChecks();
 
   const shutdown = (signal: string) => {
     console.log(`[api] ${signal} received, shutting down`);
     clearInterval(heartbeat);
+    if (credentialChecks) clearInterval(credentialChecks);
     server.close(() => void closeDatabase().finally(() => process.exit(0)));
     setTimeout(() => process.exit(1), 5000).unref();
   };

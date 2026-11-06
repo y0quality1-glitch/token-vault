@@ -1,4 +1,4 @@
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne } from 'drizzle-orm';
 import { db, type Executor } from '../../db/client';
 import { integrations } from '../../db/schema';
 import type { IntegrationRecord } from '../types';
@@ -33,4 +33,19 @@ export async function insertIntegration(record: IntegrationRecord, ex: Executor 
 export async function updateIntegration(id: string, patch: Partial<Omit<IntegrationRecord, 'id' | 'organizationId'>>, ex: Executor = db): Promise<IntegrationRecord> {
   const [row] = await ex.update(integrations).set(patch).where(eq(integrations.id, id)).returning();
   return row!;
+}
+
+/** Every live integration that is not disabled, across organizations (scheduled credential checks). */
+export async function listCheckableIntegrations(organizationId?: string, ex: Executor = db): Promise<IntegrationRecord[]> {
+  const scope = organizationId ? eq(integrations.organizationId, organizationId) : undefined;
+  return ex.select().from(integrations).where(and(live, ne(integrations.credentialStatus, 'DISABLED'), scope)).orderBy(integrations.organizationId, integrations.createdAt);
+}
+
+/**
+ * Changes the credential status only if it is still one of `from` (so concurrent reports of
+ * the same rejection change it, and audit it, once). Returns the updated row, or null.
+ */
+export async function transitionCredentialStatus(id: string, from: IntegrationRecord['credentialStatus'][], patch: Partial<Omit<IntegrationRecord, 'id' | 'organizationId'>>, ex: Executor = db): Promise<IntegrationRecord | null> {
+  const [row] = await ex.update(integrations).set(patch).where(and(eq(integrations.id, id), inArray(integrations.credentialStatus, from), live)).returning();
+  return row ?? null;
 }

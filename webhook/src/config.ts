@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { DEFAULT_WEBHOOK_INSTANCE_ID } from '@token-vault/shared';
+import { parseUpstreamModes, type UpstreamMode } from './upstream-modes';
 
 const envFile = resolve(import.meta.dirname, '../.env');
 if (existsSync(envFile)) process.loadEnvFile(envFile);
@@ -59,13 +60,26 @@ if (cmsCatalogUrl && !cmsPublicKey) {
   process.exit(1);
 }
 
+let modes: ReturnType<typeof parseUpstreamModes>;
+try {
+  modes = parseUpstreamModes(process.env);
+} catch (e) {
+  console.error(`[vault] ${(e as Error).message}.`);
+  process.exit(1);
+}
+const { defaultMode, providerModes } = modes;
+
 export const config = {
+  /** Whether calls for this application go to the real API ("live") or the simulators ("mock"). */
+  modeFor: (provider: string): UpstreamMode => providerModes[provider] ?? defaultMode,
+  providerModes,
   port: Number(process.env.PORT ?? 4100),
   signingSecret: required('WEBHOOK_SIGNING_SECRET', 32),
   encryptionKey,
   encryptionKeyRef: 'env:VAULT_ENCRYPTION_KEY#v1',
   instanceId: process.env.WEBHOOK_INSTANCE_ID ?? DEFAULT_WEBHOOK_INSTANCE_ID,
-  githubMode: (process.env.GITHUB_MODE === 'live' ? 'live' : 'mock') as 'mock' | 'live',
+  /** The default upstream mode (applications without an override in PROVIDER_MODES). */
+  githubMode: defaultMode,
   databaseUrl,
   /** Optional GitHub App private key held only by this webhook (PEM; literal "\n" sequences allowed). */
   githubAppPrivateKey: readAppKey(),

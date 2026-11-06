@@ -50,7 +50,7 @@ If the provider returns an error (for example consent denied), the page cancels 
 
 ## Mock mode
 
-With `GITHUB_MODE=mock` (the default; the name predates other providers), a simulated authorization server stands in for the provider:
+In mock mode (the default; see `UPSTREAM_MODE` and `PROVIDER_MODES`), a simulated authorization server stands in for the provider:
 - it consents immediately;
 - it enforces PKCE, the redirect URI and the client binding;
 - codes are single use;

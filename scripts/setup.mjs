@@ -77,8 +77,10 @@ if (!existsSync(webhookEnv)) {
       'WEBHOOK_INSTANCE_ID=whi_local_customer_vault',
       '# Customer-side Postgres (separate database and role from the control plane). Development credentials only.',
       `WEBHOOK_DATABASE_URL=${DEFAULT_WEBHOOK_DATABASE_URL}`,
-      '# mock = simulated GitHub provider (default). live = call api.github.com with the stored token.',
-      'GITHUB_MODE=mock',
+      '# mock = simulated providers (default). live = call the real provider APIs with the stored credentials.',
+      'UPSTREAM_MODE=mock',
+      '# Per-application override, e.g. PROVIDER_MODES=github=live,slack=mock',
+      'PROVIDER_MODES=',
       '',
     ].join('\n'),
   );

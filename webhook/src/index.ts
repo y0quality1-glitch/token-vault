@@ -24,7 +24,7 @@ async function main() {
 
   const server = app.listen(config.port, () => {
     console.log(`[vault] Customer webhook runtime listening on http://localhost:${config.port}`);
-    console.log(`[vault] instance=${config.instanceId} github_mode=${config.githubMode} key_ref=${config.encryptionKeyRef} store=postgres`);
+    console.log(`[vault] instance=${config.instanceId} upstream=${config.githubMode}${Object.keys(config.providerModes).length ? ` (${Object.entries(config.providerModes).map(([k, v]) => `${k}=${v}`).join(",")})` : ""} key_ref=${config.encryptionKeyRef} store=postgres`);
     console.log(catalogSync ? `[vault] provider catalog ${config.cmsCatalogUrl} (pinned keys ${catalogSync.status.keyIds.join(', ')})` : '[vault] provider catalog: bundled definitions only (CMS_CATALOG_URL not set)');
   });
 
