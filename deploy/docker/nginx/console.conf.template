@@ -1,0 +1,19 @@
+# Token Vault admin console: static app, and the control plane behind the same origin
+# (session cookies are SameSite=Strict, so the API must share the console's origin).
+server {
+  listen 8080;
+  server_tokens off;
+  root /usr/share/nginx/html;
+
+  add_header X-Content-Type-Options nosniff always;
+  add_header X-Frame-Options DENY always;
+  add_header Referrer-Policy no-referrer always;
+  add_header Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; frame-ancestors 'none'" always;
+
+  location /api/ { proxy_pass ${API_UPSTREAM}; include /etc/nginx/snippets/proxy.inc; }
+  location /agent/v1/ { proxy_pass ${API_UPSTREAM}; include /etc/nginx/snippets/proxy.inc; }
+  location = /healthz { access_log off; default_type text/plain; return 200 "ok\n"; }
+  # Caching via "expires" (not add_header), so the security headers above apply to every location.
+  location /assets/ { expires 1y; try_files $uri =404; }
+  location / { expires -1; try_files $uri /index.html; }
+}

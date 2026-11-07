@@ -1,0 +1,24 @@
+# The only entry points: the console (also the agent API, /agent/v1) and the CMS UI.
+# Set your hosts, TLS secrets and ingress class in an overlay. TLS is required: session cookies
+# are Secure. The APIs and the customer webhook are never exposed directly.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: token-vault
+  namespace: token-vault
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [console.token-vault.example.com]
+      secretName: console-tls
+    - hosts: [cms.token-vault.example.com]
+      secretName: cms-tls
+  rules:
+    - host: console.token-vault.example.com
+      http:
+        paths:
+          - { path: /, pathType: Prefix, backend: { service: { name: console, port: { name: http } } } }
+    - host: cms.token-vault.example.com
+      http:
+        paths:
+          - { path: /, pathType: Prefix, backend: { service: { name: cms-ui, port: { name: http } } } }

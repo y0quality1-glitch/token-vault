@@ -20,7 +20,7 @@ export function transaction<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
 }
 
 export async function runMigrations() {
-  await migrate(db, { migrationsFolder: resolve(import.meta.dirname, '../../drizzle') });
+  await migrate(db, { migrationsFolder: process.env.MIGRATIONS_DIR ?? resolve(import.meta.dirname, '../../drizzle') /* container images set MIGRATIONS_DIR */ });
 }
 
 export async function closeDatabase() {

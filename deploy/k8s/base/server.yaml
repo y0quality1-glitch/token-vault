@@ -1,0 +1,76 @@
+# Control plane: decides every request, never holds a provider credential.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: server
+  namespace: token-vault
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: server
+  namespace: token-vault
+  annotations:
+    # With Stakater Reloader, pods restart when their Secret changes (rotations).
+    secret.reloader.stakater.com/reload: token-vault-server
+spec:
+  # One replica: migrations run at start-up and rate limits are per process (roadmap 1.5). Recreate avoids two versions migrating at once.
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app.kubernetes.io/name: server }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: server }
+    spec:
+      serviceAccountName: server
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      terminationGracePeriodSeconds: 20
+      containers:
+        - name: server
+          image: token-vault/server
+          ports:
+            - { name: http, containerPort: 4000 }
+          # Secrets (database URL with its password, keys) come from the Secret; plain settings below.
+          envFrom:
+            - secretRef: { name: token-vault-server }
+          env:
+            - { name: PORT, value: "4000" }
+            - { name: DEFAULT_WEBHOOK_URL, value: "http://webhook.token-vault-customer.svc.cluster.local:4100" }
+            - { name: CMS_CATALOG_URL, value: "http://cms-api.token-vault.svc.cluster.local:4200/catalog/v1" }
+            - { name: CONSOLE_PUBLIC_URL, value: "https://console.token-vault.example.com" }
+            - { name: CREDENTIAL_CHECK_INTERVAL_MS, value: "21600000" }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { memory: 384Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: { sizeLimit: 16Mi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: server
+  namespace: token-vault
+spec:
+  selector: { app.kubernetes.io/name: server }
+  ports:
+    - { name: http, port: 4000, targetPort: http }

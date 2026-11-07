@@ -1,0 +1,48 @@
+# Local cluster (kind, minikube, k3d). Secrets are generated from files you create once with
+#   node deploy/k8s/overlays/local/generate-secrets.mjs      (writes ./secrets/, git-ignored)
+# then:
+#   kubectl apply -k deploy/k8s/overlays/local
+#   kubectl -n token-vault port-forward svc/console 8080:80      # console + agent API
+#   kubectl -n token-vault port-forward svc/cms-ui 8081:80       # CMS
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+  - postgres/postgres.yaml
+configMapGenerator:
+  - name: postgres-initdb
+    namespace: token-vault-data
+    files: [postgres/10-token-vault.sh]
+secretGenerator:
+  - { name: postgres, namespace: token-vault-data, envs: [secrets/postgres.env] }
+  - { name: token-vault-server, namespace: token-vault, envs: [secrets/server.env] }
+  - { name: token-vault-cms-api, namespace: token-vault, envs: [secrets/cms-api.env] }
+  - { name: token-vault-webhook, namespace: token-vault-customer, envs: [secrets/webhook.env] }
+generatorOptions:
+  disableNameSuffixHash: true
+patches:
+  # Images built locally and loaded into the cluster (kind load docker-image ...).
+  - target: { kind: Deployment, namespace: "token-vault|token-vault-customer" }
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: IfNotPresent
+  # Reached through port-forward on localhost, not an ingress.
+  - target: { kind: Deployment, name: server }
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/env/3/value
+        value: http://localhost:8080
+  - target: { kind: Ingress, name: token-vault }
+    patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: token-vault
+  # Locally, direct publishing by an administrator is convenient (two-person review in production).
+  - target: { kind: Deployment, name: cms-api }
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/env/1/value
+        value: "true"

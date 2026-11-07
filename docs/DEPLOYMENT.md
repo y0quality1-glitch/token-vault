@@ -1,0 +1,177 @@
+# Deploying Token Vault
+
+Token Vault runs as five containers. They come in two trust zones, and only the customer webhook ever decrypts provider credentials.
+
+| Image | What | Port | Zone |
+| --- | --- | --- | --- |
+| `token-vault/server` | Control plane (admin API `/api/v1`, agent API `/agent/v1`) | 4000 | Token Vault |
+| `token-vault/console` | Admin console (nginx), proxying `/api` and `/agent/v1` to the control plane | 8080 | Token Vault |
+| `token-vault/cms-api` | Provider CMS API and public catalog `/catalog/v1` | 4200 | Token Vault platform team |
+| `token-vault/cms-ui` | CMS UI (nginx), proxying `/api` and `/catalog/v1` to the CMS API | 8080 | Token Vault platform team |
+| `token-vault/webhook` | Customer webhook: encrypted credential store, calls the providers | 4100 | **Customer** |
+
+Each Node service needs its own PostgreSQL database, with its own role. Each applies its migrations at start-up.
+
+## The images
+
+Build from the repository root:
+
+```bash
+docker build -f deploy/docker/service.Dockerfile --build-arg SERVICE=server  -t token-vault/server .
+```
+```bash
+docker build -f deploy/docker/service.Dockerfile --build-arg SERVICE=webhook -t token-vault/webhook .
+```
+```bash
+docker build -f deploy/docker/service.Dockerfile --build-arg SERVICE=cms/api -t token-vault/cms-api .
+```
+```bash
+docker build -f deploy/docker/web.Dockerfile --build-arg APP=client     -t token-vault/console .
+```
+```bash
+docker build -f deploy/docker/web.Dockerfile --build-arg APP=cms/client -t token-vault/cms-ui .
+```
+
+**Node services:**
+- Each is bundled into a single file with its SQL migrations. There's no `node_modules` in the runtime image.
+- They run as UID 1000, work with a read-only root filesystem, and read configuration from environment variables only.
+
+**UIs:**
+- Static builds on `nginx-unprivileged` (UID 101).
+- Security headers on every response: Content-Security-Policy, X-Frame-Options, nosniff.
+- Each proxies its API on the same origin, so session cookies (SameSite=Strict) work.
+
+**Build options:**
+- Behind a registry mirror, pass `--build-arg NODE_IMAGE=…` and `--build-arg NGINX_IMAGE=…`.
+- Behind a TLS-inspecting proxy, pass `--secret id=extra_ca,src=/path/to/ca.pem`. The CA is used during the build only, never stored in the image.
+
+## Docker Compose (one host: evaluation, demos, staging)
+
+```bash
+node deploy/compose/generate-env.mjs
+```
+```bash
+docker compose -f deploy/compose/docker-compose.yml up -d --build --wait
+```
+```bash
+node deploy/compose/smoke-test.mjs
+```
+
+- **Console:** http://localhost:8080. It's also the agent API, so agents use `TOKEN_VAULT_URL=http://localhost:8080`.
+- **CMS:** http://localhost:8081.
+- **`generate-env.mjs`:** writes `deploy/compose/.env` with random secrets (mode 600, git-ignored). It **refuses to overwrite** the file, because a new `VAULT_ENCRYPTION_KEY` would make every stored credential unreadable.
+- **Networks mirror the trust zones:**
+  - only the two UIs are published;
+  - the APIs, the webhook and PostgreSQL sit on internal networks;
+  - only the webhook can reach the internet, which live provider calls need.
+- **Hardening:** every container runs with a read-only root filesystem, no capabilities and `no-new-privileges`.
+- **Data:** lives in the `pgdata` volume. `docker compose down` keeps it; `down -v` deletes it. After deleting it, regenerate the secrets with `--force`.
+- **Smoke test:** works against any deployment, given its console and CMS URLs. It signs in with the demo accounts, checks the CMS catalog sync, the signed webhook health challenge and one agent request end to end, then revokes what it created.
+
+## Kubernetes
+
+Kustomize manifests are in `deploy/k8s`.
+
+- **Namespaces:**
+  - `token-vault`: control plane, console, CMS API and CMS UI.
+  - `token-vault-customer`: the webhook, which in a real split runs in the customer's cluster.
+  - Both enforce the Pod Security **restricted** profile.
+- **Workloads:**
+  - Every pod runs with a numeric non-root UID, a read-only root filesystem, no capabilities, seccomp and probes.
+  - The API services run one replica with the `Recreate` strategy: migrations run at start-up, and rate limits and OAuth refreshes are coordinated in-process (roadmap 1.5).
+  - The UIs run two replicas, with PodDisruptionBudgets.
+- **NetworkPolicies:** deny everything by default, then allow exactly the connections Token Vault makes:
+  - ingress controller → UIs;
+  - console → control plane, and CMS UI → CMS API;
+  - control plane → webhook;
+  - control plane and webhook → CMS API (catalog);
+  - each service → its database;
+  - webhook → port 443 (providers, live mode).
+
+  This needs a CNI that enforces policies, such as Calico or Cilium.
+- **Ingress:** publishes the console and the CMS UI only, with TLS (session cookies are `Secure`). The APIs and the webhook are never exposed directly.
+- **Reloader:** each Deployment carries the Stakater Reloader annotation, so pods restart when their Secret changes, for example after a rotation.
+
+### `overlays/external-secrets` (production pattern)
+
+Each service's Secret comes from your secrets manager through External Secrets Operator, via a `ClusterSecretStore` named `token-vault`. The entries you need:
+
+| Entry | Keys |
+| --- | --- |
+| `token-vault/server` | `DATABASE_URL`, `WEBHOOK_SIGNING_SECRET`, `WEBHOOK_PREVIOUS_SIGNING_SECRETS`, `AUDIT_SIGNING_KEY`, `CMS_PUBLIC_KEY` |
+| `token-vault/webhook` | `WEBHOOK_DATABASE_URL`, `WEBHOOK_SIGNING_SECRET`, `WEBHOOK_PREVIOUS_SIGNING_SECRETS`, `VAULT_ENCRYPTION_KEY`, `VAULT_PREVIOUS_ENCRYPTION_KEYS`, `CMS_PUBLIC_KEY` |
+| `token-vault/cms-api` | `CMS_DATABASE_URL`, `CMS_SIGNING_PRIVATE_KEY` |
+
+`node deploy/compose/generate-env.mjs` produces suitable values. Only the webhook's Secret ever holds `VAULT_ENCRYPTION_KEY`, and only the CMS's holds its signing key; `check-manifests.py` enforces this. The webhook's ExternalSecret uses `deletionPolicy: Retain`, so deleting the resource never deletes the key to the stored credentials.
+
+Set the image registry and tags, ingress hosts, TLS secrets and `CONSOLE_PUBLIC_URL` in the overlay, then apply:
+```bash
+kubectl apply -k deploy/k8s/overlays/external-secrets
+```
+
+### `overlays/local` (kind, minikube, k3d)
+
+1. Generate the Secrets. They're written to `deploy/k8s/overlays/local/secrets/`, which is git-ignored:
+   ```bash
+   node deploy/k8s/overlays/local/generate-secrets.mjs
+   ```
+2. Build the five images (above) and load them into the cluster, for example:
+   ```bash
+   kind load docker-image token-vault/server:dev token-vault/webhook:dev token-vault/cms-api:dev token-vault/console:dev token-vault/cms-ui:dev
+   ```
+3. Deploy:
+   ```bash
+   kubectl apply -k deploy/k8s/overlays/local
+   ```
+4. Open the console and the CMS:
+   ```bash
+   kubectl -n token-vault port-forward svc/console 8080:80
+   ```
+   ```bash
+   kubectl -n token-vault port-forward svc/cms-ui 8081:80
+   ```
+5. Check it:
+   ```bash
+   node deploy/compose/smoke-test.mjs
+   ```
+
+The local overlay runs PostgreSQL as a StatefulSet in `token-vault-data`, with the same bootstrap script as compose. It also replaces the Ingress with port-forwarding and allows the admin's direct publishing in the CMS.
+
+### Checks
+
+CI renders every overlay, including `examples/kubernetes`, and validates it with `kubeconform`: Kubernetes 1.31, plus the External Secrets CRD schemas. It then runs `deploy/k8s/check-manifests.py`, which catches what schemas don't:
+- selectors that select nothing, and NetworkPolicy peers that match no pods;
+- Secrets that are referenced but never created;
+- keys held by the wrong service's Secret;
+- Pod Security "restricted" violations;
+- unpinned images.
+
+Run the same locally:
+```bash
+kubectl kustomize deploy/k8s/overlays/local | python3 deploy/k8s/check-manifests.py
+```
+
+## Staging checklist
+
+- **TLS** at the ingress or load balancer, with `CONSOLE_PUBLIC_URL` set to the console's https URL (OAuth redirects use it).
+- **Databases:** managed PostgreSQL, one database and role per service. Give the webhook its own server, in the customer's environment. Keep backups of the webhook's database together with its `VAULT_ENCRYPTION_KEY`: one is useless without the other.
+- **Secrets** come from your secrets manager (`overlays/external-secrets`). Rotate them with the documented steps in the README (*Rotating keys*), which need no downtime.
+- **CMS:** set `CMS_ADMIN_DIRECT_PUBLISH=false` to require two people per publication. The Kubernetes base already does.
+- **Providers:** start with `UPSTREAM_MODE=mock`. Switch applications to live one at a time with `PROVIDER_MODES=github=live,…`.
+- **Not production-ready yet:**
+  - sign-in uses the seeded demo accounts, until SSO arrives (roadmap 1.4);
+  - control plane ↔ webhook uses a shared HMAC secret, not mTLS (roadmap 1.3);
+  - the vault key comes from an environment variable, not a KMS (roadmap 1.2);
+  - API services run one replica (roadmap 1.5).
+
+## What has been verified
+
+- **All five images:** built; the stack ran with compose. The smoke test passed:
+  - catalog sync;
+  - a signed webhook health check;
+  - an agent request through control plane → webhook → simulated GitHub;
+  - CMS sign-in and catalog.
+- **Restarts:** the smoke test passed again after `down`/`up`, with the stored credentials still decrypting.
+- **UIs:** both sign in and render in a browser under their Content-Security-Policy.
+- **Exposure:** only the UI ports were reachable from the host.
+- **Kubernetes:** the manifests validate and pass the semantic checks. They have **not** yet been applied to a running cluster; kind can't start nested containers in the environment where this was built. Running `overlays/local` on your own cluster is the remaining check.

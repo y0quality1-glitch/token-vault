@@ -1,0 +1,28 @@
+# Token Vault on Kubernetes: base manifests. Pick an overlay for secrets and the database:
+#   overlays/external-secrets  secrets from your secrets manager via External Secrets Operator;
+#                              PostgreSQL is yours (managed service), one database per service
+#   overlays/local             kind/minikube/k3d: a PostgreSQL StatefulSet and generated Secrets
+#
+# Trust zones are namespaces: token-vault (control plane, CMS, UIs) and token-vault-customer
+# (the customer webhook, the only component that ever decrypts provider credentials).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespaces.yaml
+  - server.yaml
+  - webhook.yaml
+  - cms-api.yaml
+  - web.yaml
+  - ingress.yaml
+  - network-policies.yaml
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: token-vault
+    includeSelectors: false
+    includeTemplates: true
+images:
+  - { name: token-vault/server, newTag: dev }
+  - { name: token-vault/webhook, newTag: dev }
+  - { name: token-vault/cms-api, newTag: dev }
+  - { name: token-vault/console, newTag: dev }
+  - { name: token-vault/cms-ui, newTag: dev }
