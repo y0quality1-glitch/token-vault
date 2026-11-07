@@ -49,6 +49,8 @@ const lines = [
   `VAULT_ENCRYPTION_KEY=${randomBytes(32).toString('base64')}`,
   'VAULT_PREVIOUS_ENCRYPTION_KEYS=',
   '# mock = simulated providers; live = real APIs (PROVIDER_MODES=github=live,... per application)',
+  '# Dev Vault root token, used only by the vault-transit.yml override (try the webhook with a KMS)',
+  `VAULT_DEV_TOKEN=${secret()}`,
   'UPSTREAM_MODE=mock',
   'PROVIDER_MODES=',
   '',

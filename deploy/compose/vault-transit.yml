@@ -1,0 +1,43 @@
+# Try the webhook with a KMS: HashiCorp Vault Transit protects the credential store's keys.
+#
+#   docker compose -f deploy/compose/docker-compose.yml -f deploy/compose/vault-transit.yml up -d --build --wait
+#
+# Adds a Vault *dev* server (in memory: restarting it loses the Transit key, and with it every
+# credential stored since; use a real Vault, or AWS KMS, for anything you keep), enables
+# Transit, creates the key "token-vault", and switches the webhook to VAULT_KEY_PROVIDER=vault-transit.
+# Credentials stored before with VAULT_ENCRYPTION_KEY are re-encrypted under Vault at start-up.
+services:
+  vault:
+    image: ${VAULT_IMAGE:-hashicorp/vault:1.17}
+    command: ["server", "-dev", "-dev-listen-address=0.0.0.0:8200"]
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_DEV_TOKEN:?add VAULT_DEV_TOKEN to deploy/compose/.env (generate-env.mjs writes one)}
+    cap_add: [IPC_LOCK]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8200/v1/sys/health"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks: [keys]
+
+  vault-init:
+    image: ${VAULT_IMAGE:-hashicorp/vault:1.17}
+    entrypoint: ["sh", "-c", "vault secrets enable transit 2>/dev/null || true; vault write -f transit/keys/token-vault"]
+    environment:
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_DEV_TOKEN}
+    depends_on: { vault: { condition: service_healthy } }
+    restart: "no"
+    networks: [keys]
+
+  webhook:
+    environment:
+      VAULT_KEY_PROVIDER: vault-transit
+      VAULT_ADDR: http://vault:8200
+      VAULT_TRANSIT_KEY: token-vault
+      VAULT_TOKEN: ${VAULT_DEV_TOKEN}
+    depends_on: { vault-init: { condition: service_completed_successfully } }
+    networks: [keys]
+
+networks:
+  keys: { internal: true }  # only the webhook talks to the key service

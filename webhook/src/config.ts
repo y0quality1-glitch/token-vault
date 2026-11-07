@@ -3,6 +3,10 @@ import { resolve } from 'node:path';
 import { DEFAULT_WEBHOOK_INSTANCE_ID } from '@token-vault/shared';
 import { parseUpstreamModes, type UpstreamMode } from './upstream-modes';
 import { buildKeyring, parseKey, type Keyring } from './security/keyring';
+import type { KeyProvider } from './security/key-provider';
+import { parseKeyProviderConfig, type KeyProviderConfig } from './security/provider-config';
+import { awsKmsProvider } from './security/providers/aws-kms';
+import { vaultTransitProvider } from './security/providers/vault-transit';
 
 const envFile = resolve(import.meta.dirname, '../.env');
 if (existsSync(envFile)) process.loadEnvFile(envFile);
@@ -19,17 +23,28 @@ function required(name: string, minLength: number): string {
 // The current key encrypts everything new. Previous keys (comma-separated) only decrypt
 // records written before a rotation; the store re-encrypts those under the current key at
 // start-up, after which a previous key can be removed (see docs: encryption key rotation).
-let keyring: Keyring;
+//
+// With a KMS (VAULT_KEY_PROVIDER=aws-kms|vault-transit), records are sealed with per-record data
+// keys wrapped by the KMS; VAULT_ENCRYPTION_KEY is then optional and only opens older records.
+let keyring: Keyring | null = null;
+let keyProviderConfig: KeyProviderConfig;
+let dataKeyCacheSeconds: number;
 try {
-  keyring = buildKeyring(
-    parseKey(required('VAULT_ENCRYPTION_KEY', 40), 'VAULT_ENCRYPTION_KEY'),
-    (process.env.VAULT_PREVIOUS_ENCRYPTION_KEYS ?? '').split(',').map((k) => k.trim()).filter(Boolean).map((k, i) => parseKey(k, `VAULT_PREVIOUS_ENCRYPTION_KEYS (entry ${i + 1})`)),
-  );
+  ({ provider: keyProviderConfig, cacheSeconds: dataKeyCacheSeconds } = parseKeyProviderConfig(process.env));
+  const envKey = process.env.VAULT_ENCRYPTION_KEY?.trim();
+  if (keyProviderConfig.kind === 'env' && !envKey) required('VAULT_ENCRYPTION_KEY', 40);
+  if (envKey) {
+    keyring = buildKeyring(
+      parseKey(envKey, 'VAULT_ENCRYPTION_KEY'),
+      (process.env.VAULT_PREVIOUS_ENCRYPTION_KEYS ?? '').split(',').map((k) => k.trim()).filter(Boolean).map((k, i) => parseKey(k, `VAULT_PREVIOUS_ENCRYPTION_KEYS (entry ${i + 1})`)),
+    );
+  }
 } catch (e) {
   console.error(`[vault] ${(e as Error).message}.`);
   process.exit(1);
 }
-const encryptionKey = keyring.current.key;
+const keyProvider: KeyProvider | null =
+  keyProviderConfig.kind === 'aws-kms' ? awsKmsProvider(keyProviderConfig) : keyProviderConfig.kind === 'vault-transit' ? vaultTransitProvider(keyProviderConfig) : null;
 
 // A dedicated name (not DATABASE_URL) so the customer zone is never pointed at the
 // control plane's database by accident.
@@ -96,11 +111,20 @@ export const config = {
   signingSecret,
   /** Accepted when verifying the control plane: the current secret, then previous ones during a rotation. */
   signingSecrets: [signingSecret, ...previousSigningSecrets],
-  /** Current AES-256 key (new records, fingerprints). */
-  encryptionKey,
-  /** Current and previous keys; records name the key that encrypted them. */
+  /** Current environment AES-256 key (env-mode sealing, env-mode fingerprints); null with a KMS and no legacy key. */
+  get encryptionKey(): Buffer | null {
+    return this.keyring?.current.key ?? null;
+  },
+  /** Environment keys (current and previous); records name the key that encrypted them. Null with a KMS and no legacy key. */
   keyring,
-  encryptionKeyRef: keyring.current.ref,
+  /** The KMS wrapping per-record data keys, or null in env mode. */
+  keyProvider,
+  keyProviderKind: keyProviderConfig.kind,
+  dataKeyCacheSeconds,
+  /** Ref of the key new records are written with (derived, so a rotated keyring is reflected). */
+  get encryptionKeyRef(): string {
+    return this.keyProvider?.ref ?? this.keyring!.current.ref;
+  },
   instanceId: process.env.WEBHOOK_INSTANCE_ID ?? DEFAULT_WEBHOOK_INSTANCE_ID,
   /** The default upstream mode (applications without an override in PROVIDER_MODES). */
   githubMode: defaultMode,

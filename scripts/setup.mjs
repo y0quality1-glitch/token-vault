@@ -78,6 +78,8 @@ if (!existsSync(webhookEnv)) {
       '# Old signing secret during a rotation (npm run webhook:rotate-secret); empty otherwise.',
       'WEBHOOK_PREVIOUS_SIGNING_SECRETS=',
       `VAULT_ENCRYPTION_KEY=${randomBytes(32).toString('base64')}`,
+      '# env = VAULT_ENCRYPTION_KEY seals credentials; aws-kms / vault-transit = envelope encryption with a KMS (docs/DEPLOYMENT.md)',
+      'VAULT_KEY_PROVIDER=env',
       '# Earlier encryption keys during a rotation (npm run vault:rotate-key); empty otherwise.',
       'VAULT_PREVIOUS_ENCRYPTION_KEYS=',
       'WEBHOOK_INSTANCE_ID=whi_local_customer_vault',

@@ -23,8 +23,10 @@ export const credentials = pgTable(
     iv: text('iv').notNull(),
     ciphertext: text('ciphertext').notNull(),
     authTag: text('auth_tag').notNull(),
-    /** Which key encrypted this row (e.g. env:VAULT_ENCRYPTION_KEY#v1). Never the key itself. */
+    /** Which key encrypted this row (env:VAULT_ENCRYPTION_KEY#kid_…, aws-kms:…, vault-transit:…). Never the key itself. */
     encryptionKeyRef: text('encryption_key_ref').notNull(),
+    /** With a KMS: this row's data key, wrapped by the KMS key named in encryption_key_ref. Null in env mode. */
+    wrappedKey: text('wrapped_key'),
     maskedIdentifier: text('masked_identifier').notNull(),
     fingerprint: text('fingerprint').notNull(),
     metadata: jsonb('metadata').$type<Record<string, string>>().notNull().default({}),
@@ -58,4 +60,15 @@ export const providerCatalogState = pgTable('provider_catalog_state', {
   envelopes: jsonb('envelopes').notNull(),
   highWater: jsonb('high_water').$type<Record<string, number>>().notNull(),
   savedAt: ts('saved_at').notNull(),
+});
+
+/**
+ * Store-wide keys, wrapped by the KMS (KMS mode only). Today: the HMAC key for credential
+ * fingerprints, which in env mode is the encryption key itself.
+ */
+export const vaultSettings = pgTable('vault_settings', {
+  name: text('name').primaryKey(),
+  wrappedValue: text('wrapped_value').notNull(),
+  keyRef: text('key_ref').notNull(),
+  createdAt: ts('created_at').notNull(),
 });

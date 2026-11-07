@@ -151,6 +151,47 @@ Run the same locally:
 kubectl kustomize deploy/k8s/overlays/local | python3 deploy/k8s/check-manifests.py
 ```
 
+## Protecting the vault key with a KMS
+
+By default the webhook seals credentials with `VAULT_ENCRYPTION_KEY`, an environment variable. With a KMS it uses **envelope encryption** instead:
+- each credential is sealed with its own random 256-bit data key;
+- the KMS wraps that data key, and only the wrapped key is stored next to the ciphertext;
+- the master key never leaves the KMS, and every unwrap is logged there (CloudTrail, or Vault's audit device);
+- each record names the key that protects it, so records keep opening when you switch keys.
+
+| Setting | AWS KMS | HashiCorp Vault / OpenBao Transit |
+| --- | --- | --- |
+| `VAULT_KEY_PROVIDER` | `aws-kms` | `vault-transit` |
+| Key | `KMS_KEY_ID` (id, ARN or `alias/…`), `AWS_REGION` | `VAULT_ADDR`, `VAULT_TRANSIT_KEY` (mount `VAULT_TRANSIT_MOUNT`, default `transit`) |
+| Authentication | Default AWS chain: IRSA or EKS Pod Identity, task role, instance profile | `VAULT_K8S_ROLE` (Kubernetes auth; recommended) or `VAULT_TOKEN`; `VAULT_NAMESPACE` for Enterprise |
+| Permissions | `kms:Encrypt`, `kms:Decrypt` on that key | `update` on `transit/encrypt/<key>` and `transit/decrypt/<key>` |
+| Binding | The credential reference is the KMS encryption context (authenticated; visible in CloudTrail) | Records are bound by AES-GCM associated data |
+
+**Moving an existing store to a KMS**
+1. Keep `VAULT_ENCRYPTION_KEY` set, add the KMS settings, and restart the webhook.
+2. At start-up, it checks the KMS (`key service … ok` in its log) and re-encrypts every credential under it.
+3. Webhook Health confirms it: *Credentials encrypted with key aws-kms:…*, with none left on an older key.
+4. Then remove `VAULT_ENCRYPTION_KEY`.
+
+Fingerprints keep their values across the switch: the fingerprint key is itself stored wrapped by the KMS.
+
+**Rotation:** AWS automatic key rotation and Vault's `transit/keys/<key>/rotate` need nothing from Token Vault, because old key versions keep decrypting. To move to a **different** key (a new ARN, or a new Transit key), change `KMS_KEY_ID` or `VAULT_TRANSIT_KEY` and restart. Records name their key, so they still open, and the webhook re-encrypts them under the new one.
+
+**Outages:**
+- Requests that need a credential fail with `KEY_SERVICE_UNAVAILABLE` (HTTP 503). That is never treated as a rejected credential, so nothing is marked Invalid, and the scheduled check reports them as "unknown".
+- Webhook Health shows **KEY SERVICE UNAVAILABLE** until the KMS is back.
+- Unwrapped data keys are cached for `KMS_DATA_KEY_CACHE_SECONDS` (default 300), which also bridges short outages. Set `0` to have every use logged in the KMS.
+- Calls time out after `KMS_TIMEOUT_MS` (default 2000), well inside the control plane's webhook timeout.
+
+**Try it:** Vault Transit with compose. This override adds a Vault *dev* server, which keeps everything in memory: restarting it loses the key. It's for trying the feature, not for data you keep.
+```bash
+docker compose -f deploy/compose/docker-compose.yml -f deploy/compose/vault-transit.yml up -d --build --wait
+```
+
+**Kubernetes:** add a component to your overlay, then fill in the placeholders it documents (key ARN and IAM role, or Vault address and role):
+- `components: [../../components/aws-kms]` annotates the webhook's service account for IRSA.
+- `components: [../../components/vault-transit]` mounts a short-lived service-account token for Vault only, and lets the webhook reach Vault.
+
 ## Staging checklist
 
 - **TLS** at the ingress or load balancer, with `CONSOLE_PUBLIC_URL` set to the console's https URL (OAuth redirects use it).
@@ -161,7 +202,7 @@ kubectl kustomize deploy/k8s/overlays/local | python3 deploy/k8s/check-manifests
 - **Not production-ready yet:**
   - sign-in uses the seeded demo accounts, until SSO arrives (roadmap 1.4);
   - control plane ↔ webhook uses a shared HMAC secret, not mTLS (roadmap 1.3);
-  - the vault key comes from an environment variable, not a KMS (roadmap 1.2);
+  - the vault key is an environment variable unless you configure a KMS (see above);
   - API services run one replica (roadmap 1.5).
 
 ## What has been verified
