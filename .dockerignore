@@ -1,0 +1,10 @@
+# Keep build contexts small and free of secrets.
+**/node_modules
+.git
+**/.env
+**/*.env
+!**/*.env.example
+**/dist
+e2e/test-results
+e2e/playwright-report
+webhook/data

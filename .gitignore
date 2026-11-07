@@ -10,3 +10,6 @@ webhook/data/
 e2e/.logs/
 e2e/test-results/
 e2e/playwright-report/
+
+# Local Kubernetes example config (holds an agent key)
+examples/kubernetes/k8s/overlays/local/config.env

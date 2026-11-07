@@ -18,7 +18,7 @@
     "setup": "node scripts/setup.mjs",
     "dev": "node scripts/setup.mjs && concurrently -k -n api,vault,web,cms-api,cms -c blue,magenta,green,yellow,cyan \"npm run dev -w server\" \"npm run dev -w webhook\" \"npm run dev -w client\" \"npm run dev -w cms/api\" \"npm run dev -w cms/client\"",
     "build": "npm run build -w client && npm run build -w cms/client",
-    "typecheck": "npm run typecheck -w shared -w sdk -w server -w webhook -w mcp -w client -w cms/api -w cms/client -w e2e",
+    "typecheck": "npm run typecheck -w shared -w sdk -w server -w webhook -w mcp -w client -w cms/api -w cms/client -w e2e && tsc -p examples/kubernetes/orders-api",
     "test": "npm run test -w sdk -w server -w webhook -w mcp -w cms/api",
     "test:e2e": "npm test -w e2e",
     "db:up": "docker compose up -d --wait postgres",
