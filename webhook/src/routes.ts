@@ -61,6 +61,11 @@ function signedJson(req: SignedRequest, res: Response, status: number, body: unk
 
 /** Maps credential-use failures to signed, non-revealing responses. */
 function credentialFailure(req: SignedRequest, res: Response, e: unknown, context: string) {
+  if (e instanceof store.KeyServiceUnavailableError) {
+    // The KMS is down: the credential is fine, so this must never look like a rejected one.
+    console.warn(`[vault] ${context}: key service unavailable (${e.message})`);
+    return signedJson(req, res, 503, { error: { code: 'KEY_SERVICE_UNAVAILABLE', message: 'The key management service is unavailable; retry shortly' } });
+  }
   if (e instanceof store.CredentialUnreadableError) {
     console.warn(`[vault] ${context}: credential ${e.credentialRef} cannot be decrypted with the configured key`);
     return signedJson(req, res, 500, { error: { code: 'CREDENTIAL_UNREADABLE', message: 'The stored credential cannot be decrypted by this webhook; rotate it or restore the original key' } });
@@ -228,10 +233,12 @@ export function buildRouter() {
       credentials_stored: await store.countCredentials(),
       // Key ids only (one-way), never key material: tells an operator when a previous key can be removed.
       encryption: {
-        key_id: config.keyring.current.id,
-        previous_key_ids: config.keyring.previous.map((k) => k.id),
+        provider: config.keyProviderKind,
+        key_id: store.keyIdOfRef(config.encryptionKeyRef),
+        previous_key_ids: config.keyring ? [...(config.keyProvider ? [config.keyring.current] : []), ...config.keyring.previous].map((k) => k.id) : [],
         records_by_key: await store.recordsByKey(),
         last_reencryption: store.lastReencryption,
+        key_service: store.keyServiceStatus,
       },
       providers: registry.list().map((e) => ({ key: e.definition.key, version: e.definition.version, source: e.source, digest: (e.digest ?? createHash('sha256').update(JSON.stringify(e.definition)).digest('hex')).slice(0, 16) })),
       catalog: catalogSync ? { key_ids: catalogSync.status.keyIds, last_success_at: catalogSync.status.lastSuccessAt, last_error: catalogSync.status.lastError, restored_from: catalogSync.status.restored?.savedAt ?? null } : null,
@@ -432,7 +439,9 @@ export function buildRouter() {
   });
 
   // Database or other unexpected errors: generic, unsigned 500 without internals.
-  r.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  r.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
+    // A KMS outage while storing or rotating a credential: a signed, retryable 503.
+    if (err instanceof store.KeyServiceUnavailableError && (req as SignedRequest).tvNonce !== undefined) return void credentialFailure(req as SignedRequest, res, err, `${req.method} ${req.path}`);
     console.error('[vault] unhandled error:', describeError(err));
     res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Webhook internal error' } });
   });

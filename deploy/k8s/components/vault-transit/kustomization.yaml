@@ -1,0 +1,46 @@
+# Protect the webhook's credential store with HashiCorp Vault (or OpenBao) Transit. Add to your overlay:
+#   components: [../../components/vault-transit]
+# In Vault: enable Transit, create the key "token-vault", enable Kubernetes auth, and create a role
+# "token-vault-webhook" bound to the token-vault-customer/webhook service account, with a policy
+# allowing only: path "transit/encrypt/token-vault" and "transit/decrypt/token-vault" { capabilities = ["update"] }.
+# The webhook authenticates with a short-lived, audience-bound service-account token mounted
+# only for Vault (the pod keeps automountServiceAccountToken: false).
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target: { kind: Deployment, name: webhook, namespace: token-vault-customer }
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: { name: VAULT_KEY_PROVIDER, value: vault-transit }
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: { name: VAULT_ADDR, value: "https://vault.vault.svc.cluster.local:8200" }
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: { name: VAULT_TRANSIT_KEY, value: token-vault }
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: { name: VAULT_K8S_ROLE, value: token-vault-webhook }
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: { name: VAULT_K8S_TOKEN_PATH, value: /var/run/secrets/tokens/vault }
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value: { name: vault-token, mountPath: /var/run/secrets/tokens, readOnly: true }
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: vault-token
+          projected:
+            sources:
+              - serviceAccountToken: { audience: vault, expirationSeconds: 600, path: vault }
+  # The webhook may also reach Vault (adjust the namespace to where Vault runs).
+  - target: { kind: NetworkPolicy, name: webhook, namespace: token-vault-customer }
+    patch: |-
+      - op: add
+        path: /spec/egress/-
+        value:
+          to:
+            - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: vault } }
+          ports: [{ port: 8200, protocol: TCP }]

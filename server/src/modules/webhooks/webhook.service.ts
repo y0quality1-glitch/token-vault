@@ -29,12 +29,16 @@ function signingNote(s: { request_signed_with?: unknown; previous_secrets?: unkn
 }
 
 /** Key status the webhook reports (key ids only): tells an admin whether a previous key is still needed. */
-function encryptionNote(enc: { key_id?: unknown; records_by_key?: Record<string, number>; last_reencryption?: { unreadable?: number } | null } | undefined): string {
+function encryptionNote(
+  enc: { key_id?: unknown; records_by_key?: Record<string, number>; last_reencryption?: { unreadable?: number } | null; key_service?: { ok?: boolean; detail?: string } | null } | undefined,
+): string {
   if (!enc || typeof enc.key_id !== 'string') return '';
   const byKey = enc.records_by_key ?? {};
   const onOld = Object.entries(byKey).reduce((n, [id, c]) => (id === enc.key_id ? n : n + (Number(c) || 0)), 0);
   const unreadable = Number(enc.last_reencryption?.unreadable) || 0;
-  return `. Credentials encrypted with key ${enc.key_id}${onOld ? `; ${onOld} still on an older key` : ''}${unreadable ? `; ${unreadable} unreadable with the configured keys` : ''}`;
+  // A KMS outage: credentials are fine but cannot be opened until it is back (requests fail with KEY_SERVICE_UNAVAILABLE).
+  const kms = enc.key_service && enc.key_service.ok === false ? `; KEY SERVICE UNAVAILABLE (${String(enc.key_service.detail ?? '').slice(0, 120)}): requests that need a credential fail until it is back` : '';
+  return `. Credentials encrypted with key ${enc.key_id}${onOld ? `; ${onOld} still on an older key` : ''}${unreadable ? `; ${unreadable} unreadable with the configured keys` : ''}${kms}`;
 }
 
 export async function checkHealth(webhook: WebhookRecord): Promise<HealthOutcome> {

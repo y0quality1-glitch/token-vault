@@ -1,0 +1,27 @@
+# Protect the webhook's credential store with AWS KMS (envelope encryption: per-record data keys
+# wrapped by a KMS key that never leaves AWS). Add to your overlay:
+#   components: [../../components/aws-kms]
+# and replace the key ARN, region and IAM role below. The role (IRSA or EKS Pod Identity) needs
+# kms:Encrypt and kms:Decrypt on that key, ideally with a condition on the encryption context key
+# "token_vault_credential_ref". Keep VAULT_ENCRYPTION_KEY in the webhook's Secret until the first
+# start has re-encrypted existing credentials (Webhook Health shows none on an older key), then remove it.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target: { kind: Deployment, name: webhook, namespace: token-vault-customer }
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: { name: VAULT_KEY_PROVIDER, value: aws-kms }
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: { name: KMS_KEY_ID, value: "arn:aws:kms:eu-west-1:111122223333:key/replace-me" }
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: { name: AWS_REGION, value: eu-west-1 }
+  - target: { kind: ServiceAccount, name: webhook, namespace: token-vault-customer }
+    patch: |-
+      - op: add
+        path: /metadata/annotations
+        value:
+          eks.amazonaws.com/role-arn: arn:aws:iam::111122223333:role/token-vault-webhook-kms

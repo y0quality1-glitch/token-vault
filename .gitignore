@@ -16,3 +16,6 @@ examples/kubernetes/k8s/overlays/local/config.env
 
 # Generated Kubernetes secrets for the local overlay
 deploy/k8s/overlays/local/secrets/
+
+# CI renders of the KMS components
+deploy/k8s/.ci-*/

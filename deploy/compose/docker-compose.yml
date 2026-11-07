@@ -70,6 +70,10 @@ services:
       WEBHOOK_PREVIOUS_SIGNING_SECRETS: ${WEBHOOK_PREVIOUS_SIGNING_SECRETS:-}
       VAULT_ENCRYPTION_KEY: ${VAULT_ENCRYPTION_KEY}
       VAULT_PREVIOUS_ENCRYPTION_KEYS: ${VAULT_PREVIOUS_ENCRYPTION_KEYS:-}
+      # env (default) or a KMS: aws-kms (KMS_KEY_ID, AWS_REGION) or vault-transit (see vault-transit.yml)
+      VAULT_KEY_PROVIDER: ${VAULT_KEY_PROVIDER:-env}
+      KMS_KEY_ID: ${KMS_KEY_ID:-}
+      AWS_REGION: ${AWS_REGION:-}
       # Identity pinned by the control plane (the seeded demo webhook expects the default id).
       WEBHOOK_INSTANCE_ID: ${WEBHOOK_INSTANCE_ID:-whi_local_customer_vault}
       UPSTREAM_MODE: ${UPSTREAM_MODE:-mock}

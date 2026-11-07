@@ -255,7 +255,7 @@ token-vault/
 | Concern | POC implementation | Production direction |
 | --- | --- | --- |
 | Provider secrets | Sent browser → control plane (TLS in prod) → webhook, **never persisted** by the control plane. They are removed from the request object after forwarding and are not logged. | Same, or direct browser → webhook upload |
-| Encryption at rest | AES-256-GCM in the webhook, with the credential ref bound as AAD. Ciphertext lives in the customer's own Postgres database (`token_vault_customer`, separate role). The key comes from the environment and is never stored in the database; each record names the key that encrypted it by a one-way key id. The key can be rotated without losing credentials (see *Rotating keys*). | KMS/HSM envelope encryption |
+| Encryption at rest | AES-256-GCM in the webhook, with the credential ref bound as AAD. Ciphertext lives in the customer's own Postgres database (`token_vault_customer`, separate role). Either an environment key, or **a KMS (AWS KMS or HashiCorp Vault Transit) with envelope encryption**: each credential has its own data key, wrapped by the KMS, so the master key never leaves the KMS and every unwrap is logged there. Never stored in the database; each record names the key that protects it. Keys can be rotated, or moved to a KMS, without losing credentials (see *Rotating keys*), and a KMS outage never marks credentials invalid. | HSM-backed KMS keys, per-tenant keys |
 | Replay protection | Nonces of signed requests are recorded in the customer database, so a replay is rejected even when it reaches a different webhook instance | Same |
 | Control plane ↔ webhook | Shared-secret HMAC-SHA256 over method, path, timestamp, nonce and body hash. Responses are signed too. 60 s skew window and a nonce replay cache. The secret can be rotated with no failed requests: the webhook accepts the old and new secret and answers with the one each request used (see *Rotating keys*). | mTLS or asymmetric signatures |
 | Webhook identity | A signed challenge/response at registration and on every heartbeat. The instance ID is pinned. | Certificate-bound identity |
@@ -317,6 +317,10 @@ token-vault/
 | `WEBHOOK_PREVIOUS_SIGNING_SECRETS` | Optional, comma-separated: old secrets still accepted during a rotation. Each response is signed with the secret its request used |
 | `VAULT_ENCRYPTION_KEY` | Base64 of 32 random bytes. AES-256 key for the credential store: encrypts every new or changed credential |
 | `VAULT_PREVIOUS_ENCRYPTION_KEYS` | Optional, comma-separated. Earlier keys, kept only to read credentials written before a rotation; at start-up the webhook re-encrypts those under the current key |
+| `VAULT_KEY_PROVIDER` | `env` (default: `VAULT_ENCRYPTION_KEY` seals records), `aws-kms` or `vault-transit` (envelope encryption; `VAULT_ENCRYPTION_KEY` then only reads older records). See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#protecting-the-vault-key-with-a-kms) |
+| `KMS_KEY_ID`, `AWS_REGION`, `KMS_ENDPOINT` | AWS KMS: key id, ARN or alias; region; optional endpoint (VPC endpoint, LocalStack). AWS credentials come from the default chain (IRSA, Pod Identity, task role, instance profile) |
+| `VAULT_ADDR`, `VAULT_TRANSIT_KEY`, `VAULT_TRANSIT_MOUNT`, `VAULT_TOKEN` or `VAULT_K8S_ROLE` (+ `VAULT_K8S_MOUNT`, `VAULT_K8S_TOKEN_PATH`), `VAULT_NAMESPACE` | Vault Transit: address, key, mount (default `transit`), and a token or Kubernetes auth |
+| `KMS_DATA_KEY_CACHE_SECONDS`, `KMS_TIMEOUT_MS` | How long unwrapped data keys stay in memory (default 300; `0` = never), and the per-call key-service timeout (default 2000) |
 | `WEBHOOK_INSTANCE_ID` | Identity pinned by the control plane (signature audience) |
 | `WEBHOOK_DATABASE_URL` | Customer-side PostgreSQL connection string (required). Deliberately a different variable from the control plane's `DATABASE_URL` |
 | `SEED_MODE` | `if-missing` (default): create the demo mock credentials where absent or unreadable. `reset`: wipe the credential store on start (used by the e2e suite) |
@@ -337,6 +341,8 @@ token-vault/
 | `SEED_MODE` | `if-empty` (default): seed demo users and the GitHub definition into an empty database. `reset`: wipe and reseed on start (tests, e2e) |
 
 ### Rotating keys
+
+**Moving to a KMS** (AWS KMS or Vault Transit, envelope encryption): keep `VAULT_ENCRYPTION_KEY`, set `VAULT_KEY_PROVIDER` and the KMS settings, restart the webhook (it re-encrypts every credential under the KMS), then remove `VAULT_ENCRYPTION_KEY`. Details and outage behaviour: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#protecting-the-vault-key-with-a-kms).
 
 **Credential encryption key** (no credential is lost, no downtime beyond a webhook restart):
 

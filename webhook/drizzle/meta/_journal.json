@@ -15,6 +15,13 @@
       "when": 1793852894876,
       "tag": "0001_provider_catalog_state",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794075350056,
+      "tag": "0002_kms_envelope",
+      "breakpoints": true
     }
   ]
 }
