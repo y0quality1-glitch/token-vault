@@ -22,6 +22,7 @@ FROM node:22-alpine
 ENV NODE_ENV=production PORT=8080
 WORKDIR /app
 COPY --from=build /out/server.mjs ./server.mjs
-USER node
+# Numeric UID (the image's "node" user), so Kubernetes can verify runAsNonRoot.
+USER 1000:1000
 EXPOSE 8080
 CMD ["node", "server.mjs"]

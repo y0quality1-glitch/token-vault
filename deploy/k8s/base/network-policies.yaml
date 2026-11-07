@@ -1,0 +1,165 @@
+# Default deny in both namespaces, then exactly the connections Token Vault makes:
+#   ingress controller -> console, cms-ui      console -> server      cms-ui -> cms-api
+#   server -> webhook (signed requests)         server, webhook -> cms-api (signed catalog)
+#   server, webhook, cms-api -> their database   webhook -> provider APIs on 443 (live mode)
+# Requires a CNI that enforces NetworkPolicy (Calico, Cilium, ...). If your ingress controller
+# runs elsewhere than the ingress-nginx namespace, change that selector.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: token-vault
+spec:
+  podSelector:
+    {}
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress: []
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: token-vault
+spec:
+  podSelector:
+    {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector: { matchLabels: { k8s-app: kube-dns } }
+      ports: [{ port: 53, protocol: UDP }, { port: 53, protocol: TCP }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: token-vault-customer
+spec:
+  podSelector:
+    {}
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress: []
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: token-vault-customer
+spec:
+  podSelector:
+    {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector: { matchLabels: { k8s-app: kube-dns } }
+      ports: [{ port: 53, protocol: UDP }, { port: 53, protocol: TCP }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: console
+  namespace: token-vault
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: console }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ingress-nginx } }
+      ports: [{ port: 8080, protocol: TCP }]
+  egress:
+    - to:
+        - podSelector: { matchLabels: { app.kubernetes.io/name: server } }
+      ports: [{ port: 4000, protocol: TCP }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cms-ui
+  namespace: token-vault
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: cms-ui }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ingress-nginx } }
+      ports: [{ port: 8080, protocol: TCP }]
+  egress:
+    - to:
+        - podSelector: { matchLabels: { app.kubernetes.io/name: cms-api } }
+      ports: [{ port: 4200, protocol: TCP }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: server
+  namespace: token-vault
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: server }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app.kubernetes.io/name: console } }
+      ports: [{ port: 4000, protocol: TCP }]
+  egress:
+    - to:
+        - podSelector: { matchLabels: { app.kubernetes.io/name: webhook } }
+          namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: token-vault-customer } }
+      ports: [{ port: 4100, protocol: TCP }]
+    - to:
+        - podSelector: { matchLabels: { app.kubernetes.io/name: cms-api } }
+      ports: [{ port: 4200, protocol: TCP }]
+    # PostgreSQL (managed or in-cluster); narrow with an ipBlock or namespaceSelector in your overlay
+    - ports: [{ port: 5432, protocol: TCP }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cms-api
+  namespace: token-vault
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: cms-api }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app.kubernetes.io/name: cms-ui } }
+        - podSelector: { matchLabels: { app.kubernetes.io/name: server } }
+      ports: [{ port: 4200, protocol: TCP }]
+    - from:
+        - podSelector: { matchLabels: { app.kubernetes.io/name: webhook } }
+          namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: token-vault-customer } }
+      ports: [{ port: 4200, protocol: TCP }]
+  egress:
+    # PostgreSQL (managed or in-cluster); narrow with an ipBlock or namespaceSelector in your overlay
+    - ports: [{ port: 5432, protocol: TCP }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: webhook
+  namespace: token-vault-customer
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: webhook }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app.kubernetes.io/name: server } }
+          namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: token-vault } }
+      ports: [{ port: 4100, protocol: TCP }]
+  egress:
+    - to:
+        - podSelector: { matchLabels: { app.kubernetes.io/name: cms-api } }
+          namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: token-vault } }
+      ports: [{ port: 4200, protocol: TCP }]
+    # PostgreSQL (managed or in-cluster); narrow with an ipBlock or namespaceSelector in your overlay
+    - ports: [{ port: 5432, protocol: TCP }]
+    # provider APIs (GitHub, Slack, ...) in live mode; restrict with an egress proxy or FQDN policy if your CNI supports it
+    - ports: [{ port: 443, protocol: TCP }]

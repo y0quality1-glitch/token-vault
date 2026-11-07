@@ -94,3 +94,49 @@ jobs:
             e2e/test-results/
             e2e/.logs/*.log
           retention-days: 7
+
+  deploy:
+    name: Images, compose smoke test, Kubernetes manifests
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      COMPOSE: docker compose -f deploy/compose/docker-compose.yml
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Kubernetes manifests (kustomize, kubeconform, semantic checks)
+        run: |
+          node deploy/k8s/overlays/local/generate-secrets.mjs
+          cp examples/kubernetes/k8s/overlays/local/config.env.example examples/kubernetes/k8s/overlays/local/config.env
+          cmp deploy/compose/initdb/10-token-vault.sh deploy/k8s/overlays/local/postgres/10-token-vault.sh
+          curl -sSfL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz kubeconform
+          pip install --quiet pyyaml==6.0.2
+          for o in deploy/k8s/overlays/external-secrets deploy/k8s/overlays/local examples/kubernetes/k8s/overlays/vault examples/kubernetes/k8s/overlays/local; do
+            echo "== $o"
+            kubectl kustomize "$o" > rendered.yaml
+            ./kubeconform -strict -summary -kubernetes-version 1.31.0 -schema-location default \
+              -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' rendered.yaml
+            python3 deploy/k8s/check-manifests.py < rendered.yaml
+          done
+      - name: Build the five images and start the stack
+        run: |
+          node deploy/compose/generate-env.mjs
+          $COMPOSE up -d --build --wait --wait-timeout 300
+      - name: Smoke test through the published ports
+        run: node deploy/compose/smoke-test.mjs
+      - name: Restart; data and credentials survive
+        run: |
+          $COMPOSE down
+          $COMPOSE up -d --wait --wait-timeout 300
+          node deploy/compose/smoke-test.mjs
+      - name: Nothing but the two UIs is reachable from the host
+        run: |
+          for port in 4000 4100 4200 5432; do
+            if (echo > /dev/tcp/127.0.0.1/$port) 2>/dev/null; then echo "port $port is exposed"; exit 1; fi
+          done
+      - name: Service logs
+        if: failure()
+        run: $COMPOSE logs --no-color --tail 200

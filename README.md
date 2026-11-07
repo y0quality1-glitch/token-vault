@@ -100,6 +100,10 @@ npm run mcp:config
 
 This prints ready-to-paste configuration for Claude Code and Claude Desktop. Revoke the grant and the agent's next tool call is denied. When an agent is denied, it can **request time-limited access**. A Security Administrator approves or rejects the request under **Access Management → Access Requests**, and an approval becomes an expiring grant. See [docs/AGENTS.md](docs/AGENTS.md).
 
+### Deploying Token Vault
+
+Container images for all five services, a full-stack Docker Compose setup (`node deploy/compose/generate-env.mjs`, then `docker compose -f deploy/compose/docker-compose.yml up -d --build --wait`), Kubernetes manifests with External Secrets, and a smoke test: see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+
 ### Services on Kubernetes
 
 [examples/kubernetes](examples/kubernetes/README.md) shows a Node service deployed on Kubernetes. Its configuration (database URL, its Token Vault key) is loaded as environment variables at boot from a secrets manager (HashiCorp Vault through External Secrets, or a local Secret), and it calls Slack only through Token Vault, so no provider token ever enters the pod. It includes the Dockerfile, kustomize manifests (base, `vault` and `local` overlays) and rotation steps.
@@ -234,6 +238,7 @@ token-vault/
 ├── cms/                      Provider CMS (platform team): applications as signed, versioned definitions
 │   ├── api/                  Express + Drizzle: draft/review/publish workflow, Ed25519 signing, public catalog, audit
 │   └── client/               React UI; reuses the console's UI components via the @ui alias
+├── deploy/                   images (docker/), full-stack compose + smoke test (compose/), Kubernetes manifests (k8s/)
 ├── examples/kubernetes/      Node service on Kubernetes: config from a secrets manager at boot, Slack only through Token Vault
 └── docs/
     ├── CMS.md                provider CMS: roles, workflow, signing and the catalog API

@@ -19,6 +19,9 @@ async function main() {
     res.on('finish', () => console.log(`[vault] ${req.method} ${req.path} ${res.statusCode} ${Date.now() - t}ms`));
     next();
   });
+  // Liveness for container orchestrators: says only that the process serves requests.
+  // Identity, keys and catalog are reported by the signed /internal/v1/health only.
+  app.get('/healthz', (_req, res) => void res.json({ status: 'ok' }));
   app.use(buildRouter());
   app.use((_req, res) => res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Not found' } }));
 

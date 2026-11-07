@@ -16,7 +16,7 @@ export type Executor = Db | Tx;
 export const transaction = <T>(fn: (tx: Tx) => Promise<T>) => db.transaction(fn);
 
 export async function runMigrations() {
-  await migrate(db, { migrationsFolder: resolve(import.meta.dirname, '../../drizzle') });
+  await migrate(db, { migrationsFolder: process.env.MIGRATIONS_DIR ?? resolve(import.meta.dirname, '../../drizzle') /* container images set MIGRATIONS_DIR */ });
 }
 
 export async function closeDatabase() {

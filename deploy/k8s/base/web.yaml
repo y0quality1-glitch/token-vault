@@ -1,0 +1,134 @@
+# Admin console and CMS UI: static apps on nginx, each proxying to its API on the same origin.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: console
+  namespace: token-vault
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app.kubernetes.io/name: console }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: console }
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101   # nginx in nginx-unprivileged
+        runAsGroup: 101
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: nginx
+          image: token-vault/console
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            - { name: API_UPSTREAM, value: "http://server.token-vault.svc.cluster.local:4000" }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            # nginx renders its config into conf.d at start, and keeps temporary files in /tmp.
+            - { name: conf, mountPath: /etc/nginx/conf.d }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: conf, emptyDir: { sizeLimit: 1Mi } }
+        - { name: tmp, emptyDir: { sizeLimit: 64Mi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: console
+  namespace: token-vault
+spec:
+  selector: { app.kubernetes.io/name: console }
+  ports:
+    - { name: http, port: 80, targetPort: http }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: console
+  namespace: token-vault
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: console }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cms-ui
+  namespace: token-vault
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app.kubernetes.io/name: cms-ui }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: cms-ui }
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101   # nginx in nginx-unprivileged
+        runAsGroup: 101
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: nginx
+          image: token-vault/cms-ui
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            - { name: CMS_API_UPSTREAM, value: "http://cms-api.token-vault.svc.cluster.local:4200" }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            # nginx renders its config into conf.d at start, and keeps temporary files in /tmp.
+            - { name: conf, mountPath: /etc/nginx/conf.d }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: conf, emptyDir: { sizeLimit: 1Mi } }
+        - { name: tmp, emptyDir: { sizeLimit: 64Mi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cms-ui
+  namespace: token-vault
+spec:
+  selector: { app.kubernetes.io/name: cms-ui }
+  ports:
+    - { name: http, port: 80, targetPort: http }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: cms-ui
+  namespace: token-vault
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: cms-ui }

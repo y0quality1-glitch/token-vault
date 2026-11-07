@@ -11,7 +11,7 @@ pool.on('error', (err) => console.error('[vault] idle database client error:', d
 export const db = drizzle(pool, { schema });
 
 export async function runMigrations() {
-  await migrate(db, { migrationsFolder: resolve(import.meta.dirname, '../../drizzle') });
+  await migrate(db, { migrationsFolder: process.env.MIGRATIONS_DIR ?? resolve(import.meta.dirname, '../../drizzle') /* container images set MIGRATIONS_DIR */ });
 }
 
 export async function closeDatabase() {

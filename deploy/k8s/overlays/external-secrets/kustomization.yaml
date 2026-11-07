@@ -1,0 +1,18 @@
+# Production pattern: each service's Secret comes from your secrets manager through External
+# Secrets Operator. Requires ESO and a ClusterSecretStore named "token-vault" (HashiCorp Vault,
+# AWS Secrets Manager, GCP Secret Manager, Azure Key Vault ...), and these entries:
+#   token-vault/server   DATABASE_URL, WEBHOOK_SIGNING_SECRET, WEBHOOK_PREVIOUS_SIGNING_SECRETS,
+#                        AUDIT_SIGNING_KEY, CMS_PUBLIC_KEY
+#   token-vault/webhook  WEBHOOK_DATABASE_URL, WEBHOOK_SIGNING_SECRET, WEBHOOK_PREVIOUS_SIGNING_SECRETS,
+#                        VAULT_ENCRYPTION_KEY, VAULT_PREVIOUS_ENCRYPTION_KEYS, CMS_PUBLIC_KEY
+#   token-vault/cms-api  CMS_DATABASE_URL, CMS_SIGNING_PRIVATE_KEY
+# (`node deploy/compose/generate-env.mjs` creates suitable values.) In a real split, the webhook's
+# entry lives in the customer's own secrets manager, with its own store.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+  - external-secrets.yaml
+# Set your registry and version, hosts and TLS here, for example:
+# images:
+#   - { name: token-vault/server, newName: registry.example.com/token-vault/server, newTag: "1.0.0" }
