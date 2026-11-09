@@ -10,6 +10,8 @@ import * as oauth from './providers/oauth';
 import { ExecutionError, executeOperation, getExecutableOperation, injectionFor, testCredential, type ProviderCall, type ProviderResult } from './providers/executor';
 import * as app from './providers/github-app';
 import { catalogSync, registry } from './providers/registry';
+import type { TLSSocket } from 'node:tls';
+import { checkClient, describeCertificate } from './security/tls';
 
 // Shared across instances via PostgreSQL: a replayed request is rejected by any instance.
 const nonces = new PgNonceStore(config.maxClockSkewMs * 2);
@@ -26,6 +28,15 @@ interface SignedRequest extends Request {
 
 /** Every internal endpoint requires a valid control-plane signature. No unauthenticated secret retrieval exists. */
 async function requireSignature(req: SignedRequest, res: Response, next: NextFunction) {
+  // mTLS first: without a trusted (and, if listed, allowed) client certificate nothing else is looked at.
+  if (config.tls?.clientCa) {
+    const client = checkClient(req.socket as TLSSocket, config.tls);
+    if (!client.ok) {
+      console.warn(`[vault] rejected ${req.method} ${req.path}: ${client.reason}`);
+      res.status(401).json({ error: { code: 'CLIENT_CERTIFICATE_REJECTED', message: `mTLS: ${client.reason}` } });
+      return;
+    }
+  }
   const raw = req.rawBody ?? Buffer.alloc(0);
   const result = await verifySignedRequest({
     secret: config.signingSecrets,
@@ -243,6 +254,10 @@ export function buildRouter() {
       providers: registry.list().map((e) => ({ key: e.definition.key, version: e.definition.version, source: e.source, digest: (e.digest ?? createHash('sha256').update(JSON.stringify(e.definition)).digest('hex')).slice(0, 16) })),
       catalog: catalogSync ? { key_ids: catalogSync.status.keyIds, last_success_at: catalogSync.status.lastSuccessAt, last_error: catalogSync.status.lastError, restored_from: catalogSync.status.restored?.savedAt ?? null } : null,
       challenge_response: hmacHex(req.tvSecret ?? config.signingSecret, `health:${challenge}:${config.instanceId}`),
+      // Transport security of this link, as the webhook sees it (certificate details are public).
+      tls: config.tls
+        ? { enabled: true, client_certificates: config.tls.clientCa ? 'required' : 'not requested', allowed_clients: config.tls.allowedClients, server_certificate: describeCertificate(config.tls.cert) }
+        : { enabled: false },
       // During a signing-secret rotation: whether the control plane already signs with the new secret.
       signing: { request_signed_with: req.tvSecretIndex ? 'previous' : 'current', previous_secrets: config.signingSecrets.length - 1 },
     });

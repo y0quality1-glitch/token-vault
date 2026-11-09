@@ -169,11 +169,11 @@ jobs:
           cmp deploy/compose/initdb/10-token-vault.sh deploy/k8s/overlays/local/postgres/10-token-vault.sh
           curl -sSfL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz kubeconform
           pip install --quiet pyyaml==6.0.2
-          for c in aws-kms vault-transit; do
+          for c in aws-kms vault-transit mtls; do
             mkdir -p deploy/k8s/.ci-$c
             printf 'apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources: [../overlays/external-secrets]\ncomponents: [../components/%s]\n' $c > deploy/k8s/.ci-$c/kustomization.yaml
           done
-          for o in deploy/k8s/overlays/external-secrets deploy/k8s/overlays/local deploy/k8s/.ci-aws-kms deploy/k8s/.ci-vault-transit examples/kubernetes/k8s/overlays/vault examples/kubernetes/k8s/overlays/local; do
+          for o in deploy/k8s/overlays/external-secrets deploy/k8s/overlays/local deploy/k8s/.ci-aws-kms deploy/k8s/.ci-vault-transit deploy/k8s/.ci-mtls examples/kubernetes/k8s/overlays/vault examples/kubernetes/k8s/overlays/local; do
             echo "== $o"
             kubectl kustomize "$o" > rendered.yaml
             ./kubeconform -strict -summary -kubernetes-version 1.31.0 -schema-location default \
@@ -202,6 +202,24 @@ jobs:
           for port in 4000 4100 4200 5432; do
             if (echo > /dev/tcp/127.0.0.1/$port) 2>/dev/null; then echo "port $port is exposed"; exit 1; fi
           done
+      - name: Mutual TLS between the control plane and the webhook
+        run: |
+          $COMPOSE -f deploy/compose/vault-transit.yml down -v
+          npm run tls:dev-certs
+          $COMPOSE -f deploy/compose/mtls.yml up -d --wait --wait-timeout 300
+          node deploy/compose/smoke-test.mjs | tee smoke.log
+          grep -q "Transport: mutual TLS, webhook certificate CN=webhook" smoke.log
+          # Without the control plane's client certificate, /internal/* is refused; liveness is not.
+          $COMPOSE -f deploy/compose/mtls.yml exec -T server node -e "
+            const https = require('https'), ca = require('fs').readFileSync('/tls/ca.pem');
+            const get = (path) => new Promise((ok, no) => https.get({ host: 'webhook', port: 4100, path, ca }, (r) => ok(r.statusCode)).on('error', no));
+            (async () => {
+              const internal = await get('/internal/v1/health'), live = await get('/healthz');
+              console.log('without a client certificate: /internal ->', internal, ', /healthz ->', live);
+              process.exit(internal === 401 && live === 200 ? 0 : 1);
+            })();"
       - name: Service logs
         if: failure()
-        run: $COMPOSE -f deploy/compose/vault-transit.yml logs --no-color --tail 200
+        run: |
+          $COMPOSE -f deploy/compose/mtls.yml logs --no-color --tail 200 || true
+          $COMPOSE -f deploy/compose/vault-transit.yml logs --no-color --tail 200

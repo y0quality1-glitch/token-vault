@@ -7,6 +7,7 @@ import type { KeyProvider } from './security/key-provider';
 import { parseKeyProviderConfig, type KeyProviderConfig } from './security/provider-config';
 import { awsKmsProvider } from './security/providers/aws-kms';
 import { vaultTransitProvider } from './security/providers/vault-transit';
+import { loadTlsConfig, type TlsConfig } from './security/tls';
 
 const envFile = resolve(import.meta.dirname, '../.env');
 if (existsSync(envFile)) process.loadEnvFile(envFile);
@@ -43,6 +44,15 @@ try {
   console.error(`[vault] ${(e as Error).message}.`);
   process.exit(1);
 }
+// HTTPS and client-certificate (mTLS) settings for the control plane -> webhook link.
+let tls: TlsConfig | null = null;
+try {
+  tls = loadTlsConfig(process.env);
+} catch (e) {
+  console.error(`[vault] ${(e as Error).message}.`);
+  process.exit(1);
+}
+
 const keyProvider: KeyProvider | null =
   keyProviderConfig.kind === 'aws-kms' ? awsKmsProvider(keyProviderConfig) : keyProviderConfig.kind === 'vault-transit' ? vaultTransitProvider(keyProviderConfig) : null;
 
@@ -117,6 +127,8 @@ export const config = {
   },
   /** Environment keys (current and previous); records name the key that encrypted them. Null with a KMS and no legacy key. */
   keyring,
+  /** HTTPS / mTLS settings, or null for plain HTTP. */
+  tls,
   /** The KMS wrapping per-record data keys, or null in env mode. */
   keyProvider,
   keyProviderKind: keyProviderConfig.kind,

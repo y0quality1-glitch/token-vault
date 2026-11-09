@@ -1,0 +1,62 @@
+# Mutual TLS between the control plane and the customer webhook, with cert-manager.
+# Add to your overlay:  components: [../../components/mtls]
+# Requires cert-manager and the CA described in certificates.yaml. Certificates renew
+# automatically; both services pick up the renewed files without a restart. In a real split,
+# the webhook's certificate comes from the customer's cluster and CA instead.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - certificates.yaml
+patches:
+  - target: { kind: Deployment, name: webhook, namespace: token-vault-customer }
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: { name: WEBHOOK_TLS_CERT_FILE, value: /tls/tls.crt }
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: { name: WEBHOOK_TLS_KEY_FILE, value: /tls/tls.key }
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: { name: WEBHOOK_TLS_CLIENT_CA_FILE, value: /tls/ca.crt }
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: { name: WEBHOOK_TLS_ALLOWED_CLIENTS, value: "URI:spiffe://token-vault/control-plane" }
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value: { name: tls, mountPath: /tls, readOnly: true }
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value: { name: tls, secret: { secretName: webhook-tls, defaultMode: 0440 } }
+      - op: add
+        path: /spec/template/spec/containers/0/readinessProbe/httpGet/scheme
+        value: HTTPS
+      - op: add
+        path: /spec/template/spec/containers/0/livenessProbe/httpGet/scheme
+        value: HTTPS
+  - target: { kind: Deployment, name: server, namespace: token-vault }
+    patch: |-
+      - op: test
+        path: /spec/template/spec/containers/0/env/1/name
+        value: DEFAULT_WEBHOOK_URL
+      - op: replace
+        path: /spec/template/spec/containers/0/env/1/value
+        value: https://webhook.token-vault-customer.svc.cluster.local:4100
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: { name: WEBHOOK_TLS_CA_FILE, value: /tls/ca.crt }
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: { name: CONTROL_PLANE_TLS_CERT_FILE, value: /tls/tls.crt }
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: { name: CONTROL_PLANE_TLS_KEY_FILE, value: /tls/tls.key }
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: { name: WEBHOOK_REQUIRE_TLS, value: "true" }
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value: { name: tls, mountPath: /tls, readOnly: true }
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value: { name: tls, secret: { secretName: control-plane-tls, defaultMode: 0440 } }

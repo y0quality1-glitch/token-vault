@@ -192,16 +192,55 @@ docker compose -f deploy/compose/docker-compose.yml -f deploy/compose/vault-tran
 - `components: [../../components/aws-kms]` annotates the webhook's service account for IRSA.
 - `components: [../../components/vault-transit]` mounts a short-lived service-account token for Vault only, and lets the webhook reach Vault.
 
+## Mutual TLS between the control plane and webhooks
+
+The control plane calls each customer webhook to use credentials. With mTLS, that link is authenticated in both directions at the TLS layer, in addition to the signed requests (HMAC, nonce, expiry, audience), which stay on:
+- the webhook serves HTTPS and accepts `/internal/*` calls only from a client certificate issued by the CA it trusts, optionally only from listed identities (a SPIFFE ID, DNS name or CN);
+- the control plane checks the webhook's server certificate against its own CA bundle and presents its client certificate;
+- `/healthz` stays reachable without a client certificate, because Kubernetes probes have none.
+
+| Side | Setting | Meaning |
+| --- | --- | --- |
+| Webhook | `WEBHOOK_TLS_CERT[_FILE]`, `WEBHOOK_TLS_KEY[_FILE]` | Serve HTTPS with this certificate and key |
+| Webhook | `WEBHOOK_TLS_CLIENT_CA[_FILE]` | Require a client certificate from this CA on `/internal/*` |
+| Webhook | `WEBHOOK_TLS_ALLOWED_CLIENTS` | Optional, comma-separated: `URI:spiffe://token-vault/control-plane`, `DNS:…` or `CN=…` |
+| Control plane | `WEBHOOK_TLS_CA[_FILE]` | CA bundle for webhook server certificates (default: the system CAs) |
+| Control plane | `CONTROL_PLANE_TLS_CERT[_FILE]`, `CONTROL_PLANE_TLS_KEY[_FILE]` | Client certificate presented to webhooks |
+| Control plane | `WEBHOOK_REQUIRE_TLS` | `true`: refuse `http://` webhook URLs, both when registering and when calling |
+
+**Per webhook:** a webhook set to **Mutual TLS + signed requests** (wizard step 2, or *Change URL or authentication* on its page) is never called without TLS and the client certificate. The console offers that option only when the control plane has a client certificate and the URL is `https://`.
+
+**What operators see:**
+- Webhook Health shows the transport: *mutual TLS, webhook certificate CN=… issued by CN=…, valid N more days*. Under 14 days it warns that the certificate expires soon.
+- Failures name the cause: an untrusted CA, an expired certificate, a host the certificate doesn't name, a client certificate the webhook rejected (`CLIENT_CERTIFICATE_REJECTED`), or a refused plain-HTTP URL. They show as Unhealthy, never as invalid credentials.
+
+**Renewal:** both sides re-read their certificate files every minute and use the new ones without a restart. The webhook ignores a half-written file and keeps its working certificate. That makes it fit cert-manager, Vault PKI agents or any tool that rewrites the files.
+
+**Try it with compose:**
+```bash
+npm run tls:dev-certs
+```
+```bash
+docker compose -f deploy/compose/docker-compose.yml -f deploy/compose/mtls.yml up -d --build --wait
+```
+`tls:dev-certs` writes a development CA and both certificates to `deploy/compose/tls/` (git-ignored; keys readable by the containers). Don't use them outside development. A stack that already ran over HTTP keeps its stored `http://` webhook URL: change it to `https://webhook:4100` on the webhook's page, or start from empty volumes (`down -v`).
+
+**Kubernetes:** `components: [../../components/mtls]` needs cert-manager. It:
+- issues the webhook's server certificate and the control plane's client certificate (ECDSA P-256, 90 days, renewed 15 days ahead) from a `ClusterIssuer` backed by your CA;
+- mounts both, and switches the webhook's probes to HTTPS;
+- points the control plane at `https://webhook.token-vault-customer.svc.cluster.local:4100` with `WEBHOOK_REQUIRE_TLS=true`.
+In a real split, the customer issues the webhook's certificate from their own CA, and gives you that CA for `WEBHOOK_TLS_CA`.
+
 ## Staging checklist
 
 - **TLS** at the ingress or load balancer, with `CONSOLE_PUBLIC_URL` set to the console's https URL (OAuth redirects use it).
+- **mTLS** to the webhook (see above), with `WEBHOOK_REQUIRE_TLS=true`.
 - **Databases:** managed PostgreSQL, one database and role per service. Give the webhook its own server, in the customer's environment. Keep backups of the webhook's database together with its `VAULT_ENCRYPTION_KEY`: one is useless without the other.
 - **Secrets** come from your secrets manager (`overlays/external-secrets`). Rotate them with the documented steps in the README (*Rotating keys*), which need no downtime.
 - **CMS:** set `CMS_ADMIN_DIRECT_PUBLISH=false` to require two people per publication. The Kubernetes base already does.
 - **Providers:** start with `UPSTREAM_MODE=mock`. Switch applications to live one at a time with `PROVIDER_MODES=github=live,…`.
 - **Not production-ready yet:**
   - sign-in uses the seeded demo accounts, until SSO arrives (roadmap 1.4);
-  - control plane ↔ webhook uses a shared HMAC secret, not mTLS (roadmap 1.3);
   - the vault key is an environment variable unless you configure a KMS (see above);
   - API services run one replica (roadmap 1.5).
 

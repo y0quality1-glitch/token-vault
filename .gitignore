@@ -19,3 +19,6 @@ deploy/k8s/overlays/local/secrets/
 
 # CI renders of the KMS components
 deploy/k8s/.ci-*/
+
+# Development mTLS certificates (npm run tls:dev-certs)
+deploy/compose/tls/
