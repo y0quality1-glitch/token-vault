@@ -20,6 +20,15 @@ export interface HealthOutcome {
  * Signed health-check challenge. The webhook proves it holds the signing secret by
  * returning HMAC("health:<challenge>:<instance_id>"), and the response itself is signed.
  */
+/** Transport of the link: mTLS with certificate details and an expiry warning, or plain HTTP. */
+function transportNote(peer: { subject: string; issuer: string; validTo: string } | undefined, reported: { client_certificates?: string } | undefined): string {
+  if (!peer) return '. Transport: plain HTTP (no TLS)';
+  const days = Math.floor((Date.parse(peer.validTo) - Date.now()) / 86_400_000);
+  const mutual = reported?.client_certificates === 'required' ? 'mutual TLS' : 'TLS (the webhook does not require a client certificate)';
+  const expiry = days < 14 ? `; WEBHOOK CERTIFICATE EXPIRES IN ${Math.max(days, 0)} DAY${days === 1 ? '' : 'S'}` : `, valid ${days} more days`;
+  return `. Transport: ${mutual}, webhook certificate ${peer.subject} issued by ${peer.issuer}${expiry}`;
+}
+
 /** Signing-secret rotation status: tells the admin which step of a rotation is next. */
 function signingNote(s: { request_signed_with?: unknown; previous_secrets?: unknown } | undefined): string {
   if (!s) return '';
@@ -45,6 +54,9 @@ export async function checkHealth(webhook: WebhookRecord): Promise<HealthOutcome
   const challenge = webhook.registrationChallenge ?? randomToken(16);
   try {
     const res = await callWebhook(webhook, 'GET', `/internal/v1/health?challenge=${encodeURIComponent(challenge)}`);
+    if (res.status === 401 && res.body?.error?.code === 'CLIENT_CERTIFICATE_REJECTED') {
+      return { ok: false, latencyMs: res.latencyMs, detail: `The webhook refused the control plane's client certificate (${res.body.error.message}). Check CONTROL_PLANE_TLS_CERT, and the webhook's WEBHOOK_TLS_CLIENT_CA and WEBHOOK_TLS_ALLOWED_CLIENTS.` };
+    }
     if (res.status === 401) return { ok: false, latencyMs: res.latencyMs, detail: `Webhook rejected the signed challenge (${res.body?.error?.message ?? 'unauthorized'}). Check that WEBHOOK_SIGNING_SECRET matches on both sides.` };
     if (res.status !== 200) return { ok: false, latencyMs: res.latencyMs, detail: `Unexpected HTTP ${res.status} from webhook health endpoint` };
     const { instance_id, version, challenge_response, github_mode } = res.body ?? {};
@@ -55,7 +67,7 @@ export async function checkHealth(webhook: WebhookRecord): Promise<HealthOutcome
     if (webhook.instanceId && webhook.instanceId !== instance_id) {
       return { ok: false, latencyMs: res.latencyMs, detail: `Webhook identity changed (expected ${webhook.instanceId}, got ${instance_id}).` };
     }
-    return { ok: true, latencyMs: res.latencyMs, detail: `Signed health challenge verified${signingNote(res.body?.signing)}${encryptionNote(res.body?.encryption)}`, instanceId: instance_id, version, githubMode: github_mode };
+    return { ok: true, latencyMs: res.latencyMs, detail: `Signed health challenge verified${transportNote(res.tls, res.body?.tls)}${signingNote(res.body?.signing)}${encryptionNote(res.body?.encryption)}`, instanceId: instance_id, version, githubMode: github_mode };
   } catch (e) {
     const err = e as Error;
     const hint = err instanceof WebhookUnavailableError && err.reason === 'UNREACHABLE' ? ' Is the webhook runtime running (npm run dev -w webhook)?' : '';

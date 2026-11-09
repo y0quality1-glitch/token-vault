@@ -10,6 +10,7 @@ import { Card, CardBody, CardHeader, DetailList } from '@/components/ui/card';
 import { Badge, EnvBadge, StatusBadge } from '@/components/ui/badge';
 import { Field, Input, RadioCard, Select, Textarea } from '@/components/ui/form';
 import { Callout, ErrorState, FormError, PageSkeleton } from '@/components/ui/feedback';
+import { Dialog } from '@/components/ui/dialog';
 import { PageHeader, Stepper } from '@/components/ui/navigation';
 import { Mono } from '@/components/ui/secret';
 import { useToast } from '@/components/ui/toast';
@@ -24,10 +25,18 @@ interface HealthResult {
   version?: string;
 }
 
+/** What the control plane can do on the webhook link (from GET /webhooks). */
+interface Transport {
+  mtlsAvailable: boolean;
+  requireTls: boolean;
+  trustsCustomCa: boolean;
+}
+
 export function WebhookSetupPage() {
   const { can } = useAuth();
-  const { data, error, loading, reload } = useApi<{ items: Webhook[]; defaultEndpointUrl: string }>('/webhooks');
+  const { data, error, loading, reload } = useApi<{ items: Webhook[]; defaultEndpointUrl: string; transport?: Transport }>('/webhooks');
   const [wizard, setWizard] = useState(false);
+  const [editing, setEditing] = useState<Webhook | null>(null);
   const navigate = useNavigate();
 
   if (error) return <ErrorState error={error} onRetry={reload} />;
@@ -61,6 +70,7 @@ export function WebhookSetupPage() {
       {showWizard ? (
         <SetupWizard
           defaultUrl={data.defaultEndpointUrl}
+          transport={data.transport}
           onCancel={data.items.length ? () => setWizard(false) : undefined}
           onDone={() => {
             setWizard(false);
@@ -88,7 +98,7 @@ export function WebhookSetupPage() {
                   items={[
                     { label: 'Endpoint URL', value: w.endpointUrl, mono: true },
                     { label: 'Environment', value: <EnvBadge env={w.environment} /> },
-                    { label: 'Authentication', value: w.authenticationType === 'SHARED_SECRET_HMAC' ? 'Shared signing secret (HMAC-SHA256)' : 'Mutual TLS' },
+                    { label: 'Authentication', value: w.authenticationType === 'SHARED_SECRET_HMAC' ? 'Signed requests (HMAC-SHA256)' : 'Mutual TLS + signed requests' },
                     { label: 'Signing secret', value: <span className="font-mono text-xs">{w.signingSecretRef}</span> },
                     { label: 'Last heartbeat', value: relativeTime(w.lastHeartbeatAt) },
                     { label: 'Software version', value: w.softwareVersion ?? '—' },
@@ -101,6 +111,11 @@ export function WebhookSetupPage() {
                   <Button variant="outline" size="sm" onClick={() => navigate('/webhook/health')}>
                     Health & connectivity
                   </Button>
+                  {can(PERMISSIONS.WEBHOOK_MANAGE) && (
+                    <Button variant="outline" size="sm" onClick={() => setEditing(w)}>
+                      Change URL or authentication
+                    </Button>
+                  )}
                   {w.status === 'PENDING' && can(PERMISSIONS.WEBHOOK_MANAGE) && (
                     <Button size="sm" onClick={() => setWizard(true)}>
                       Resume verification
@@ -112,13 +127,82 @@ export function WebhookSetupPage() {
           ))}
         </div>
       )}
+      {editing && (
+        <TransportDialog
+          webhook={editing}
+          transport={data.transport}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
+            void reload();
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+/**
+ * Moves a webhook (e.g. to https://) or switches it to mutual TLS. The webhook's pinned identity
+ * must still match, so this cannot point Token Vault at a different webhook; a signed health
+ * check runs right away so a mistake shows at once.
+ */
+function TransportDialog({ webhook, transport, onClose, onSaved }: { webhook: Webhook; transport?: Transport; onClose: () => void; onSaved: () => void }) {
+  const toast = useToast();
+  const [url, setUrl] = useState(webhook.endpointUrl);
+  const [authType, setAuthType] = useState(webhook.authenticationType);
+  const save = useMutation(async () => {
+    const w = await api.patch<Webhook>(`/webhooks/${webhook.id}`, { endpointUrl: url, authenticationType: authType });
+    const r = await api.post<{ result: HealthResult }>(`/webhooks/${w.id}/test`);
+    return r.result;
+  });
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title={`Change ${webhook.name}`}
+      description="Token Vault verifies the webhook's pinned identity at the new address, so this cannot point it at a different webhook."
+      footer={
+        <>
+          <Button variant="outline" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            loading={save.pending}
+            onClick={async () => {
+              const r = await save.run();
+              if (!r) return;
+              if (r.ok) toast.success('Saved and verified', r.detail);
+              else toast.error('Saved, but the health check failed', r.detail);
+              onSaved();
+            }}
+          >
+            Save and verify
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <FormError error={save.error} />
+        <Field label="Endpoint URL" htmlFor="transportUrl" error={save.fieldErrors.endpointUrl} hint={transport?.requireTls ? 'WEBHOOK_REQUIRE_TLS is on: https:// only.' : undefined}>
+          <Input id="transportUrl" className="font-mono" value={url} onChange={(e) => setUrl(e.target.value.trim())} />
+        </Field>
+        <Field label="Authentication" htmlFor="transportAuth" hint={transport?.mtlsAvailable ? 'Mutual TLS needs an https:// URL.' : 'Mutual TLS needs a control-plane client certificate (CONTROL_PLANE_TLS_CERT / _KEY).'}>
+          <Select id="transportAuth" value={authType} onChange={(e) => setAuthType(e.target.value as Webhook['authenticationType'])}>
+            <option value="SHARED_SECRET_HMAC">Signed requests (HMAC-SHA256)</option>
+            <option value="MTLS" disabled={!transport?.mtlsAvailable}>
+              Mutual TLS + signed requests
+            </option>
+          </Select>
+        </Field>
+      </div>
+    </Dialog>
   );
 }
 
 const STEPS = ['Register endpoint', 'Configure authentication', 'Verify connectivity', 'Complete'];
 
-function SetupWizard({ defaultUrl, onCancel, onDone }: { defaultUrl: string; onCancel?: () => void; onDone: () => void }) {
+function SetupWizard({ defaultUrl, transport, onCancel, onDone }: { defaultUrl: string; transport?: Transport; onCancel?: () => void; onDone: () => void }) {
   const toast = useToast();
   const navigate = useNavigate();
   const [step, setStep] = useState(0);
@@ -127,7 +211,12 @@ function SetupWizard({ defaultUrl, onCancel, onDone }: { defaultUrl: string; onC
   const [result, setResult] = useState<HealthResult | null>(null);
   const create = useMutation((body: unknown) => api.post<Webhook>('/webhooks', body));
   const verify = useMutation((id: string) => api.post<{ webhook: Webhook; result: HealthResult }>(`/webhooks/${id}/test`));
-  const configure = useMutation((id: string) => api.patch<Webhook>(`/webhooks/${id}`, { authenticationType: 'SHARED_SECRET_HMAC' }));
+  const [authType, setAuthType] = useState<'SHARED_SECRET_HMAC' | 'MTLS'>('SHARED_SECRET_HMAC');
+  const configure = useMutation((id: string) => api.patch<Webhook>(`/webhooks/${id}`, { authenticationType: authType }));
+  const mtlsPossible = !!transport?.mtlsAvailable && !!webhook?.endpointUrl.startsWith('https://');
+  useEffect(() => {
+    if (mtlsPossible) setAuthType('MTLS');
+  }, [mtlsPossible]);
   const fe = create.fieldErrors;
 
   useEffect(() => setResult(null), [step]);
@@ -167,8 +256,27 @@ function SetupWizard({ defaultUrl, onCancel, onDone }: { defaultUrl: string; onC
           <>
             <h2 className="text-sm font-semibold text-slate-900">Step 2: Configure authentication</h2>
             <div className="grid gap-3 md:grid-cols-2">
-              <RadioCard checked onChange={() => undefined} title="Shared signing secret (HMAC-SHA256)" badge={<Badge tone="blue">Local POC</Badge>} description="Requests are signed with a secret both sides read from environment variables. Includes timestamp, nonce, body hash, expiry and audience." />
-              <RadioCard checked={false} disabled onChange={() => undefined} title="Mutual TLS / asymmetric signatures" badge={<Badge tone="gray">Production design</Badge>} description="Certificate-bound webhook identity with key rotation. Not implemented in this POC." />
+              <RadioCard
+                checked={authType === 'SHARED_SECRET_HMAC'}
+                onChange={() => setAuthType('SHARED_SECRET_HMAC')}
+                title="Signed requests (HMAC-SHA256)"
+                badge={<Badge tone="blue">Always on</Badge>}
+                description="Requests and responses are signed with a secret both sides read from their environment, with timestamp, nonce, body hash, expiry and audience."
+              />
+              <RadioCard
+                checked={authType === 'MTLS'}
+                disabled={!mtlsPossible}
+                onChange={() => setAuthType('MTLS')}
+                title="Mutual TLS + signed requests"
+                badge={<Badge tone={mtlsPossible ? 'green' : 'gray'}>{mtlsPossible ? 'Recommended' : 'Not set up'}</Badge>}
+                description={
+                  mtlsPossible
+                    ? 'Both sides prove their identity with certificates before any request is read; the webhook is never called without TLS. Signed requests still apply on top.'
+                    : !transport?.mtlsAvailable
+                      ? 'Needs a control-plane client certificate (CONTROL_PLANE_TLS_CERT / _KEY) and a webhook serving HTTPS. See docs/DEPLOYMENT.md.'
+                      : 'Needs an https:// webhook URL.'
+                }
+              />
             </div>
             <div className="grid gap-4 md:grid-cols-2">
               <div className="rounded-lg border border-slate-200 p-4">

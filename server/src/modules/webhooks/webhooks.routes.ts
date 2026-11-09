@@ -35,7 +35,7 @@ async function getWebhook(orgId: string, id: string): Promise<WebhookRecord> {
 
 webhooksRouter.get('/webhooks', async (req, res) => {
   const { org } = orgCtx(req);
-  res.json({ items: await webhookRepo.listWebhooks(org.id), defaultEndpointUrl: config.defaultWebhookUrl });
+  res.json({ items: await webhookRepo.listWebhooks(org.id), defaultEndpointUrl: config.defaultWebhookUrl, transport: transportInfo() });
 });
 
 webhooksRouter.get('/webhooks/:id', async (req, res) => {
@@ -45,13 +45,24 @@ webhooksRouter.get('/webhooks/:id', async (req, res) => {
   res.json({ ...w, integrations });
 });
 
+/** What the control plane can do on the webhook link (shown by the setup wizard). */
+function transportInfo() {
+  const t = config.webhookTls;
+  return { mtlsAvailable: !!(t.cert && t.key), requireTls: t.requireTls, trustsCustomCa: !!t.ca };
+}
+
+/** Refuses a URL the transport settings do not allow. */
+function checkUrl(url: string, environment: string) {
+  if (url.startsWith('http://') && (environment === 'production' || config.webhookTls.requireTls)) {
+    throw badRequest('Request validation failed', { fields: { endpointUrl: config.webhookTls.requireTls ? 'WEBHOOK_REQUIRE_TLS is on: webhooks must use https://' : 'Production webhooks must use https://' } });
+  }
+}
+
 // Step 1: register endpoint (PENDING) and issue a one-time registration challenge.
 webhooksRouter.post('/webhooks', requirePermission(PERMISSIONS.WEBHOOK_MANAGE), async (req, res) => {
   const ctx = orgCtx(req);
   const body = parse(createSchema, req.body);
-  if (body.environment === 'production' && body.endpointUrl.startsWith('http://')) {
-    throw badRequest('Request validation failed', { fields: { endpointUrl: 'Production webhooks must use https://' } });
-  }
+  checkUrl(body.endpointUrl, body.environment);
   const webhook = await transaction(async (tx) => {
     if ((await webhookRepo.listWebhooks(ctx.org.id, tx)).some((w) => w.name.toLowerCase() === body.name.toLowerCase())) throw conflict('A webhook with that name already exists');
     const created = await webhookRepo.insertWebhook(
@@ -89,15 +100,31 @@ webhooksRouter.patch('/webhooks/:id', requirePermission(PERMISSIONS.WEBHOOK_MANA
       authenticationType: z.enum(['SHARED_SECRET_HMAC', 'MTLS']).optional(),
       name: z.string().trim().min(3).max(60).optional(),
       description: z.string().trim().max(240).optional(),
+      // Moving the webhook (e.g. to https://). Its pinned instance identity must still match, so a
+      // URL change cannot swap in a different webhook.
+      endpointUrl: createSchema.shape.endpointUrl.optional(),
     }),
     req.body,
   );
-  if (body.authenticationType === 'MTLS') {
-    throw badRequest('Mutual TLS is part of the production design and is not implemented in this POC. Use the shared signing secret.');
+  const url = body.endpointUrl ?? w.endpointUrl;
+  if (body.endpointUrl) checkUrl(body.endpointUrl, w.environment);
+  if ((body.authenticationType ?? w.authenticationType) === 'MTLS') {
+    if (!transportInfo().mtlsAvailable) throw badRequest('Mutual TLS needs a control-plane client certificate (CONTROL_PLANE_TLS_CERT and CONTROL_PLANE_TLS_KEY). See docs/DEPLOYMENT.md.');
+    if (!url.startsWith('https://')) throw badRequest('Request validation failed', { fields: { endpointUrl: 'Mutual TLS needs an https:// webhook URL' } });
   }
   const updated = await transaction(async (tx) => {
     const u = await webhookRepo.updateWebhook(w.id, body, tx);
-    await recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: 'webhook.updated', target: { type: 'webhook', id: u.id, name: u.name }, metadata: body }, tx);
+    await recordEvent(
+      {
+        orgId: ctx.org.id,
+        actor: userActor(ctx),
+        eventType: body.endpointUrl && body.endpointUrl !== w.endpointUrl ? 'webhook.endpoint_changed' : 'webhook.updated',
+        target: { type: 'webhook', id: u.id, name: u.name },
+        severity: body.endpointUrl && body.endpointUrl !== w.endpointUrl ? 'warning' : 'info',
+        metadata: { ...body, ...(body.endpointUrl ? { previousEndpointUrl: w.endpointUrl } : {}) },
+      },
+      tx,
+    );
     return u;
   });
   res.json(updated);

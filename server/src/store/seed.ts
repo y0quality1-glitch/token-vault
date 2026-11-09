@@ -105,7 +105,8 @@ export function buildSeed(): SeedData {
     endpointUrl: config.defaultWebhookUrl,
     environment: 'development',
     description: 'Docker/local process simulating the customer-isolated vault runtime.',
-    authenticationType: 'SHARED_SECRET_HMAC',
+    // Mutual TLS when the deployment is set up for it (https URL and a client certificate).
+    authenticationType: config.defaultWebhookUrl.startsWith('https://') && config.webhookTls.cert ? 'MTLS' : 'SHARED_SECRET_HMAC',
     signingSecretRef: config.webhookSigningSecretRef,
     status: 'CONNECTED',
     instanceId: DEFAULT_WEBHOOK_INSTANCE_ID,

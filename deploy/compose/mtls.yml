@@ -1,0 +1,39 @@
+# Mutual TLS between the control plane and the customer webhook.
+#
+#   npm run tls:dev-certs                    # development CA + certificates in deploy/compose/tls/
+#   docker compose -f deploy/compose/docker-compose.yml -f deploy/compose/mtls.yml up -d --build --wait
+#
+# The webhook serves HTTPS and accepts /internal/* only from a client certificate issued by the CA
+# with the control plane's identity; the control plane presents that certificate, verifies the
+# webhook's against the CA (including its host name) and refuses plain-HTTP webhooks. Signed
+# requests (HMAC, nonce, expiry, audience) still apply on top.
+#
+# An existing stack keeps its webhook URL (http://webhook:4100) in the database: change it to
+# https://webhook:4100 under Webhook / Vault Agent (or PATCH /api/v1/webhooks/:id), or start with
+# an empty volume. Can be combined with vault-transit.yml.
+services:
+  webhook:
+    environment:
+      WEBHOOK_TLS_CERT_FILE: /tls/webhook.pem
+      WEBHOOK_TLS_KEY_FILE: /tls/webhook-key.pem
+      WEBHOOK_TLS_CLIENT_CA_FILE: /tls/ca.pem
+      WEBHOOK_TLS_ALLOWED_CLIENTS: URI:spiffe://token-vault/control-plane
+    volumes:
+      - ./tls/ca.pem:/tls/ca.pem:ro
+      - ./tls/webhook.pem:/tls/webhook.pem:ro
+      - ./tls/webhook-key.pem:/tls/webhook-key.pem:ro
+    healthcheck:
+      # Liveness over HTTPS (no client certificate needed for /healthz).
+      test: ["CMD", "node", "-e", "require('https').get({host:'127.0.0.1',port:4100,path:'/healthz',rejectUnauthorized:false},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+
+  server:
+    environment:
+      DEFAULT_WEBHOOK_URL: https://webhook:4100
+      WEBHOOK_TLS_CA_FILE: /tls/ca.pem
+      CONTROL_PLANE_TLS_CERT_FILE: /tls/control-plane.pem
+      CONTROL_PLANE_TLS_KEY_FILE: /tls/control-plane-key.pem
+      WEBHOOK_REQUIRE_TLS: "true"
+    volumes:
+      - ./tls/ca.pem:/tls/ca.pem:ro
+      - ./tls/control-plane.pem:/tls/control-plane.pem:ro
+      - ./tls/control-plane-key.pem:/tls/control-plane-key.pem:ro

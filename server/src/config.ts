@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { loadWebhookTls, type WebhookTls } from './lib/webhook-tls';
 
 const envFile = resolve(import.meta.dirname, '../.env');
 if (existsSync(envFile)) process.loadEnvFile(envFile);
@@ -13,6 +14,15 @@ if (signingSecret.length < 32) {
 const previousSigningSecrets = (process.env.WEBHOOK_PREVIOUS_SIGNING_SECRETS ?? '').split(',').map((v) => v.trim()).filter((v) => v && v !== signingSecret);
 if (previousSigningSecrets.some((v) => v.length < 32)) {
   console.error('[api] every WEBHOOK_PREVIOUS_SIGNING_SECRETS entry must be at least 32 characters.');
+  process.exit(1);
+}
+
+// mTLS to customer webhooks (optional): client certificate, webhook CA, and https-only.
+let webhookTls: WebhookTls;
+try {
+  webhookTls = loadWebhookTls(process.env);
+} catch (e) {
+  console.error(`[api] ${(e as Error).message}.`);
   process.exit(1);
 }
 
@@ -72,6 +82,8 @@ export const config = {
   cookieSecure: process.env.NODE_ENV === 'production',
   executionTtlMs: 30_000,
   webhookTimeoutMs: 5_000,
+  /** mTLS to customer webhooks: CA, client certificate, https-only. */
+  webhookTls,
   /** Where the admin console is served; OAuth providers redirect back to <this>/oauth/callback. */
   consolePublicUrl: (process.env.CONSOLE_PUBLIC_URL ?? 'http://localhost:5173').replace(/\/$/, ''),
   /** Signed provider catalog (optional; without it only the bundled definitions are used). */

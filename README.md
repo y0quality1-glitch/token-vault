@@ -257,7 +257,7 @@ token-vault/
 | Provider secrets | Sent browser → control plane (TLS in prod) → webhook, **never persisted** by the control plane. They are removed from the request object after forwarding and are not logged. | Same, or direct browser → webhook upload |
 | Encryption at rest | AES-256-GCM in the webhook, with the credential ref bound as AAD. Ciphertext lives in the customer's own Postgres database (`token_vault_customer`, separate role). Either an environment key, or **a KMS (AWS KMS or HashiCorp Vault Transit) with envelope encryption**: each credential has its own data key, wrapped by the KMS, so the master key never leaves the KMS and every unwrap is logged there. Never stored in the database; each record names the key that protects it. Keys can be rotated, or moved to a KMS, without losing credentials (see *Rotating keys*), and a KMS outage never marks credentials invalid. | HSM-backed KMS keys, per-tenant keys |
 | Replay protection | Nonces of signed requests are recorded in the customer database, so a replay is rejected even when it reaches a different webhook instance | Same |
-| Control plane ↔ webhook | Shared-secret HMAC-SHA256 over method, path, timestamp, nonce and body hash. Responses are signed too. 60 s skew window and a nonce replay cache. The secret can be rotated with no failed requests: the webhook accepts the old and new secret and answers with the one each request used (see *Rotating keys*). | mTLS or asymmetric signatures |
+| Control plane ↔ webhook | Shared-secret HMAC-SHA256 over method, path, timestamp, nonce and body hash. Responses are signed too. 60 s skew window and a nonce replay cache. The secret can be rotated with no failed requests: the webhook accepts the old and new secret and answers with the one each request used (see *Rotating keys*). Optional **mutual TLS** underneath: the webhook accepts only the control plane's client certificate, and the control plane verifies the webhook's certificate (see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#mutual-tls-between-the-control-plane-and-webhooks)). | The local dev setup runs plain HTTP; asymmetric request signatures |
 | Webhook identity | A signed challenge/response at registration and on every heartbeat. The instance ID is pinned. | Certificate-bound identity |
 | Agent credentials | `tvak_<keyId>_<secret>`. Only a **scrypt hash** is stored. Shown once. Rotation can keep the old key working for a grace period (up to 24 h) so the agent switches without failed requests; requests with it carry `Token-Vault-Key-Expires`, and an administrator can end the grace period early. | Same, plus optional workload identity federation |
 | Admin sessions | Opaque token in an **httpOnly, SameSite=Strict** cookie. Nothing is kept in `localStorage`. | Enterprise SSO (out of scope) |
@@ -281,7 +281,7 @@ token-vault/
 - **Text IDs instead of UUIDs.** Primary keys are prefixed random IDs (`agt_…`, `grt_…`), so they are recognizable in logs and audit records.
 - **Integrations are soft-deleted** (`deleted_at`), so grants and audit records keep a valid reference.
 - **One local Postgres server hosts both trust zones** for convenience, as separate databases with separate roles: the control plane's `token_vault` role cannot connect to the customer databases. In a real deployment the customer runs their own database server.
-- **Shared-secret HMAC** instead of mTLS, as the spec allows for a local POC. mTLS appears in the webhook wizard as the production design and is disabled.
+- **Shared-secret HMAC** signs every request. mTLS is available on top of it (wizard option *Mutual TLS + signed requests*) once both sides have certificates; `npm run dev` runs without them.
 - **Redis is not used.** Rate limiting, the nonce cache and idempotency are in-process, so they reset on restart and are per instance.
 - **Explicit DENY policies are evaluated before grant checks.** This makes "explicit deny takes precedence" observable: a destructive operation reports the matched deny policy instead of a generic scope error.
 
@@ -307,6 +307,9 @@ token-vault/
 | `CMS_CATALOG_URL` | Provider CMS catalog (`http://localhost:4200/catalog/v1`). Optional: without it only the bundled definitions are used |
 | `CMS_PUBLIC_KEY` / `CMS_PUBLIC_KEY_FILE` | Pinned Ed25519 public key(s) of the CMS (PEM; `\n` escapes allowed; several concatenated during a key rotation). Required with `CMS_CATALOG_URL`; written by `npm run setup` |
 | `CMS_POLL_INTERVAL_MS` | Catalog polling interval (default 30000) |
+| `WEBHOOK_TLS_CA` / `_FILE` | CA bundle trusted for webhook server certificates (default: system CAs) |
+| `CONTROL_PLANE_TLS_CERT` / `_FILE`, `CONTROL_PLANE_TLS_KEY` / `_FILE` | Client certificate presented to webhooks (mTLS) |
+| `WEBHOOK_REQUIRE_TLS` | `true`: refuse `http://` webhook URLs (default `false`) |
 
 `webhook/.env` (customer zone):
 
@@ -321,6 +324,8 @@ token-vault/
 | `KMS_KEY_ID`, `AWS_REGION`, `KMS_ENDPOINT` | AWS KMS: key id, ARN or alias; region; optional endpoint (VPC endpoint, LocalStack). AWS credentials come from the default chain (IRSA, Pod Identity, task role, instance profile) |
 | `VAULT_ADDR`, `VAULT_TRANSIT_KEY`, `VAULT_TRANSIT_MOUNT`, `VAULT_TOKEN` or `VAULT_K8S_ROLE` (+ `VAULT_K8S_MOUNT`, `VAULT_K8S_TOKEN_PATH`), `VAULT_NAMESPACE` | Vault Transit: address, key, mount (default `transit`), and a token or Kubernetes auth |
 | `KMS_DATA_KEY_CACHE_SECONDS`, `KMS_TIMEOUT_MS` | How long unwrapped data keys stay in memory (default 300; `0` = never), and the per-call key-service timeout (default 2000) |
+| `WEBHOOK_TLS_CERT` / `_FILE`, `WEBHOOK_TLS_KEY` / `_FILE` | Serve HTTPS with this certificate and key |
+| `WEBHOOK_TLS_CLIENT_CA` / `_FILE`, `WEBHOOK_TLS_ALLOWED_CLIENTS` | Require a client certificate from this CA on `/internal/*`, optionally only these identities (`URI:…`, `DNS:…`, `CN=…`) |
 | `WEBHOOK_INSTANCE_ID` | Identity pinned by the control plane (signature audience) |
 | `WEBHOOK_DATABASE_URL` | Customer-side PostgreSQL connection string (required). Deliberately a different variable from the control plane's `DATABASE_URL` |
 | `SEED_MODE` | `if-missing` (default): create the demo mock credentials where absent or unreadable. `reset`: wipe the credential store on start (used by the e2e suite) |

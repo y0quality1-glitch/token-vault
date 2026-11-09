@@ -1,4 +1,7 @@
 import express from 'express';
+import { createServer as createHttpServer } from 'node:http';
+import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https';
+import { watchTlsFiles, type TlsFiles } from './security/tls';
 import { config } from './config';
 import { closeDatabase, describeError, runMigrations } from './db/client';
 import { buildRouter } from './routes';
@@ -25,8 +28,18 @@ async function main() {
   app.use(buildRouter());
   app.use((_req, res) => res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Not found' } }));
 
-  const server = app.listen(config.port, () => {
-    console.log(`[vault] Customer webhook runtime listening on http://localhost:${config.port}`);
+  // HTTPS with client certificates requested (mTLS) when configured. The handshake accepts a
+  // missing certificate so probes reach /healthz; /internal/* refuses it (see requireSignature).
+  const tlsOptions = (t: TlsFiles) => ({ cert: t.cert, key: t.key, ...(t.clientCa ? { ca: t.clientCa, requestCert: true, rejectUnauthorized: false } : {}), minVersion: 'TLSv1.2' as const });
+  const server = config.tls ? createHttpsServer(tlsOptions(config.tls), app) : createHttpServer(app);
+  if (config.tls) {
+    watchTlsFiles(config.tls, (next) => {
+      (server as HttpsServer).setSecureContext(tlsOptions(next));
+      console.log('[vault] TLS certificate files changed: new connections use the new certificate');
+    });
+  }
+  server.listen(config.port, () => {
+    console.log(`[vault] Customer webhook runtime listening on ${config.tls ? 'https' : 'http'}://localhost:${config.port}${config.tls?.clientCa ? ` (client certificates required on /internal${config.tls.allowedClients.length ? `; allowed: ${config.tls.allowedClients.join(', ')}` : ''})` : ''}`);
     console.log(`[vault] instance=${config.instanceId} upstream=${config.githubMode}${Object.keys(config.providerModes).length ? ` (${Object.entries(config.providerModes).map(([k, v]) => `${k}=${v}`).join(",")})` : ""} key_ref=${config.encryptionKeyRef} store=postgres`);
     console.log(catalogSync ? `[vault] provider catalog ${config.cmsCatalogUrl} (pinned keys ${catalogSync.status.keyIds.join(', ')})` : '[vault] provider catalog: bundled definitions only (CMS_CATALOG_URL not set)');
   });

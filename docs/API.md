@@ -21,7 +21,7 @@ Errors use one shape: `{ "error": { "code": "…", "message": "…", "details": 
 | GET | `/webhooks` | any role | |
 | POST | `/webhooks` | `webhook:manage` | step 1: returns a `PENDING` webhook and a one-time `registrationChallenge` |
 | GET | `/webhooks/:id` | any role | |
-| PATCH | `/webhooks/:id` | `webhook:manage` | step 2: `authenticationType` (MTLS is rejected in the POC) |
+| PATCH | `/webhooks/:id` | `webhook:manage` | step 2 / later changes: `authenticationType` (`MTLS` needs an `https://` URL and a control-plane client certificate) and `endpointUrl` (audited `webhook.endpoint_changed`) |
 | POST | `/webhooks/:id/test` | `webhook:manage` | signed health challenge → `{webhook, result}` |
 | POST | `/webhooks/:id/simulate-outage` | `webhook:manage` | demo: `{enabled}` |
 | GET | `/integrations/catalog` | any role | |
