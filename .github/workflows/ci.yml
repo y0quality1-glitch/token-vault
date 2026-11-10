@@ -29,9 +29,9 @@ jobs:
           --health-cmd "pg_isready -U token_vault -d token_vault_test"
           --health-interval 2s --health-timeout 3s --health-retries 30
     env:
-      TEST_DATABASE_URL: postgres://token_vault:token_vault@localhost:5432/token_vault_test
-      WEBHOOK_TEST_DATABASE_URL: postgres://token_vault_customer:token_vault_customer@localhost:5432/token_vault_customer_test
-      CMS_TEST_DATABASE_URL: postgres://token_vault_cms:token_vault_cms@localhost:5432/token_vault_cms_test
+      TEST_DATABASE_URL: postgres://token_vault:token_vault@127.0.0.1:5432/token_vault_test
+      WEBHOOK_TEST_DATABASE_URL: postgres://token_vault_customer:token_vault_customer@127.0.0.1:5432/token_vault_customer_test
+      CMS_TEST_DATABASE_URL: postgres://token_vault_cms:token_vault_cms@127.0.0.1:5432/token_vault_cms_test
     steps:
       - uses: actions/checkout@v4
       - name: Create customer-zone and CMS roles and databases
@@ -64,9 +64,9 @@ jobs:
           --health-cmd "pg_isready -U token_vault -d token_vault_e2e"
           --health-interval 2s --health-timeout 3s --health-retries 30
     env:
-      E2E_DATABASE_URL: postgres://token_vault:token_vault@localhost:5432/token_vault_e2e
-      E2E_WEBHOOK_DATABASE_URL: postgres://token_vault_customer:token_vault_customer@localhost:5432/token_vault_customer_e2e
-      E2E_CMS_DATABASE_URL: postgres://token_vault_cms:token_vault_cms@localhost:5432/token_vault_cms_e2e
+      E2E_DATABASE_URL: postgres://token_vault:token_vault@127.0.0.1:5432/token_vault_e2e
+      E2E_WEBHOOK_DATABASE_URL: postgres://token_vault_customer:token_vault_customer@127.0.0.1:5432/token_vault_customer_e2e
+      E2E_CMS_DATABASE_URL: postgres://token_vault_cms:token_vault_cms@127.0.0.1:5432/token_vault_cms_e2e
     steps:
       - uses: actions/checkout@v4
       - name: Create customer-zone and CMS roles and databases
@@ -124,7 +124,7 @@ jobs:
           SERVICES: kms
         ports: ['4566:4566']
     env:
-      WEBHOOK_TEST_DATABASE_URL: postgres://token_vault_customer:token_vault_customer@localhost:5432/token_vault_customer_test
+      WEBHOOK_TEST_DATABASE_URL: postgres://token_vault_customer:token_vault_customer@127.0.0.1:5432/token_vault_customer_test
       VAULT_TEST_ADDR: http://localhost:8200
       VAULT_TEST_TOKEN: ci-dev-root-token
       KMS_TEST_ENDPOINT: http://localhost:4566

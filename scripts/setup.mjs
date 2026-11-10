@@ -13,14 +13,14 @@ if (process.env.WEBHOOK_SIGNING_SECRET && process.env.VAULT_ENCRYPTION_KEY) {
   process.exit(0);
 }
 
-const DEFAULT_DATABASE_URL = 'postgres://token_vault:token_vault@localhost:5432/token_vault';
+const DEFAULT_DATABASE_URL = 'postgres://token_vault:token_vault@127.0.0.1:5432/token_vault';
 // Customer zone: separate database and role (see scripts/pg-init.sql).
-const DEFAULT_WEBHOOK_DATABASE_URL = 'postgres://token_vault_customer:token_vault_customer@localhost:5432/token_vault_customer';
+const DEFAULT_WEBHOOK_DATABASE_URL = 'postgres://token_vault_customer:token_vault_customer@127.0.0.1:5432/token_vault_customer';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const serverEnv = resolve(root, 'server/.env');
 const webhookEnv = resolve(root, 'webhook/.env');
 const cmsEnv = resolve(root, 'cms/api/.env');
-const DEFAULT_CMS_DATABASE_URL = 'postgres://token_vault_cms:token_vault_cms@localhost:5432/token_vault_cms';
+const DEFAULT_CMS_DATABASE_URL = 'postgres://token_vault_cms:token_vault_cms@127.0.0.1:5432/token_vault_cms';
 
 function readVar(file, name) {
   if (!existsSync(file)) return undefined;
@@ -134,5 +134,17 @@ if (cmsPrivate) {
       writeFileSync(file, readFileSync(file, 'utf8').trimEnd() + '\n' + lines.join('\n') + '\n');
       console.log(`[setup] pinned the CMS public key in ${name}`);
     }
+  }
+}
+
+// Upgrade: files created before this change point at "localhost". Node may try IPv6 (::1) first,
+// which Docker Desktop on Windows accepts and then resets (ECONNRESET). Use the IPv4 address.
+for (const [file, name] of [[serverEnv, 'server/.env'], [webhookEnv, 'webhook/.env'], [cmsEnv, 'cms/api/.env']]) {
+  if (!existsSync(file)) continue;
+  const text = readFileSync(file, 'utf8');
+  const next = text.replace(/^((?:WEBHOOK_|CMS_)?DATABASE_URL=postgres(?:ql)?:\/\/[^@\s]*@)localhost(:\d+\/)/gm, '$1127.0.0.1$2');
+  if (next !== text) {
+    writeFileSync(file, next);
+    console.log(`[setup] ${name}: database host localhost -> 127.0.0.1`);
   }
 }
