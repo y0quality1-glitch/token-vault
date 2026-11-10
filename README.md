@@ -63,10 +63,10 @@ npm test            # policy engine, sanitizer, CIDR, AES-GCM and request-signat
 The database tests in `server/test/db.test.ts` run only when `TEST_DATABASE_URL` is set. They wipe that database, so point it at the dedicated test database:
 
 ```bash
-TEST_DATABASE_URL=postgres://token_vault:token_vault@localhost:5432/token_vault_test WEBHOOK_TEST_DATABASE_URL=postgres://token_vault_customer:token_vault_customer@localhost:5432/token_vault_customer_test npm test
+TEST_DATABASE_URL=postgres://token_vault:token_vault@127.0.0.1:5432/token_vault_test WEBHOOK_TEST_DATABASE_URL=postgres://token_vault_customer:token_vault_customer@127.0.0.1:5432/token_vault_customer_test npm test
 ```
 
-`WEBHOOK_TEST_DATABASE_URL` enables the webhook's store tests (`webhook/test/store.test.ts`) the same way, and `CMS_TEST_DATABASE_URL=postgres://token_vault_cms:token_vault_cms@localhost:5432/token_vault_cms_test` the CMS workflow tests (`cms/api/test/workflow.test.ts`).
+`WEBHOOK_TEST_DATABASE_URL` enables the webhook's store tests (`webhook/test/store.test.ts`) the same way, and `CMS_TEST_DATABASE_URL=postgres://token_vault_cms:token_vault_cms@127.0.0.1:5432/token_vault_cms_test` the CMS workflow tests (`cms/api/test/workflow.test.ts`).
 
 Schema changes: edit `server/src/db/schema.ts`, then run `npm run db:generate` and commit the new SQL file in `server/drizzle/`. `npm run db:migrate` applies migrations without starting the API.
 
@@ -376,6 +376,12 @@ The last health check on **Webhook Health** says which step is next ("the webhoo
 
 ## Troubleshooting
 
+- **`cannot use PostgreSQL at …` when starting or migrating:** the message names the address and says what to do. The common cases:
+  - `ECONNREFUSED`: the database isn't running. Run `npm run db:up`.
+  - `ECONNRESET` (often on Windows): the port accepted the connection and dropped it. Either the Docker database is still starting (`docker compose ps` should say healthy), or Node reached `localhost` over IPv6, which Docker Desktop forwards badly. `npm run setup` now writes `127.0.0.1` into the `.env` files and converts older files that say `localhost`.
+  - `28P01` (password rejected): another PostgreSQL is answering on port 5432, usually a Windows service. Check with `Get-Service *postgres*` and stop it, or map the Docker database to another port in `docker-compose.yml` and in the three `…DATABASE_URL` values.
+  - `3D000` / `28000` (database or role missing): run `npm run db:init`.
+  Then run `npm run db:migrate`, which applies every service's migrations and exits.
 - **Webhook shows Unhealthy / verification fails:** make sure the webhook process is running on :4100 and that `WEBHOOK_SIGNING_SECRET` is identical in both `.env` files, or, during a rotation, that the webhook lists the control plane's secret in `WEBHOOK_PREVIOUS_SIGNING_SECRETS`. Delete both files and run `npm run setup` to regenerate them as a pair.
 - **Playground says "Agent credential required":** click **Get a credential**. Keys live only in page memory and are cleared on reload.
 - **"Agent credential is invalid, rotated or unknown":** the key was rotated, or the demo was reset. Issue a new one.

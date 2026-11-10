@@ -22,12 +22,12 @@ const cmsCatalog = {
   CMS_POLL_INTERVAL_MS: '1000',
 };
 // Dedicated database, wiped and reseeded when the control plane starts (SEED_MODE=reset).
-const databaseUrl = process.env.E2E_DATABASE_URL ?? 'postgres://token_vault:token_vault@localhost:5432/token_vault_e2e';
+const databaseUrl = process.env.E2E_DATABASE_URL ?? 'postgres://token_vault:token_vault@127.0.0.1:5432/token_vault_e2e';
 // Customer-zone database for the webhook (separate role), also wiped on start.
-const webhookDatabaseUrl = process.env.E2E_WEBHOOK_DATABASE_URL ?? 'postgres://token_vault_customer:token_vault_customer@localhost:5432/token_vault_customer_e2e';
+const webhookDatabaseUrl = process.env.E2E_WEBHOOK_DATABASE_URL ?? 'postgres://token_vault_customer:token_vault_customer@127.0.0.1:5432/token_vault_customer_e2e';
 
 // Provider CMS database (its own role), wiped and reseeded on start.
-const cmsDatabaseUrl = process.env.E2E_CMS_DATABASE_URL ?? 'postgres://token_vault_cms:token_vault_cms@localhost:5432/token_vault_cms_e2e';
+const cmsDatabaseUrl = process.env.E2E_CMS_DATABASE_URL ?? 'postgres://token_vault_cms:token_vault_cms@127.0.0.1:5432/token_vault_cms_e2e';
 
 const root = resolve(import.meta.dirname, '..');
 export const LOG_DIR = resolve(import.meta.dirname, '.logs');
