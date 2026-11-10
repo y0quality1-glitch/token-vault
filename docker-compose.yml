@@ -8,7 +8,8 @@ services:
       POSTGRES_PASSWORD: token_vault
       POSTGRES_DB: token_vault
     ports:
-      - "5432:5432"
+      # Host port: set POSTGRES_PORT in the repository-root .env when 5432 is taken (then npm run setup).
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - token-vault-pg:/var/lib/postgresql/data
       - ./scripts/pg-init.sql:/docker-entrypoint-initdb.d/pg-init.sql:ro
