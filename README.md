@@ -21,7 +21,7 @@ npm install
 ```
 
 ```bash
-npm run db:up       # starts PostgreSQL 16 in Docker (docker-compose.yml) with the control plane, customer and CMS databases
+npm run db:up       # starts PostgreSQL 16 in Docker (docker-compose.yml) with the control plane, customer and CMS databases (port 5432 on 127.0.0.1; POSTGRES_PORT in a root .env changes it)
 ```
 
 ```bash
@@ -379,9 +379,19 @@ The last health check on **Webhook Health** says which step is next ("the webhoo
 - **`cannot use PostgreSQL at …` when starting or migrating:** the message names the address and says what to do. The common cases:
   - `ECONNREFUSED`: the database isn't running. Run `npm run db:up`.
   - `ECONNRESET` (often on Windows): the port accepted the connection and dropped it. Either the Docker database is still starting (`docker compose ps` should say healthy), or Node reached `localhost` over IPv6, which Docker Desktop forwards badly. `npm run setup` now writes `127.0.0.1` into the `.env` files and converts older files that say `localhost`.
-  - `28P01` (password rejected): another PostgreSQL is answering on port 5432, usually a Windows service. Check with `Get-Service *postgres*` and stop it, or map the Docker database to another port in `docker-compose.yml` and in the three `…DATABASE_URL` values.
+  - `28P01` (password rejected), or `ECONNRESET` that persists with `127.0.0.1`: another program holds port 5432 (often a PostgreSQL installed on Windows: `Get-Service *postgres*`), or Docker's forward on that port is broken. Move the local database to another port: see *Database on another port* below.
   - `3D000` / `28000` (database or role missing): run `npm run db:init`.
   Then run `npm run db:migrate`, which applies every service's migrations and exits.
+- **Database on another port:** when 5432 is taken, create a `.env` file at the repository root with one line, `POSTGRES_PORT=55432`. Docker Compose reads that file, and `npm run setup` points the three `…DATABASE_URL` values (and the e2e suite) at that port. Then recreate the container and migrate:
+  ```bash
+  npm run setup
+  ```
+  ```bash
+  docker compose up -d --force-recreate --wait postgres
+  ```
+  ```bash
+  npm run db:migrate
+  ```
 - **Webhook shows Unhealthy / verification fails:** make sure the webhook process is running on :4100 and that `WEBHOOK_SIGNING_SECRET` is identical in both `.env` files, or, during a rotation, that the webhook lists the control plane's secret in `WEBHOOK_PREVIOUS_SIGNING_SECRETS`. Delete both files and run `npm run setup` to regenerate them as a pair.
 - **Playground says "Agent credential required":** click **Get a credential**. Keys live only in page memory and are cleared on reload.
 - **"Agent credential is invalid, rotated or unknown":** the key was rotated, or the demo was reset. Issue a new one.

@@ -1,6 +1,6 @@
 import { defineConfig, devices } from '@playwright/test';
 import { createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 /**
@@ -22,12 +22,15 @@ const cmsCatalog = {
   CMS_POLL_INTERVAL_MS: '1000',
 };
 // Dedicated database, wiped and reseeded when the control plane starts (SEED_MODE=reset).
-const databaseUrl = process.env.E2E_DATABASE_URL ?? 'postgres://token_vault:token_vault@127.0.0.1:5432/token_vault_e2e';
+// Same host port as docker-compose.yml (POSTGRES_PORT in the root .env, default 5432).
+const rootEnv = resolve(import.meta.dirname, '../.env');
+const pgPort = process.env.POSTGRES_PORT ?? (existsSync(rootEnv) ? readFileSync(rootEnv, 'utf8').match(/^POSTGRES_PORT=(\d+)\s*$/m)?.[1] : undefined) ?? '5432';
+const databaseUrl = process.env.E2E_DATABASE_URL ?? `postgres://token_vault:token_vault@127.0.0.1:${pgPort}/token_vault_e2e`;
 // Customer-zone database for the webhook (separate role), also wiped on start.
-const webhookDatabaseUrl = process.env.E2E_WEBHOOK_DATABASE_URL ?? 'postgres://token_vault_customer:token_vault_customer@127.0.0.1:5432/token_vault_customer_e2e';
+const webhookDatabaseUrl = process.env.E2E_WEBHOOK_DATABASE_URL ?? `postgres://token_vault_customer:token_vault_customer@127.0.0.1:${pgPort}/token_vault_customer_e2e`;
 
 // Provider CMS database (its own role), wiped and reseeded on start.
-const cmsDatabaseUrl = process.env.E2E_CMS_DATABASE_URL ?? 'postgres://token_vault_cms:token_vault_cms@127.0.0.1:5432/token_vault_cms_e2e';
+const cmsDatabaseUrl = process.env.E2E_CMS_DATABASE_URL ?? `postgres://token_vault_cms:token_vault_cms@127.0.0.1:${pgPort}/token_vault_cms_e2e`;
 
 const root = resolve(import.meta.dirname, '..');
 export const LOG_DIR = resolve(import.meta.dirname, '.logs');

@@ -13,14 +13,23 @@ if (process.env.WEBHOOK_SIGNING_SECRET && process.env.VAULT_ENCRYPTION_KEY) {
   process.exit(0);
 }
 
-const DEFAULT_DATABASE_URL = 'postgres://token_vault:token_vault@127.0.0.1:5432/token_vault';
-// Customer zone: separate database and role (see scripts/pg-init.sql).
-const DEFAULT_WEBHOOK_DATABASE_URL = 'postgres://token_vault_customer:token_vault_customer@127.0.0.1:5432/token_vault_customer';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+// Host port of the local database (docker-compose.yml). Set POSTGRES_PORT in the root .env (which
+// docker compose also reads) when 5432 is taken, e.g. by a PostgreSQL installed on Windows.
+const rootEnv = resolve(root, '.env');
+const PG_PORT_SET = process.env.POSTGRES_PORT ?? (existsSync(rootEnv) ? readFileSync(rootEnv, 'utf8').match(/^POSTGRES_PORT=(.*)$/m)?.[1]?.trim() : undefined);
+if (PG_PORT_SET !== undefined && !/^\d{2,5}$/.test(PG_PORT_SET)) {
+  console.error(`[setup] POSTGRES_PORT must be a port number, got "${PG_PORT_SET}"`);
+  process.exit(1);
+}
+const PG_PORT = PG_PORT_SET ?? '5432';
+const DEFAULT_DATABASE_URL = `postgres://token_vault:token_vault@127.0.0.1:${PG_PORT}/token_vault`;
+// Customer zone: separate database and role (see scripts/pg-init.sql).
+const DEFAULT_WEBHOOK_DATABASE_URL = `postgres://token_vault_customer:token_vault_customer@127.0.0.1:${PG_PORT}/token_vault_customer`;
 const serverEnv = resolve(root, 'server/.env');
 const webhookEnv = resolve(root, 'webhook/.env');
 const cmsEnv = resolve(root, 'cms/api/.env');
-const DEFAULT_CMS_DATABASE_URL = 'postgres://token_vault_cms:token_vault_cms@127.0.0.1:5432/token_vault_cms';
+const DEFAULT_CMS_DATABASE_URL = `postgres://token_vault_cms:token_vault_cms@127.0.0.1:${PG_PORT}/token_vault_cms`;
 
 function readVar(file, name) {
   if (!existsSync(file)) return undefined;
@@ -146,5 +155,18 @@ for (const [file, name] of [[serverEnv, 'server/.env'], [webhookEnv, 'webhook/.e
   if (next !== text) {
     writeFileSync(file, next);
     console.log(`[setup] ${name}: database host localhost -> 127.0.0.1`);
+  }
+}
+
+// POSTGRES_PORT set: point the local database URLs (127.0.0.1 or localhost) at that port.
+if (PG_PORT_SET) {
+  for (const [file, name] of [[serverEnv, 'server/.env'], [webhookEnv, 'webhook/.env'], [cmsEnv, 'cms/api/.env']]) {
+    if (!existsSync(file)) continue;
+    const text = readFileSync(file, 'utf8');
+    const next = text.replace(/^((?:WEBHOOK_|CMS_)?DATABASE_URL=postgres(?:ql)?:\/\/[^@\s]*@(?:127\.0\.0\.1|localhost):)\d+(\/)/gm, `$1${PG_PORT}$2`);
+    if (next !== text) {
+      writeFileSync(file, next);
+      console.log(`[setup] ${name}: database port ${PG_PORT} (POSTGRES_PORT)`);
+    }
   }
 }
