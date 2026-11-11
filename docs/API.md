@@ -47,6 +47,7 @@ Errors use one shape: `{ "error": { "code": "…", "message": "…", "details": 
 | POST | `/agents/:id/revoke-grants` | `grant:revoke` | |
 | GET | `/api-clients` | any role | key IDs and masked keys only |
 | GET | `/grants` | any role | `?status=&agentId=&integrationId=` |
+| POST | `/grants/batch` | `grant:manage` | one agent, several applications: `{agentId, items: [{integrationId, scopes, repositories, name?}] (1–10, each integration once), validFrom, expiresAt, rateLimitPerMinute, …}` with the same shared fields as `/grants`. Creates one grant per item, all or none; a problem is reported as `items.<n>.<field>`. Default names: "<agent> → <integration>". 201 `{items: GrantDetail[]}` |
 | POST | `/grants` | `grant:manage` | optional budgets `maxRequestsPerDay` (rolling 24 h) and `maxWritesPerHour` (rolling hour); `null` = no limit; `onBehalfOf` (`ALLOWED` default, `REQUIRED`, `NOT_ALLOWED`) and `allowedUserGroups` for acting on behalf of users |
 | GET | `/grants/:id` | any role | usage, history, versions, matching policies |
 | POST | `/grants/:id/revoke` | `grant:revoke` | `{reason}`; takes effect on the next authorization check |

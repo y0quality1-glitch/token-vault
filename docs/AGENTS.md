@@ -12,6 +12,8 @@ There are two ways to connect:
 1. **Agents → Register agent** (or open an existing agent and choose **Rotate API credential**). Copy the `tvak_…` credential. It is shown once, and Token Vault keeps only a hash. When rotating, choose a grace period so the old key keeps working while you deploy the new one: requests with the old key return a `Token-Vault-Key-Expires` header, the SDK reports it (`tv.keyExpiresAt`, `onKeyExpiry`), and the MCP server logs a warning.
 2. **Access Grants → Create grant**: choose the agent, the integration (GitHub or any application from the catalog), the operations it needs and, ideally, a resource restriction (repository, channel, …) and an expiry.
 
+An agent that needs several applications gets one grant per integration: select them all in step 2 of the wizard to create them in one go. It keeps one API key for all of them; MCP offers tools for every application it has a grant on, and with the SDK each call names its `integrationId` (listed by `tv.capabilities()`).
+
 Without a grant, every request is denied.
 
 If the integration is a **GitHub App** (recommended), the agent does not change at all. Behind the scenes each allowed request runs on its own installation token, minted for that request's repository and the one permission the operation needs, then revoked. Even a compromised webhook process leaks at most a one-hour token for one repository and one permission. The SDK exposes the scope as `response.execution.credential`. See [GITHUB_APP.md](GITHUB_APP.md).

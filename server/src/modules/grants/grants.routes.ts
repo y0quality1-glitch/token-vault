@@ -145,69 +145,141 @@ grantsRouter.get('/grants/:id', async (req, res) => {
   res.json(await toDetail(await getGrant(org.id, String(req.params.id))));
 });
 
+type CreateBody = z.infer<typeof createSchema>;
+
+/**
+ * Validates and inserts one grant, with its audit event, inside the caller's transaction.
+ * Shared by single creation and multi-application creation, so both apply the same checks.
+ */
+async function createGrant(ctx: ReturnType<typeof orgCtx>, body: CreateBody, tx: Executor, extra: Record<string, unknown> = {}): Promise<GrantRecord> {
+  const agent = await agentRepo.getAgent(ctx.org.id, body.agentId, tx);
+  if (!agent) throw badRequest('Request validation failed', { fields: { agentId: 'Unknown agent' } });
+  if (agent.status !== 'ACTIVE') throw badRequest('Request validation failed', { fields: { agentId: 'Agent is disabled; enable it before granting access' } });
+  const integration = await integrationRepo.getIntegration(ctx.org.id, body.integrationId, tx);
+  if (!integration) throw badRequest('Request validation failed', { fields: { integrationId: 'Unknown integration' } });
+  if (integration.credentialStatus !== 'CONNECTED') throw badRequest('Request validation failed', { fields: { integrationId: 'Integration is not connected' } });
+  if (body.environment !== integration.environment) throw badRequest('Request validation failed', { fields: { environment: `Must match the integration environment (${integration.environment})` } });
+  validateWindow(body.validFrom, body.expiresAt);
+  validateRepos(integration, body.repositories, body.scopes);
+  await validateDestructive(agent, integration, body.scopes, tx);
+  if (await grantRepo.grantNameExists(ctx.org.id, body.name, tx)) throw conflict(`A grant named "${body.name}" already exists`);
+
+  const created = await grantRepo.insertGrant(
+    {
+      id: newId('grt'),
+      organizationId: ctx.org.id,
+      agentId: agent.id,
+      integrationId: integration.id,
+      name: body.name,
+      environment: body.environment,
+      scopes: body.scopes,
+      resourceConstraints: { repositories: body.repositories },
+      rateLimitPerMinute: body.rateLimitPerMinute,
+      maxRequestsPerDay: body.maxRequestsPerDay,
+      maxWritesPerHour: body.maxWritesPerHour,
+      onBehalfOf: body.onBehalfOf,
+      allowedUserGroups: body.allowedUserGroups,
+      allowedCidrs: body.allowedCidrs,
+      validFrom: new Date(body.validFrom).toISOString(),
+      expiresAt: new Date(body.expiresAt).toISOString(),
+      approvalRequired: body.approvalRequired,
+      storedStatus: body.approvalRequired ? 'PENDING_APPROVAL' : 'ACTIVE',
+      version: 1,
+      previousVersionId: null,
+      createdBy: ctx.user.id,
+      createdAt: new Date().toISOString(),
+      approvedBy: null,
+      approvedAt: null,
+      revokedAt: null,
+      revokedBy: null,
+      revocationReason: null,
+      lastUsedAt: null,
+      usageCount: 0,
+    },
+    tx,
+  );
+  await recordEvent(
+    {
+      orgId: ctx.org.id,
+      actor: userActor(ctx),
+      eventType: 'grant.created',
+      target: { type: 'grant', id: created.id, name: created.name },
+      metadata: { agentId: agent.id, integrationId: integration.id, scopes: created.scopes, repositories: body.repositories, expiresAt: created.expiresAt, status: created.storedStatus, maxRequestsPerDay: body.maxRequestsPerDay, maxWritesPerHour: body.maxWritesPerHour, onBehalfOf: body.onBehalfOf, allowedUserGroups: body.allowedUserGroups, ...extra },
+    },
+    tx,
+  );
+  return created;
+}
+
 grantsRouter.post('/grants', requirePermission(PERMISSIONS.GRANT_MANAGE), async (req, res) => {
   const ctx = orgCtx(req);
   const body = parse(createSchema, req.body);
-  const grant = await transaction(async (tx) => {
-    const agent = await agentRepo.getAgent(ctx.org.id, body.agentId, tx);
-    if (!agent) throw badRequest('Request validation failed', { fields: { agentId: 'Unknown agent' } });
-    if (agent.status !== 'ACTIVE') throw badRequest('Request validation failed', { fields: { agentId: 'Agent is disabled; enable it before granting access' } });
-    const integration = await integrationRepo.getIntegration(ctx.org.id, body.integrationId, tx);
-    if (!integration) throw badRequest('Request validation failed', { fields: { integrationId: 'Unknown integration' } });
-    if (integration.credentialStatus !== 'CONNECTED') throw badRequest('Request validation failed', { fields: { integrationId: 'Integration is not connected' } });
-    if (body.environment !== integration.environment) throw badRequest('Request validation failed', { fields: { environment: `Must match the integration environment (${integration.environment})` } });
-    validateWindow(body.validFrom, body.expiresAt);
-    validateRepos(integration, body.repositories, body.scopes);
-    await validateDestructive(agent, integration, body.scopes, tx);
-    if (await grantRepo.grantNameExists(ctx.org.id, body.name, tx)) throw conflict('A grant with that name already exists');
+  const grant = await transaction((tx) => createGrant(ctx, body, tx));
+  res.status(201).json(await toDetail(grant));
+});
 
-    const created = await grantRepo.insertGrant(
-      {
-        id: newId('grt'),
-        organizationId: ctx.org.id,
-        agentId: agent.id,
-        integrationId: integration.id,
-        name: body.name,
-        environment: body.environment,
-        scopes: body.scopes,
-        resourceConstraints: { repositories: body.repositories },
-        rateLimitPerMinute: body.rateLimitPerMinute,
-        maxRequestsPerDay: body.maxRequestsPerDay,
-        maxWritesPerHour: body.maxWritesPerHour,
-        onBehalfOf: body.onBehalfOf,
-        allowedUserGroups: body.allowedUserGroups,
-        allowedCidrs: body.allowedCidrs,
-        validFrom: new Date(body.validFrom).toISOString(),
-        expiresAt: new Date(body.expiresAt).toISOString(),
-        approvalRequired: body.approvalRequired,
-        storedStatus: body.approvalRequired ? 'PENDING_APPROVAL' : 'ACTIVE',
-        version: 1,
-        previousVersionId: null,
-        createdBy: ctx.user.id,
-        createdAt: new Date().toISOString(),
-        approvedBy: null,
-        approvedAt: null,
-        revokedAt: null,
-        revokedBy: null,
-        revocationReason: null,
-        lastUsedAt: null,
-        usageCount: 0,
-      },
-      tx,
-    );
-    await recordEvent(
-      {
-        orgId: ctx.org.id,
-        actor: userActor(ctx),
-        eventType: 'grant.created',
-        target: { type: 'grant', id: created.id, name: created.name },
-        metadata: { agentId: agent.id, integrationId: integration.id, scopes: created.scopes, repositories: body.repositories, expiresAt: created.expiresAt, status: created.storedStatus, maxRequestsPerDay: body.maxRequestsPerDay, maxWritesPerHour: body.maxWritesPerHour, onBehalfOf: body.onBehalfOf, allowedUserGroups: body.allowedUserGroups },
-      },
-      tx,
-    );
+/**
+ * One agent, several applications: one grant per integration (each with its own operations,
+ * resources and name), sharing validity, rate limit, budgets, user and IP settings. All are
+ * created or none: a problem with any item rejects the whole request, with field errors
+ * named items.<n>.<field>.
+ */
+const batchSchema = restrictionsBase
+  .omit({ scopes: true, repositories: true })
+  .extend({
+    agentId: z.string().min(1, 'Select an agent'),
+    approvalRequired: z.boolean().default(false),
+    items: z
+      .array(
+        z.object({
+          integrationId: z.string().min(1, 'Select an integration'),
+          name: z.string().trim().min(3, 'Grant name must be at least 3 characters').max(80).optional(),
+          scopes: restrictionsBase.shape.scopes,
+          repositories: restrictionsBase.shape.repositories,
+        }),
+      )
+      .min(1, 'Select at least one integration')
+      .max(10, 'At most 10 integrations at once')
+      .refine((items) => new Set(items.map((i) => i.integrationId)).size === items.length, 'Each integration can appear only once'),
+  })
+  .refine(userGroupsFit, userGroupsIssue);
+
+/** Prefixes field errors of one item (items.<n>.<field>); errors about shared fields keep their name. */
+const ITEM_FIELDS = new Set(['integrationId', 'environment', 'scopes', 'repositories', 'name']);
+function forItem(e: unknown, n: number): unknown {
+  if (!(e instanceof HttpError)) return e;
+  const details = e.details as { fields?: Record<string, string> } | undefined;
+  if (details?.fields) {
+    const fields = Object.fromEntries(Object.entries(details.fields).map(([k, v]) => [ITEM_FIELDS.has(k.split('.')[0]!) ? `items.${n}.${k}` : k, v]));
+    return new HttpError(e.status, e.code, e.message, { ...details, fields });
+  }
+  if (e.status === 409) return new HttpError(e.status, e.code, e.message, { fields: { [`items.${n}.name`]: e.message } });
+  return e;
+}
+
+grantsRouter.post('/grants/batch', requirePermission(PERMISSIONS.GRANT_MANAGE), async (req, res) => {
+  const ctx = orgCtx(req);
+  const { items, ...shared } = parse(batchSchema, req.body);
+  const grants = await transaction(async (tx) => {
+    const agent = await agentRepo.getAgent(ctx.org.id, shared.agentId, tx);
+    if (!agent) throw badRequest('Request validation failed', { fields: { agentId: 'Unknown agent' } });
+    const batchId = newId('gbt');
+    const created: GrantRecord[] = [];
+    for (const [n, item] of items.entries()) {
+      const integration = await integrationRepo.getIntegration(ctx.org.id, item.integrationId, tx);
+      if (!integration) throw badRequest('Request validation failed', { fields: { [`items.${n}.integrationId`]: 'Unknown integration' } });
+      const name = item.name ?? `${agent.name} → ${integration.displayName}`;
+      const body: CreateBody = { ...shared, integrationId: integration.id, environment: integration.environment, name, scopes: item.scopes, repositories: item.repositories };
+      try {
+        created.push(await createGrant(ctx, body, tx, { batchId, batchSize: items.length }));
+      } catch (e) {
+        throw forItem(e, n);
+      }
+    }
+    await recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: 'grant.batch_created', target: { type: 'agent', id: agent.id, name: agent.name }, metadata: { batchId, grantIds: created.map((g) => g.id), integrationIds: created.map((g) => g.integrationId) } }, tx);
     return created;
   });
-  res.status(201).json(await toDetail(grant));
+  res.status(201).json({ items: await Promise.all(grants.map((g) => toDetail(g))) });
 });
 
 function assertMutable(g: GrantRecord) {
