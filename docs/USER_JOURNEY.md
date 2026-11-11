@@ -131,8 +131,9 @@ Grants say what an agent *may* do. Policies add organization-wide rules on top, 
 | **Deny** | Things that must never happen | Deny *Delete repository* everywhere; deny issue titles matching `pass(word)?\|secret`; deny all agent activity 22:00–06:00 UTC |
 | **Require approval** | Risky actions a human should check first | Any write in production; payments where `input.amount` is greater than `500` |
 | **Allow** | Recording which rule a request fell under (it never grants access) | Mark routine read traffic |
+| **Filter responses** | Shaping what an agent gets back: mask personal data and secrets, remove fields, catch prompt injection | Mask emails and tokens in everything the support agent reads; withhold results that try to instruct the model |
 
-Deny is checked before grants and always wins. Require approval is checked last, only for requests every other check allows.
+Deny is checked before grants and always wins. Require approval is checked last, only for requests every other check allows. Filter responses never changes the decision: it is applied to the result of an allowed request, in your webhook, before the agent sees it.
 
 **Check:** send a request in the Playground that the policy should catch, and open it in **Audit & Activity → Access Logs**. The decision trace shows which policy matched.
 

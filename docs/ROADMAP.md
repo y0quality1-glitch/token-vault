@@ -40,7 +40,7 @@ Also shipped: operation selectors that cover operations published later (`github
 | --- | --- | --- | --- |
 | Acting on behalf of a user | Done | The customer's application signs a short-lived user token (JWT); the agent sends it as `on_behalf_of`. Token Vault verifies it with the public key of an issuer registered under **Settings → User Identity**, then limits the request to both the agent's grant and the user's own permissions (`token_vault` claim). Grants choose whether the agent acts for itself, only for users, or either, and which user groups. Policies can match `user.*` fields. Approvals are bound to the user. The access log records and filters "Agent X for user Y". SDK: `tv.forUser(token)`; MCP: `TOKEN_VAULT_USER_TOKEN_FILE`. | Most real agents act for a person. Vault only knows the workload. |
 | Delegation to sub-agents | Done | An agent can pass a narrower, short-lived grant to a sub-agent (fewer operations and resources, earlier expiry). Revoking the parent grant revokes everything delegated from it. | Multi-agent systems need this. Vault has no concept of narrower delegation. |
-| Response filtering | Planned | The webhook removes or masks fields (emails, tokens, personal data) and can flag likely prompt-injection text before the response reaches the model | Stops the model leaking data or being manipulated. Only possible because Token Vault sits in the request path. |
+| Response filtering | Done | The webhook removes or masks fields (emails, tokens, personal data) and can flag likely prompt-injection text before the response reaches the model | Stops the model leaking data or being manipulated. Only possible because Token Vault sits in the request path. |
 | Session tracing | Planned | Each call carries the agent's session or trace ID (OpenTelemetry), so the audit links each tool call to the conversation or task that made it | Shows why an action happened, not just that it did |
 
 ## Phase 3: Platform reach and intelligence (about 8–10 weeks)
@@ -65,7 +65,9 @@ These don't set Token Vault apart from HashiCorp, but enterprise customers won't
 
 ## Recommended next step
 
-Continue Phase 2 with **response filtering**: Token Vault already sits in the request path, so it can mask personal data and flag likely prompt injection before a result reaches the model. Finish the Slack approvals from Phase 1 alongside it, since it is the most requested way to approve.
+Finish Phase 2 with **session tracing** (each call carries the agent's session or trace ID, so the audit links tool calls to the task that made them), and the Slack approvals from Phase 1.
+
+Response filtering shipped: a *Filter responses* policy masks emails, phone numbers, card numbers, IP addresses, secrets and custom patterns, removes fields, and flags or withholds results that look like prompt injection. The customer webhook applies it, so masked values never leave the customer side; the control plane applies it when a webhook did not. The access log records what was filtered, never the values. Left open: a model-based injection classifier as an option, and filtering request inputs (not only results).
 
 Delegation to sub-agents shipped: an agent (or sub-agent, up to 3 levels) hands a narrower, short-lived, optionally request-capped slice of one grant to a sub-agent with its own `tvdt_` token (SDK `delegate()`). Requests run against the parent's grant, so revoking the grant, the agent, or any delegation up the chain stops everything below it. Delegations inherit the user they act for, show on the agent and grant pages with a Revoke action, and the access log says "via sub-agent".
 
