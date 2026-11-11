@@ -4,6 +4,7 @@ import { ARGUMENT_OPERATORS, PERMISSIONS, USER_ARGUMENT_FIELDS, describeArgument
 import { getOperation, getProvider, useProviders } from '@/lib/providers';
 import { OperationPicker, selectorLabel } from '@/components/policy/OperationPicker';
 import { SearchSelect } from '@/components/policy/SearchSelect';
+import { EMPTY_DRAFT, ResponseFilterEditor, describeFilter, fromDraft, toDraft, type FilterDraft } from '@/components/policy/ResponseFilterEditor';
 import { useApi, useMutation } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
 import { api } from '@/lib/api';
@@ -20,10 +21,11 @@ import { AGENT_TYPE_LABELS, splitList } from '@/lib/utils';
 
 const EVALUATION = ['Authenticate caller', 'Verify agent is active (and no emergency stop)', 'Explicit DENY policies (precedence over allow)', 'Grant exists and is active', 'Grant validity period', 'Integration is active', 'Operation in grant scopes', 'Resource restrictions', 'Acting user (the grant allows it, within the user token permissions)', 'Delegation limits (sub-agents: only what was delegated)', 'Rate limit and budgets', 'Source IP restriction', 'Human approval (Require approval policies)', 'Deny by default if any check fails'];
 
-const EFFECTS: Record<PolicyEffect, { label: string; tone: 'red' | 'green' | 'amber' }> = {
+const EFFECTS: Record<PolicyEffect, { label: string; tone: 'red' | 'green' | 'amber' | 'violet' }> = {
   DENY: { label: 'Deny', tone: 'red' },
   ALLOW: { label: 'Allow', tone: 'green' },
   REQUIRE_APPROVAL: { label: 'Require approval', tone: 'amber' },
+  FILTER: { label: 'Filter responses', tone: 'violet' },
 };
 
 export function PoliciesPage() {
@@ -85,6 +87,7 @@ export function PoliciesPage() {
                     <div className="max-w-md">
                       <p className="font-medium text-slate-900">{p.name}</p>
                       <p className="text-xs text-slate-500">{describeConditions(p.conditions)}</p>
+                      {p.effect === 'FILTER' && p.responseFilter && <p className="text-xs text-violet-700">{describeFilter(p.responseFilter)}</p>}
                     </div>
                   ),
                 },
@@ -133,6 +136,9 @@ export function PoliciesPage() {
             </CardBody>
           </Card>
           <Callout tone="security">ALLOW policies never replace a grant: they are recorded as matched rules for traceability. The matched rule and decision reason are recorded without any secret values.</Callout>
+          <Callout tone="info" title="Filter responses">
+            Never changes the decision: for allowed requests, it masks or removes sensitive values and checks for prompt injection in the result, in your webhook, before the agent sees it.
+          </Callout>
           <Callout tone="info" title="Require approval">
             For requests every other check allows: the request waits until a Security Administrator approves that exact request under <strong>Approvals</strong>. The agent can then run it once, within 15 minutes.
           </Callout>
@@ -173,11 +179,12 @@ function PolicyDialog({ policy, agents, integrations, onClose, onSaved }: { poli
     endHour: '6',
     sourceCidrs: '',
     args: [] as ArgRow[],
+    filter: EMPTY_DRAFT as FilterDraft,
   });
   useEffect(() => {
     if (!policy) return;
     if (policy === 'new') {
-      setF((x) => ({ ...x, name: '', description: '', effect: 'DENY', priority: '50', enabled: true, agentType: 'any', agentValue: '', integrationType: 'any', integrationValue: '', operations: [], environment: 'any', useWindow: false, sourceCidrs: '', args: [] }));
+      setF((x) => ({ ...x, name: '', description: '', effect: 'DENY', priority: '50', enabled: true, agentType: 'any', agentValue: '', integrationType: 'any', integrationValue: '', operations: [], environment: 'any', useWindow: false, sourceCidrs: '', args: [], filter: EMPTY_DRAFT }));
     } else {
       const c = policy.conditions;
       setF({
@@ -197,6 +204,7 @@ function PolicyDialog({ policy, agents, integrations, onClose, onSaved }: { poli
         endHour: String(c.timeWindow?.endHour ?? 6),
         sourceCidrs: (c.sourceCidrs ?? []).join(', '),
         args: (c.arguments ?? []).map(toRow),
+        filter: toDraft(policy.responseFilter),
       });
     }
   }, [policy]);
@@ -246,6 +254,7 @@ function PolicyDialog({ policy, agents, integrations, onClose, onSaved }: { poli
                   sourceCidrs: splitList(f.sourceCidrs),
                   arguments: f.args.map(fromRow),
                 },
+                responseFilter: f.effect === 'FILTER' ? fromDraft(f.filter) : null,
               });
               if (r) {
                 toast.success(isNew ? 'Policy created' : 'Policy saved', r.name);
@@ -269,6 +278,7 @@ function PolicyDialog({ policy, agents, integrations, onClose, onSaved }: { poli
               <option value="DENY">Deny</option>
               <option value="REQUIRE_APPROVAL">Require approval</option>
               <option value="ALLOW">Allow</option>
+              <option value="FILTER">Filter responses</option>
             </Select>
           </Field>
           <Field label="Priority" required error={fe.priority} hint="Lower runs first">
@@ -278,6 +288,7 @@ function PolicyDialog({ policy, agents, integrations, onClose, onSaved }: { poli
         {f.effect === 'REQUIRE_APPROVAL' && (
           <Callout tone="info">Matching requests that every other check allows wait for a human. Approvers see the exact operation, resource and input under Access Management → Approvals.</Callout>
         )}
+        {f.effect === 'FILTER' && <ResponseFilterEditor value={f.filter} onChange={(filter) => setF({ ...f, filter })} error={fe.responseFilter} />}
         <Field label="Description">
           <Textarea rows={2} value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} />
         </Field>
@@ -495,7 +506,7 @@ interface SummaryInput {
 
 /** The policy in one sentence, updated as it is edited. */
 function PolicySummary({ f, agents, integrations }: { f: SummaryInput; agents: Agent[]; integrations: Integration[] }) {
-  const decision = { DENY: 'Deny', REQUIRE_APPROVAL: 'Require approval for', ALLOW: 'Record as allowed' }[f.effect];
+  const decision = { DENY: 'Deny', REQUIRE_APPROVAL: 'Require approval for', ALLOW: 'Record as allowed', FILTER: 'Filter the results of' }[f.effect];
   const who =
     f.agentType === 'any'
       ? 'any agent'
