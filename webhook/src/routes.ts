@@ -5,7 +5,7 @@ import { PgNonceStore } from './security/nonce-store';
 import { hmacHex, signResponse, verifySignedRequest } from './security/signature';
 import * as store from './store/credential-store';
 import { createHash } from 'node:crypto';
-import { applyResponseFilter, describeFilterReport, filterFingerprint, responseFilterProblem, type AuthMethodDefinition, type CredentialUseInfo, type ProviderDefinition, type ResponseFilter } from '@token-vault/shared';
+import { applyResponseFilter, describeFilterReport, filterFingerprint, parseTraceparent, responseFilterProblem, type AuthMethodDefinition, type CredentialUseInfo, type ProviderDefinition, type ResponseFilter } from '@token-vault/shared';
 import * as oauth from './providers/oauth';
 import { ExecutionError, executeOperation, getExecutableOperation, injectionFor, testCredential, type ProviderCall, type ProviderResult } from './providers/executor';
 import * as app from './providers/github-app';
@@ -101,6 +101,12 @@ function requestedFilter(v: unknown): ResponseFilter | null {
     promptInjection: f.promptInjection === 'flag' || f.promptInjection === 'block' ? f.promptInjection : 'off',
   };
   return responseFilterProblem(filter) ? null : filter;
+}
+
+/** " trace=<trace-id>" when the request carries W3C trace context (to join these logs with Token Vault's audit). */
+function traced(v: unknown): string {
+  const t = typeof v === 'string' ? parseTraceparent(v) : null;
+  return t ? ` trace=${t.traceId}` : '';
 }
 
 /** " for=<user>" when the control plane says the agent acts for a user (the user's subject only). */
@@ -465,7 +471,7 @@ export function buildRouter() {
       // Response filtering happens here, on the customer side: masked or removed values never reach the control plane.
       const filter = requestedFilter(claims.response_filter);
       const filtered = filter ? applyResponseFilter(result.body, filter) : null;
-      console.log(`[vault] execute ${claims.request_id} op=${claims.operation} ref=${rec.credentialRef}${actingFor(claims.acting_user)} upstream=${result.upstreamStatus}${result.credential ? ' (minted App token, revoked)' : ''}${filtered ? ` filter: ${describeFilterReport(filtered.report)}` : ''}`);
+      console.log(`[vault] execute ${claims.request_id} op=${claims.operation} ref=${rec.credentialRef}${actingFor(claims.acting_user)}${traced(claims.traceparent)} upstream=${result.upstreamStatus}${result.credential ? ' (minted App token, revoked)' : ''}${filtered ? ` filter: ${describeFilterReport(filtered.report)}` : ''}`);
       signedJson(req, res, 200, {
         request_id: claims.request_id,
         upstream_status: result.upstreamStatus,

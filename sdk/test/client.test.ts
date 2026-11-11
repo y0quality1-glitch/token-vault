@@ -151,6 +151,25 @@ describe('TokenVault SDK', () => {
     expect(err.code).toBe('RESPONSE_WITHHELD');
   });
 
+  it('sends the session and the W3C traceparent, and returns the recorded trace', async () => {
+    const trace = { session_id: 'task-42', trace_id: '4bf92f3577b34da6a3ce929d0e0e4736', span_id: '1111222233334444', parent_span_id: '00f067aa0ba902b7' };
+    const { tv, fetchMock } = client(body({ trace }));
+    let span = 0;
+    const traced = new TokenVault({ apiKey: KEY, baseUrl: 'http://tv.test', fetch: fetchMock as unknown as typeof fetch, traceparent: () => `00-4bf92f3577b34da6a3ce929d0e0e4736-${String(++span).padStart(16, '0')}-01` });
+    const r = await traced.session('task-42', 'Triage new bugs').execute({ integrationId: 'int_1', operation: 'github.issues.list' });
+    expect(r.trace).toEqual(trace);
+    const [, init] = fetchMock.mock.calls.at(-1)!;
+    expect(JSON.parse(init!.body as string)).toMatchObject({ session_id: 'task-42', session_label: 'Triage new bugs' });
+    expect((init!.headers as Record<string, string>).traceparent).toBe('00-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000001-01');
+    // Without a session or traceparent nothing extra is sent; a per-request session overrides.
+    await tv.execute({ integrationId: 'int_1', operation: 'github.issues.list' });
+    const plain = fetchMock.mock.calls.at(-1)![1]!;
+    expect(JSON.parse(plain.body as string).session_id).toBeUndefined();
+    expect((plain.headers as Record<string, string>).traceparent).toBeUndefined();
+    await tv.execute({ integrationId: 'int_1', operation: 'github.issues.list', sessionId: 'job-7' });
+    expect(JSON.parse(fetchMock.mock.calls.at(-1)![1]!.body as string).session_id).toBe('job-7');
+  });
+
   it('requests access and surfaces server validation errors', async () => {
     const ok = client({ access_request_id: 'arq_1', status: 'PENDING', operations: ['github.issues.list'] }, 201);
     expect(await ok.tv.requestAccess({ integrationId: 'int_1', operations: ['github.issues.list'], justification: 'Need to triage open issues.' })).toMatchObject({ access_request_id: 'arq_1', status: 'PENDING' });

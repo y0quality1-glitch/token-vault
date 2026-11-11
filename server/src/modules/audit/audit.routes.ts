@@ -23,7 +23,7 @@ auditRouter.get('/access-requests', requirePermission(PERMISSIONS.AUDIT_READ), a
   res.json(
     await auditRepo.listAccessRequests(
       org.id,
-      { agentId: q(f.agentId), integrationId: q(f.integrationId), grantId: q(f.grantId), decision: q(f.decision), operation: q(f.operation), from: isoOrUndefined(f.from), to: isoOrUndefined(f.to), search: q(f.search), user: q(f.user) },
+      { agentId: q(f.agentId), integrationId: q(f.integrationId), grantId: q(f.grantId), decision: q(f.decision), operation: q(f.operation), from: isoOrUndefined(f.from), to: isoOrUndefined(f.to), search: q(f.search), user: q(f.user), sessionId: q(f.sessionId) },
       limitOf(f.limit),
     ),
   );

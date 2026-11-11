@@ -61,6 +61,8 @@ export interface AccessRequestFilter {
   search?: string;
   /** The user the agent acted for: matches the subject or email (case-insensitive, partial). */
   user?: string;
+  /** Exact session id (Audit → Sessions). */
+  sessionId?: string;
 }
 
 export async function listAccessRequests(organizationId: string, f: AccessRequestFilter, limit: number, ex: Executor = db): Promise<{ items: AccessRequest[]; total: number }> {
@@ -76,6 +78,7 @@ export async function listAccessRequests(organizationId: string, f: AccessReques
     const p = `%${escapeLike(f.search)}%`;
     where.push(or(ilike(accessRequests.id, p), ilike(accessRequests.correlationId, p), ilike(accessRequests.agentName, p), ilike(accessRequests.integrationName, p), ilike(accessRequests.decisionCode, p), sql`${accessRequests.onBehalfOf}->>'sub' ilike ${p}`, sql`${accessRequests.onBehalfOf}->>'email' ilike ${p}`)!);
   }
+  if (f.sessionId) where.push(sql`${accessRequests.trace}->>'sessionId' = ${f.sessionId}`);
   if (f.user) {
     const p = `%${escapeLike(f.user)}%`;
     where.push(or(sql`${accessRequests.onBehalfOf}->>'sub' ilike ${p}`, sql`${accessRequests.onBehalfOf}->>'email' ilike ${p}`)!);
@@ -192,4 +195,87 @@ export async function usageByGrant(organizationId: string, sinceIso: string, ex:
     out.set(r.grantId!, cur);
   }
   return out;
+}
+
+// ---------------------------------------------------------------- sessions (Audit → Sessions)
+
+export interface SessionRow {
+  sessionId: string;
+  sessionLabel: string | null;
+  agentId: string | null;
+  agentName: string;
+  requests: number;
+  allowed: number;
+  denied: number;
+  held: number;
+  firstAt: string;
+  lastAt: string;
+  integrations: string[];
+  users: string[];
+  subAgents: string[];
+}
+
+const toIso = (v: unknown) => (v instanceof Date ? v : new Date(String(v))).toISOString();
+
+/**
+ * Sessions of an organization: requests grouped by session id (and agent), most recent first.
+ * Uses the (organization, trace->>'sessionId') index.
+ */
+export async function listSessions(organizationId: string, f: { agentId?: string; sessionId?: string; search?: string; limit?: number } = {}, ex: Executor = db): Promise<SessionRow[]> {
+  const conds = [sql`organization_id = ${organizationId}`, sql`trace is not null`];
+  if (f.agentId) conds.push(sql`agent_id = ${f.agentId}`);
+  if (f.sessionId) conds.push(sql`trace->>'sessionId' = ${f.sessionId}`);
+  if (f.search) {
+    const p = `%${escapeLike(f.search)}%`;
+    conds.push(sql`(trace->>'sessionId' ilike ${p} or trace->>'sessionLabel' ilike ${p} or trace->>'traceId' ilike ${p} or agent_name ilike ${p})`);
+  }
+  const result = await ex.execute(sql`
+    select trace->>'sessionId' as session_id,
+           (array_agg(trace->>'sessionLabel' order by created_at desc) filter (where trace->>'sessionLabel' is not null))[1] as session_label,
+           agent_id,
+           max(agent_name) as agent_name,
+           count(*)::int as requests,
+           (count(*) filter (where decision = 'ALLOW'))::int as allowed,
+           (count(*) filter (where decision = 'DENY' and decision_code <> 'APPROVAL_REQUIRED'))::int as denied,
+           (count(*) filter (where decision_code = 'APPROVAL_REQUIRED'))::int as held,
+           min(created_at) as first_at,
+           max(created_at) as last_at,
+           array_remove(array_agg(distinct integration_name), '—') as integrations,
+           coalesce(array_agg(distinct on_behalf_of->>'sub') filter (where on_behalf_of is not null), '{}') as users,
+           coalesce(array_agg(distinct delegation->>'label') filter (where delegation is not null), '{}') as sub_agents
+      from access_requests
+     where ${sql.join(conds, sql` and `)}
+     group by trace->>'sessionId', agent_id
+     order by max(created_at) desc
+     limit ${Math.min(f.limit ?? 100, 500)}`);
+  return (result.rows as Record<string, unknown>[]).map((r) => ({
+    sessionId: String(r.session_id),
+    sessionLabel: (r.session_label as string | null) ?? null,
+    agentId: (r.agent_id as string | null) ?? null,
+    agentName: String(r.agent_name),
+    requests: Number(r.requests),
+    allowed: Number(r.allowed),
+    denied: Number(r.denied),
+    held: Number(r.held),
+    firstAt: toIso(r.first_at),
+    lastAt: toIso(r.last_at),
+    integrations: (r.integrations as string[]) ?? [],
+    users: (r.users as string[]) ?? [],
+    subAgents: (r.sub_agents as string[]) ?? [],
+  }));
+}
+
+/** Every request of one session (of one agent, when given), oldest first. */
+export async function sessionTimeline(organizationId: string, sessionId: string, agentId: string | null, ex: Executor = db): Promise<AccessRequest[]> {
+  const where: SQL[] = [eq(accessRequests.organizationId, organizationId), sql`${accessRequests.trace}->>'sessionId' = ${sessionId}`];
+  if (agentId) where.push(eq(accessRequests.agentId, agentId));
+  return ex.select().from(accessRequests).where(and(...where)).orderBy(asc(accessRequests.createdAt)).limit(1000);
+}
+
+/** Requests of a session made before a given time (approvals: "what led to this"). */
+export async function sessionRequestsBefore(organizationId: string, sessionId: string, agentId: string | null, before: string, ex: Executor = db): Promise<number> {
+  const where: SQL[] = [eq(accessRequests.organizationId, organizationId), sql`${accessRequests.trace}->>'sessionId' = ${sessionId}`, sql`${accessRequests.createdAt} < ${before}`];
+  if (agentId) where.push(eq(accessRequests.agentId, agentId));
+  const [r] = await ex.select({ n: count() }).from(accessRequests).where(and(...where));
+  return Number(r?.n ?? 0);
 }

@@ -70,6 +70,7 @@ const NAV: NavGroup[] = [
     icon: Activity,
     children: [
       { label: 'Access Logs', to: '/audit/access-logs' },
+      { label: 'Sessions', to: '/audit/sessions' },
       { label: 'Security Events', to: '/audit/security-events' },
     ],
   },

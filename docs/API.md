@@ -60,7 +60,7 @@ Errors use one shape: `{ "error": { "code": "…", "message": "…", "details": 
 | GET | `/organizations/current/emergency-stop` | any role | `{stopped, stoppedAt, stoppedBy, stoppedByName, reason}` |
 | POST | `/organizations/current/emergency-stop` | `grant:revoke` | `{reason}`: denies every agent request with `EMERGENCY_STOP` until lifted |
 | POST | `/organizations/current/emergency-stop/lift` | `grant:approve` | `{note?}` |
-| GET | `/access-requests` · `/access-requests/:id` | `audit:read` | filters: `agentId, integrationId, grantId, decision, operation, from, to, search, user` (`user` matches the subject or email of the user the agent acted for); each record has `onBehalfOf` |
+| GET | `/access-requests` · `/access-requests/:id` | `audit:read` | filters: `agentId, integrationId, grantId, decision, operation, from, to, search, user, sessionId` (`user` matches the subject or email of the user the agent acted for); each record has `onBehalfOf` |
 | GET | `/audit-events` · `/audit-events/:id` | `audit:read` | filters: `eventType, outcome, actorType, search, category=security` |
 | GET | `/grant-requests` · `/grant-requests/:id` | any role | just-in-time access requests (`?status=PENDING`); includes the `pending` count |
 | POST | `/grant-requests/:id/approve` | `grant:approve` | `{durationMinutes, operations?, repositories?, rateLimitPerMinute?, note?}`; may narrow but not widen the request; the agent's owner cannot approve it; creates an expiring grant |
@@ -68,6 +68,8 @@ Errors use one shape: `{ "error": { "code": "…", "message": "…", "details": 
 | GET | `/approvals` · `/approvals/:id` | any role | requests held by `REQUIRE_APPROVAL` policies, with the exact operation, resource and input (`?status=PENDING`); includes the `pending` count |
 | POST | `/approvals/:id/approve` | `grant:approve` | `{note?}`; the agent's owner cannot approve it; the agent may then run that exact request once, within 15 minutes |
 | POST | `/approvals/:id/reject` | `grant:approve` | `{note?}`; the same request is answered with `APPROVAL_REJECTED` for 24 hours |
+| GET | `/sessions` | `audit:read` | `?search=&agentId=`: requests grouped by session id (or trace id) and agent: `sessionLabel`, `requests`, `allowed`, `denied`, `held`, `firstAt`, `lastAt`, `integrations`, `users`, `subAgents` |
+| GET | `/sessions/:sessionId` | `audit:read` | `?agentId=`: the summary plus `timeline` (every request, oldest first) and `approvals` asked for during the session |
 | GET | `/delegations` | any role | `?agentId=` or `?grantId=`: sub-agent delegations with effective `status` (`ACTIVE`, `EXPIRED`, `REVOKED`, also when one up the chain was revoked), `statusReason` and `used` |
 | POST | `/delegations/:id/revoke` | `grant:revoke` | `{reason}`; stops it and everything delegated from it |
 | GET | `/user-issuers` | any role | identity providers trusted to vouch for users (public keys only) |
@@ -96,6 +98,8 @@ Authenticated **only** with `Authorization: Bearer tvak_<keyId>_<secret>`. Admin
   "on_behalf_of": "eyJhbGciOiJFUzI1NiJ9.…"
 }
 ```
+
+`session_id` and `session_label` are optional: the agent's session (conversation, task, job) this call belongs to. The optional `traceparent` header carries W3C trace context. When either is sent, the response includes `"trace": { "session_id", "trace_id", "span_id", "parent_span_id" }` and the access record keeps it (see *Sessions* in [AGENTS.md](AGENTS.md#sessions-and-tracing)).
 
 `on_behalf_of` is optional: a signed user token (JWT) from an issuer registered under Settings → User Identity. With it, the agent acts for that user (see below).
 

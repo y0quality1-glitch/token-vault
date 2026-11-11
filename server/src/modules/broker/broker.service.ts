@@ -5,6 +5,11 @@ import {
   type ActingUser,
   type DelegationRef,
   type FilteringSummary,
+  type TraceRef,
+  MAX_SESSION_LABEL,
+  SESSION_ID,
+  formatTraceparent,
+  parseTraceparent,
   applyResponseFilter,
   filterFingerprint,
   mergeFilters,
@@ -20,6 +25,7 @@ import { getOperation, registry } from '../providers/registry';
 import { isCredentialRejection, reportCredentialRejected } from '../integrations/credential-health';
 import { parseAgentCredential, verifySecret } from '../../lib/crypto';
 import { correlationId as newCorrelationId, nonce, requestId as newRequestId } from '../../lib/ids';
+import { randomBytes } from 'node:crypto';
 import { transaction } from '../../db/client';
 import { agentRepo, approvalRepo, auditRepo, grantRepo, integrationRepo, orgRepo, policyRepo, userIssuerRepo, webhookRepo } from '../../store/repos';
 import { USER_TOKEN_LIMITS, verifyUserToken } from '../../lib/user-token';
@@ -53,6 +59,9 @@ const bodySchema = z.object({
   approval_id: z.string().min(1).max(64).optional(),
   /** A signed user token (JWT): the agent acts on behalf of that user. */
   on_behalf_of: z.string().min(1).max(USER_TOKEN_LIMITS.MAX_TOKEN_LENGTH).optional(),
+  /** The agent's session (conversation, task, job) this call is part of. */
+  session_id: z.string().regex(SESSION_ID, 'use 1-128 letters, digits, ".", "_", ":" or "-"').optional(),
+  session_label: z.string().trim().max(MAX_SESSION_LABEL).optional(),
 });
 
 // ---------------------------------------------------------------- rate limit + idempotency (in-memory)
@@ -83,6 +92,8 @@ export interface ExecuteContext {
   sourceIp: string;
   source: 'agent-api' | 'playground';
   body: unknown;
+  /** W3C trace context from the caller (OpenTelemetry), if any. */
+  traceparent?: string;
   /** Called with the expiry when the caller used a rotated key during its grace period. */
   onPreviousKey?: (expiresAt: string) => void;
 }
@@ -144,6 +155,7 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
       ...(args.approval ? { approval: args.approval } : {}),
       ...(actingUser ? { acting_for: { sub: actingUser.sub, email: actingUser.email ?? null, name: actingUser.name ?? null, issuer: actingUser.issuer } } : {}),
       ...(viaDelegation ? { delegation: { delegation_id: viaDelegation.id, label: viaDelegation.label, used: (delegationNote?.used ?? 0) + (args.decision === 'ALLOW' ? 1 : 0), max_requests: delegationNote?.max ?? null } } : {}),
+      ...(trace ? { trace: { session_id: trace.sessionId, trace_id: trace.traceId, span_id: trace.spanId, parent_span_id: trace.parentSpanId } } : {}),
       ...(filtering ? { filtering: { policies: filtering.policyNames, masked: filtering.masked, removed_fields: filtering.removedFields, prompt_injection: filtering.injection, withheld: filtering.withheld } } : {}),
     };
     const waiting = args.code === DECISION_CODES.APPROVAL_REQUIRED;
@@ -181,6 +193,7 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
           onBehalfOf: actingUser,
           delegation: viaDelegation,
           filtering,
+          trace,
         }, tx);
         await recordEvent({
           orgId,
@@ -196,6 +209,22 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
     }
     return { status: args.status, body };
   };
+
+  // ---- Session tracing: recorded when the agent sent a session id or a W3C traceparent (also for denials).
+  const parent = parseTraceparent(ctx.traceparent);
+  const rawSession = (ctx.body as { session_id?: unknown; session_label?: unknown } | null) ?? {};
+  const sessionId = typeof rawSession.session_id === 'string' && SESSION_ID.test(rawSession.session_id) ? rawSession.session_id : null;
+  const trace: TraceRef | null =
+    sessionId || parent
+      ? {
+          traceId: parent?.traceId ?? randomBytes(16).toString('hex'),
+          parentSpanId: parent?.parentSpanId ?? null,
+          spanId: randomBytes(8).toString('hex'),
+          sessionId: '',
+          sessionLabel: typeof rawSession.session_label === 'string' && rawSession.session_label.trim() ? rawSession.session_label.trim().slice(0, MAX_SESSION_LABEL) : null,
+        }
+      : null;
+  if (trace) trace.sessionId = sessionId ?? trace.traceId;
 
   const base = { grant: null, matchedRule: { type: 'default', name: 'Deny by default' } as MatchedRule, executionStatus: 'NOT_EXECUTED' as const, webhookStatus: 'NOT_CALLED', upstreamStatus: null, result: null, idempotencyKey: null };
   const rawBody = (ctx.body && typeof ctx.body === 'object' ? ctx.body : {}) as Record<string, any>;
@@ -406,6 +435,8 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
     ...(actingUser ? { acting_user: { sub: actingUser.sub, email: actingUser.email ?? null, issuer: actingUser.issuer } } : {}),
     ...(viaDelegation ? { delegation_id: viaDelegation.id } : {}),
     ...(responseFilter ? { response_filter: responseFilter, response_filter_id: filterFingerprint(responseFilter) } : {}),
+    // W3C trace context, so the customer side can join its logs (and its upstream calls) to this trace.
+    ...(trace ? { traceparent: formatTraceparent(trace.traceId, trace.spanId), session_id: trace.sessionId } : {}),
   };
 
   let wh;

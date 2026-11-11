@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { TokenVault, TokenVaultError } from '@token-vault/sdk';
 import { createServer } from './server';
@@ -18,6 +19,9 @@ import { createServer } from './server';
  *                        signed token (JWT), re-read on every call so another process can
  *                        keep it fresh. Takes precedence over TOKEN_VAULT_USER_TOKEN.
  *   TOKEN_VAULT_USER_TOKEN  optional: the user's signed token itself (expires; prefer the file)
+ *   TOKEN_VAULT_SESSION_ID / TOKEN_VAULT_SESSION_LABEL  optional: the session every tool call
+ *                        belongs to (Audit → Sessions). Default: one new session per server start,
+ *                        with one W3C trace and a span per tool call.
  *
  * stdout carries the MCP protocol, so all diagnostics go to stderr.
  */
@@ -34,9 +38,15 @@ async function main() {
         }
       }
     : process.env.TOKEN_VAULT_USER_TOKEN || undefined;
+  // One session and one trace per MCP server process (= one client session); a span per tool call.
+  const traceId = randomBytes(16).toString('hex');
+  const sessionId = process.env.TOKEN_VAULT_SESSION_ID || `mcp-${traceId.slice(0, 16)}`;
   try {
     tv = new TokenVault({
       userToken,
+      sessionId,
+      sessionLabel: process.env.TOKEN_VAULT_SESSION_LABEL || 'MCP session',
+      traceparent: () => `00-${traceId}-${randomBytes(8).toString('hex')}-01`,
       organization: process.env.TOKEN_VAULT_ORG || undefined,
       onKeyExpiry: (at) => console.error(`[token-vault-mcp] warning: this API key was rotated and stops working at ${at}. Set TOKEN_VAULT_API_KEY to the new key and restart.`),
     });
@@ -54,7 +64,7 @@ async function main() {
   };
   await refresh('loaded');
   await server.connect(new StdioServerTransport());
-  console.error(`[token-vault-mcp] ready: ${tv.baseUrl} (${tv.isDelegated ? 'sub-agent delegation' : 'key'} ${tv.keyId})${tv.actsForUser ? ', acting on behalf of a user' : ''}`);
+  console.error(`[token-vault-mcp] ready: ${tv.baseUrl} (${tv.isDelegated ? 'sub-agent delegation' : 'key'} ${tv.keyId})${tv.actsForUser ? ', acting on behalf of a user' : ''}, session ${sessionId}`);
   const every = Number(process.env.TOKEN_VAULT_TOOLS_REFRESH_S ?? 60);
   if (every > 0) setInterval(() => void refresh('updated'), every * 1000).unref();
 }

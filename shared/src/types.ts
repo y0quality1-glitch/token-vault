@@ -326,6 +326,49 @@ export interface DelegationView extends Delegation {
   used: number;
 }
 
+/**
+ * What an access record keeps about the agent session and W3C trace context of a request.
+ * `sessionId` groups requests: the agent's session_id, or the trace id when it sent none.
+ */
+export interface TraceRef {
+  sessionId: string;
+  /** The agent's own label for the session (agent-written, untrusted). */
+  sessionLabel: string | null;
+  /** W3C trace id (32 hex): from the agent's traceparent, or generated. */
+  traceId: string;
+  /** The agent's span that made this call (from traceparent), if any. */
+  parentSpanId: string | null;
+  /** Token Vault's span for this request (16 hex); passed on to the webhook. */
+  spanId: string;
+}
+
+/** A session: requests one agent made in one conversation, task or job (Audit → Sessions). */
+export interface SessionSummary {
+  sessionId: string;
+  sessionLabel: string | null;
+  agentId: string | null;
+  agentName: string;
+  requests: number;
+  allowed: number;
+  denied: number;
+  /** Requests held for human approval (APPROVAL_REQUIRED). */
+  held: number;
+  firstAt: ISODate;
+  lastAt: ISODate;
+  integrations: string[];
+  /** Users the agent acted for during the session (subjects). */
+  users: string[];
+  /** Sub-agents (delegation labels) that took part. */
+  subAgents: string[];
+}
+
+export interface SessionDetail extends SessionSummary {
+  /** Every request of the session, oldest first. */
+  timeline: AccessRequest[];
+  /** Approvals asked for during the session. */
+  approvals: { id: string; status: OperationApprovalStatus; operation: string; createdAt: ISODate; requestId: string }[];
+}
+
 /** What an access record keeps about response filtering (counts and signals, never the values). */
 export interface FilteringSummary {
   policyIds: string[];
@@ -451,6 +494,8 @@ export interface AccessRequest {
   delegation?: DelegationRef | null;
   /** What response filtering did to the result (counts only, never values). Absent: no filter applied. */
   filtering?: FilteringSummary | null;
+  /** The agent session and trace the request belongs to (absent: the agent sent neither). */
+  trace?: TraceRef | null;
   /** Tamper evidence: position in the organization's hash chain (null for pre-chain records). */
   seq?: number | null;
   prevHash?: string | null;
@@ -515,6 +560,13 @@ export interface ExecuteRequestBody {
   approval_id?: string;
   /** A signed user token (JWT from a registered issuer): the agent acts for that user. */
   on_behalf_of?: string;
+  /**
+   * The agent's session (a conversation, task or job) this call is part of. Calls with the same
+   * session id are shown together under Audit → Sessions. Letters, digits and . _ : - only.
+   */
+  session_id?: string;
+  /** A short human-readable name for the session, e.g. the task the agent is working on. Agent-written. */
+  session_label?: string;
 }
 
 export interface ExecuteResponseBody {
@@ -543,6 +595,8 @@ export interface ExecuteResponseBody {
   acting_for?: { sub: string; email: string | null; name: string | null; issuer: string } | null;
   /** The delegation the request came through, when a sub-agent sent it. */
   delegation?: { delegation_id: string; label: string; used: number; max_requests: number | null } | null;
+  /** The trace this request was recorded under: echo of the session, the W3C trace id, and Token Vault's own span id. */
+  trace?: { session_id: string; trace_id: string; span_id: string; parent_span_id: string | null } | null;
   /**
    * Set when a Filter responses policy applied: what was masked, removed or flagged. When
    * `withheld` is true the operation ran but `result` is null (decision code RESPONSE_WITHHELD).
@@ -710,6 +764,8 @@ export interface OperationApproval {
   onBehalfOf?: ActingUser | null;
   /** The sub-agent delegation that asked (absent: the agent itself). */
   delegation?: DelegationRef | null;
+  /** The agent session the held request was part of, so the approver can see what led to it. */
+  session?: { sessionId: string; sessionLabel: string | null; earlierRequests: number } | null;
 }
 
 /** Agent API view of a delegation (never includes its token, except once on creation). */

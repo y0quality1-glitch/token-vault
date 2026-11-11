@@ -170,6 +170,18 @@ function ApprovalDrawer({ approval: r, onClose, onDecided }: { approval: Operati
           items={[
             { label: 'Agent', value: <Link className="text-brand-700 hover:underline" to={`/agents/${r.agentId}`}>{r.agentName}</Link> },
             ...(r.delegation ? [{ label: 'Via sub-agent', value: `${r.delegation.label} (delegation ${r.delegation.id})` }] : []),
+            ...(r.session
+              ? [
+                  {
+                    label: 'Part of session',
+                    value: (
+                      <Link className="text-brand-700 hover:underline" to={`/audit/sessions/${encodeURIComponent(r.session.sessionId)}?agentId=${encodeURIComponent(r.agentId)}`}>
+                        {r.session.sessionLabel ?? r.session.sessionId} ({r.session.earlierRequests} earlier request{r.session.earlierRequests === 1 ? '' : 's'})
+                      </Link>
+                    ),
+                  },
+                ]
+              : []),
             { label: 'On behalf of', value: r.onBehalfOf ? `${actingUserLabel(r.onBehalfOf)} (verified by ${r.onBehalfOf.issuer})` : 'The agent itself' },
             { label: 'Integration', value: r.integrationName },
             { label: 'Required by', value: <Link className="text-brand-700 hover:underline" to="/access/policies">{r.policyName}</Link> },
