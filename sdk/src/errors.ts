@@ -26,5 +26,22 @@ export class AuthenticationError extends TokenVaultError {}
 /** Token Vault denied the request: no grant, revoked, expired, out of scope, policy, rate limit… */
 export class AccessDeniedError extends TokenVaultError {}
 
+/**
+ * Every check allows the request, but a policy requires a human to approve it first
+ * (decision code APPROVAL_REQUIRED). Nothing ran. Wait with waitForApproval(approvalId),
+ * then send the same request again, or call executeApproved(approvalId).
+ */
+export class ApprovalRequiredError extends AccessDeniedError {
+  readonly approvalId: string;
+  /** When the pending approval lapses if nobody decides. */
+  readonly approvalExpiresAt: string;
+
+  constructor(message: string, opts: ConstructorParameters<typeof TokenVaultError>[1] & { approvalId: string; approvalExpiresAt: string }) {
+    super(message, opts);
+    this.approvalId = opts.approvalId;
+    this.approvalExpiresAt = opts.approvalExpiresAt;
+  }
+}
+
 /** Authorized, but execution failed safely (customer webhook unavailable or upstream provider error). */
 export class ExecutionFailedError extends TokenVaultError {}

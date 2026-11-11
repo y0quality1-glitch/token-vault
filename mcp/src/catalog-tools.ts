@@ -46,9 +46,15 @@ function inputSchema(i: OperationShape['input'][number]): ZodTypeAny {
   return i.required ? described : described.optional();
 }
 
-/** One MCP tool per non-destructive operation of the given providers (curated GitHub ones excluded). */
-export function catalogTools(body: AgentOperationsBody): CatalogTool[] {
-  return body.providers.flatMap((p) => p.operations.filter((o) => o.risk !== 'destructive' && !(p.key === 'github' && CURATED_GITHUB_OPERATIONS.has(o.id))).map((o) => buildTool(p, o)));
+/**
+ * One MCP tool per operation of the given providers (curated GitHub ones excluded). Destructive
+ * operations become tools only when the agent holds a grant for them (`grantedDestructive`):
+ * they always wait for a human's approval, and no agent sees them otherwise.
+ */
+export function catalogTools(body: AgentOperationsBody, grantedDestructive: ReadonlySet<string> = new Set()): CatalogTool[] {
+  return body.providers.flatMap((p) =>
+    p.operations.filter((o) => (o.risk !== 'destructive' || grantedDestructive.has(o.id)) && !(p.key === 'github' && CURATED_GITHUB_OPERATIONS.has(o.id))).map((o) => buildTool(p, o)),
+  );
 }
 
 function buildTool(p: ProviderShape, o: OperationShape): CatalogTool {
@@ -67,7 +73,7 @@ function buildTool(p: ProviderShape, o: OperationShape): CatalogTool {
   }
   shape.integration = z.string().optional().describe(`Token Vault integration ID or name. Optional when this agent has only one ${p.name} integration (see token_vault_list_access).`);
 
-  const effect = o.risk === 'read' ? 'Reads data' : `Changes data in ${p.name}`;
+  const effect = o.risk === 'read' ? 'Reads data' : o.risk === 'destructive' ? `DESTRUCTIVE: permanently changes or deletes data in ${p.name}. Every call waits for a human to approve it` : `Changes data in ${p.name}`;
   return {
     name: toolNameFor(o.id),
     title: `${p.name}: ${o.label}`,
@@ -76,7 +82,7 @@ function buildTool(p: ProviderShape, o: OperationShape): CatalogTool {
     operation: o.id,
     resourceName: p.resource.name,
     inputSchema: shape,
-    annotations: { readOnlyHint: o.risk === 'read', destructiveHint: false, idempotentHint: o.risk === 'read', openWorldHint: true },
+    annotations: { readOnlyHint: o.risk === 'read', destructiveHint: o.risk === 'destructive', idempotentHint: o.risk === 'read', openWorldHint: true },
     split(args) {
       const resource: Record<string, string> = {};
       for (const k of resourceKeys) if (typeof args[k] === 'string') resource[k] = args[k] as string;

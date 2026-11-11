@@ -148,6 +148,12 @@ export const config = {
   cmsCatalogUrl,
   cmsPublicKey,
   cmsPollIntervalMs: Number(process.env.CMS_POLL_INTERVAL_MS ?? 30_000),
+  /**
+   * WEBHOOK_ALLOW_DESTRUCTIVE=true lets this webhook run destructive operations (delete a
+   * repository, overwrite a file), and then only for requests a human approved in Token Vault.
+   * Off by default: the customer decides whether destructive actions can ever run.
+   */
+  allowDestructive: process.env.WEBHOOK_ALLOW_DESTRUCTIVE === 'true',
   /** Lifetime of access tokens issued by the simulated OAuth server (mock mode only). */
   mockOAuthTokenTtlS: Number(process.env.MOCK_OAUTH_TOKEN_TTL_S ?? 3600),
   /** if-missing: (re)create demo mock credentials only where absent or unreadable. reset: wipe the store first (tests). */

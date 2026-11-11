@@ -97,6 +97,18 @@ export async function accessRequestsForGrant(grantId: string, ex: Executor = db)
   return ex.select().from(accessRequests).where(eq(accessRequests.grantId, grantId)).orderBy(desc(accessRequests.createdAt));
 }
 
+/**
+ * Authorized requests of a grant per operation since `since` (budgets). Counted from the
+ * append-only access log, so budgets hold across restarts and control-plane instances.
+ */
+export async function authorizedByOperationSince(grantId: string, since: string, ex: Executor = db): Promise<{ operation: string; n: number }[]> {
+  return ex
+    .select({ operation: accessRequests.operation, n: count() })
+    .from(accessRequests)
+    .where(and(eq(accessRequests.grantId, grantId), eq(accessRequests.decision, 'ALLOW'), gte(accessRequests.createdAt, since)))
+    .groupBy(accessRequests.operation);
+}
+
 export async function accessRequestsForAgent(agentId: string, limit: number, ex: Executor = db): Promise<AccessRequest[]> {
   return ex.select().from(accessRequests).where(eq(accessRequests.agentId, agentId)).orderBy(desc(accessRequests.createdAt)).limit(limit);
 }

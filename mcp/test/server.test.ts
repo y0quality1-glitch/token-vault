@@ -35,6 +35,10 @@ const operationsBody = (providers = [githubProvider, slackProvider], version = '
 
 describe('catalogTools', () => {
   it('makes one typed tool per non-destructive operation, skipping the hand-written GitHub ones', () => {
+    // A destructive operation becomes a tool only for an agent granted it, flagged as destructive.
+    const granted = catalogTools(operationsBody(), new Set(['slack.channels.archive'])).find((t) => t.name === 'slack_channels_archive');
+    expect(granted?.annotations.destructiveHint).toBe(true);
+    expect(granted?.description).toMatch(/DESTRUCTIVE.*human to approve/);
     const tools = catalogTools(operationsBody());
     expect(tools.map((t) => t.name)).toEqual(['github_contents_write', 'slack_messages_post']);
     const write = tools[0]!;
@@ -59,6 +63,8 @@ function grant(over: Partial<AgentCapabilitiesBody['grants'][number]> = {}): Age
     operations: ['github.repositories.read', 'github.issues.create'],
     repositories: ['demo-org/demo-repo'],
     rate_limit_per_minute: 10,
+    max_requests_per_day: null,
+    max_writes_per_hour: null,
     valid_from: '2026-11-01T00:00:00.000Z',
     expires_at: '2026-11-11T00:00:00.000Z',
     ...over,
@@ -82,6 +88,7 @@ describe('resolveIntegration', () => {
 describe('MCP tools', () => {
   const ops = { current: operationsBody() };
   const capsNow = { current: caps() };
+  const approvalNow = { current: { approval_id: 'apv_1', status: 'PENDING', integration_id: 'int_github_001', operation: 'github.issues.create', resource: { repository: 'demo-org/demo-repo' }, input: { title: 'Ship it', body: '' }, expires_at: '2026-11-10T13:00:00Z', decision_note: null, executed_request_id: null } };
   async function connect(execute: Partial<ExecuteResponseBody> & { httpStatus?: number }) {
     ops.current = operationsBody();
     capsNow.current = caps([grant(), grant({ grant_id: 'grt_s', name: 'Slack posting', integration_id: 'int_slack_1', integration_name: 'Team Slack', provider: 'slack', operations: ['slack.messages.post'], repositories: ['C0123456789'] })]);
@@ -105,6 +112,7 @@ describe('MCP tools', () => {
       calls.push({ url: u, body: init?.body ? JSON.parse(String(init.body)) : null });
       if (u.endsWith('/operations')) return new Response(JSON.stringify(ops.current), { status: 200 });
       if (u.endsWith('/access-requests')) return new Response(JSON.stringify({ access_request_id: 'gr_1', status: 'PENDING', expires_at: '2026-11-07T00:00:00.000Z' }), { status: 201 });
+      if (u.includes('/approvals/')) return new Response(JSON.stringify(approvalNow.current), { status: 200 });
       const payload = u.endsWith('/capabilities') ? capsNow.current : body;
       return new Response(JSON.stringify(payload), { status: u.endsWith('/capabilities') ? 200 : httpStatus });
     });
@@ -123,7 +131,24 @@ describe('MCP tools', () => {
   it('exposes the brokered GitHub tools', async () => {
     const { client } = await connect({});
     const names = (await client.listTools()).tools.map((t) => t.name).sort();
-    expect(names).toEqual(['github_create_issue', 'github_get_repository', 'github_list_issues', 'github_read_file', 'token_vault_check_access_request', 'token_vault_list_access', 'token_vault_request_access']);
+    expect(names).toEqual(['github_create_issue', 'github_get_repository', 'github_list_issues', 'github_read_file', 'token_vault_check_access_request', 'token_vault_check_approval', 'token_vault_list_access', 'token_vault_request_access']);
+  });
+
+  it('explains a request held for approval, then runs it exactly as approved', async () => {
+    const held = { httpStatus: 202, decision: 'DENY' as const, decision_code: 'APPROVAL_REQUIRED', reason: 'Policy "Approve issues" requires a human to approve this request before it runs.', result: null, approval: { approval_id: 'apv_1', status: 'PENDING' as const, expires_at: '2026-11-10T13:00:00Z' }, execution: { status: 'NOT_EXECUTED' as const, webhook_status: 'NOT_CALLED', upstream_status: null, duration_ms: 3, simulated: true, idempotent_replay: false } };
+    const { client, calls } = await connect(held);
+    const r = await client.callTool({ name: 'github_create_issue', arguments: { repository: 'demo-org/demo-repo', title: 'Ship it' } });
+    expect(r.isError).toBeFalsy(); // waiting for a human is not a failure
+    expect(textOf(r)).toContain('token_vault_check_approval');
+    expect(textOf(r)).toContain('apv_1');
+
+    approvalNow.current = { ...approvalNow.current, status: 'PENDING' };
+    expect(textOf(await client.callTool({ name: 'token_vault_check_approval', arguments: { approval_id: 'apv_1' } }))).toMatch(/PENDING\. Still waiting/);
+
+    approvalNow.current = { ...approvalNow.current, status: 'APPROVED' };
+    const before = calls.length;
+    await client.callTool({ name: 'token_vault_check_approval', arguments: { approval_id: 'apv_1' } });
+    expect(calls.slice(before).at(-1)).toMatchObject({ url: 'http://tv.test/agent/v1/execute', body: { integration_id: 'int_github_001', operation: 'github.issues.create', input: { title: 'Ship it', body: '' }, approval_id: 'apv_1' } });
   });
 
   it('creates an issue through Token Vault and returns the sanitized result with its request ID', async () => {

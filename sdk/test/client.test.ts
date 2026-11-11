@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { inspect } from 'node:util';
 import type { ExecuteResponseBody } from '@token-vault/shared';
-import { AccessDeniedError, AuthenticationError, ExecutionFailedError, TokenVault, TokenVaultError } from '../src';
+import { AccessDeniedError, ApprovalRequiredError, AuthenticationError, ExecutionFailedError, TokenVault, TokenVaultError } from '../src';
 
 const KEY = 'tvak_0123456789ab_abcdefghijklmnopqrstuvwxyz012345';
 
@@ -72,6 +72,25 @@ describe('TokenVault SDK', () => {
     expect(inspect(tv)).not.toContain(KEY);
     expect(String(Object.keys(tv))).not.toContain(KEY);
     expect(tv.keyId).toBe('0123456789ab');
+  });
+
+  it('throws ApprovalRequiredError when a human must approve, and runs the approved request', async () => {
+    const held = client(body({ decision: 'DENY', decision_code: 'APPROVAL_REQUIRED', status: 'NOT_EXECUTED', upstream: null, approval: { approval_id: 'apv_1', status: 'PENDING', expires_at: '2026-11-10T13:00:00Z' } }), 202);
+    const err = await held.tv.execute({ integrationId: 'int_1', operation: 'github.issues.create', input: { title: 't' } }).catch((e) => e);
+    expect(err).toBeInstanceOf(ApprovalRequiredError);
+    expect(err).toBeInstanceOf(AccessDeniedError);
+    expect(err).toMatchObject({ code: 'APPROVAL_REQUIRED', approvalId: 'apv_1', approvalExpiresAt: '2026-11-10T13:00:00Z' });
+
+    const approval = { approval_id: 'apv_1', status: 'APPROVED', integration_id: 'int_1', operation: 'github.issues.create', resource: { repository: 'a/b' }, input: { title: 't' } };
+    const fetchMock = vi.fn(async (url: string | URL | Request, _init?: RequestInit) => {
+      const payload = String(url).endsWith('/agent/v1/approvals/apv_1') ? approval : body({ approval: { approval_id: 'apv_1', status: 'EXECUTED', expires_at: '' } });
+      return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    const tv = new TokenVault({ apiKey: KEY, baseUrl: 'http://tv.test', fetch: fetchMock as unknown as typeof fetch });
+    expect(await tv.waitForApproval('apv_1')).toMatchObject({ status: 'APPROVED' });
+    expect(await tv.executeApproved('apv_1')).toMatchObject({ data: { number: 44 } });
+    const sent = JSON.parse(fetchMock.mock.calls.at(-1)![1]!.body as string);
+    expect(sent).toMatchObject({ integration_id: 'int_1', operation: 'github.issues.create', resource: { repository: 'a/b' }, input: { title: 't' }, approval_id: 'apv_1' });
   });
 
   it('requests access and surfaces server validation errors', async () => {

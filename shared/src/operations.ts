@@ -7,9 +7,14 @@ export interface OperationDef {
   provider: ProviderId;
   label: string;
   description: string;
-  /** Whether an administrator may include this operation in a grant (POC: no destructive ops). */
+  /**
+   * Whether an administrator may grant this operation without further conditions (read and
+   * write). Destructive operations can be granted only where a REQUIRE_APPROVAL policy covers
+   * them, and agents can never request them just in time.
+   */
   grantable: boolean;
   destructive: boolean;
+  risk: 'read' | 'write' | 'destructive';
   mutating: boolean;
   requiresRepository: boolean;
   /** Anchored pattern the primary resource (e.g. "owner/repo") must match. */
@@ -29,6 +34,7 @@ export function operationsOf(definitions: readonly ProviderDefinition[]): Operat
       description: o.description,
       grantable: o.risk !== 'destructive',
       destructive: o.risk === 'destructive',
+      risk: o.risk,
       mutating: o.risk !== 'read',
       requiresRepository: o.requiresResource,
       resourcePattern: d.resource.pattern,

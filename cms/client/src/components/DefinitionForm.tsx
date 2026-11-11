@@ -406,7 +406,7 @@ export function DefinitionForm({ value, onChange, readOnly, issues }: Props) {
 
       <Section
         title={`Operations (${ops.length})`}
-        description="What agents can be granted. Destructive operations are known to policies but never executed."
+        description="What agents can be granted. Destructive operations run only with a human approval for each request, on webhooks that allow them."
         issues={[]}
         actions={
           !ro && (
@@ -471,7 +471,7 @@ export function DefinitionForm({ value, onChange, readOnly, issues }: Props) {
                       <Select aria-label="Risk" value={op.risk ?? 'read'} disabled={ro} onChange={(e) => setOp((o) => (o.risk = e.target.value))}>
                         <option value="read">read</option>
                         <option value="write">write</option>
-                        <option value="destructive">destructive (never executed)</option>
+                        <option value="destructive">destructive (needs human approval)</option>
                       </Select>
                     </Field>
                   </div>

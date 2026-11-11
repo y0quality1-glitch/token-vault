@@ -78,7 +78,7 @@ const operation = z
     id: z.string().regex(/^[a-z][a-z0-9_-]*(\.[a-z][a-z0-9_-]*){2,3}$/, 'use <provider>.<area>.<action>'),
     label: z.string().min(1).max(80),
     description: z.string().max(300).default(''),
-    /** read / write are grantable; destructive operations are known to the policy engine but never executed. */
+    /** read / write are grantable; destructive operations need a Require approval policy, a human approval per request, and a webhook that allows them. */
     risk: z.enum(['read', 'write', 'destructive']),
     requiresResource: z.boolean().default(true),
     /** Provider-side permissions the operation needs; auth plugins that mint narrowed tokens use these. */

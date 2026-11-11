@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import type { AgentAccessRequestBody, AgentCapabilitiesBody, AgentOperationsBody, ExecuteRequestBody, ExecuteResponseBody } from '@token-vault/shared';
-import { AccessDeniedError, AuthenticationError, ExecutionFailedError, TokenVaultError } from './errors';
+import type { AgentAccessRequestBody, AgentApprovalBody, AgentCapabilitiesBody, AgentOperationsBody, ExecuteRequestBody, ExecuteResponseBody } from '@token-vault/shared';
+import { AccessDeniedError, ApprovalRequiredError, AuthenticationError, ExecutionFailedError, TokenVaultError } from './errors';
 
 export type GitHubOperation = 'github.repositories.read' | 'github.contents.read' | 'github.issues.list' | 'github.issues.create';
 
@@ -30,6 +30,19 @@ export interface ExecuteOptions {
   input?: Record<string, unknown>;
   /** Makes retries of creating operations safe. Generated automatically when omitted. */
   idempotencyKey?: string;
+  /**
+   * An approval of exactly this request (REQUIRE_APPROVAL policies). Optional: re-sending
+   * the identical request after approval works without it.
+   */
+  approvalId?: string;
+}
+
+export interface WaitForApprovalOptions {
+  /** Give up after this long (default 10 minutes). Throws a TokenVaultError with code APPROVAL_WAIT_TIMEOUT. */
+  timeoutMs?: number;
+  /** Polling interval (default 5 seconds, at least 1 second). */
+  intervalMs?: number;
+  signal?: AbortSignal;
 }
 
 export interface RequestAccessOptions {
@@ -128,6 +141,9 @@ export class TokenVault {
     }
     const opts = { code: body.decision_code, httpStatus, requestId: body.request_id, response: body };
     if (body.decision_code === 'AGENT_UNAUTHENTICATED') throw new AuthenticationError(body.reason, opts);
+    if (body.decision_code === 'APPROVAL_REQUIRED' && body.approval) {
+      throw new ApprovalRequiredError(body.reason, { ...opts, approvalId: body.approval.approval_id, approvalExpiresAt: body.approval.expires_at });
+    }
     if (body.decision === 'DENY') throw new AccessDeniedError(body.reason, opts);
     throw new ExecutionFailedError(body.reason, opts);
   }
@@ -140,6 +156,7 @@ export class TokenVault {
       resource: options.resource ?? {},
       input: options.input ?? {},
       idempotency_key: options.idempotencyKey ?? `sdk-${randomUUID()}`,
+      ...(options.approvalId ? { approval_id: options.approvalId } : {}),
     };
     const res = await this.#request('POST', '/agent/v1/execute', payload);
     const body = (await this.#json(res)) as ExecuteResponseBody | null;
@@ -197,6 +214,40 @@ export class TokenVault {
     if (res.status === 404) throw new TokenVaultError(`Access request ${id} not found`, { code: 'NOT_FOUND', httpStatus: 404 });
     if (!res.ok) throw new TokenVaultError(`Access request lookup failed (HTTP ${res.status})`, { code: 'UNEXPECTED_RESPONSE', httpStatus: res.status });
     return body as AgentAccessRequestBody;
+  }
+
+  /** An approval one of this agent's requests waits for: PENDING, APPROVED, REJECTED, EXPIRED or EXECUTED. */
+  async getApproval(id: string): Promise<AgentApprovalBody> {
+    const res = await this.#request('GET', `/agent/v1/approvals/${encodeURIComponent(id)}`);
+    const body = await this.#json(res);
+    if (res.status === 401) throw new AuthenticationError('Agent credential is invalid, rotated or unknown', { code: 'AGENT_UNAUTHENTICATED', httpStatus: 401 });
+    if (res.status === 404) throw new TokenVaultError(`Approval ${id} not found`, { code: 'NOT_FOUND', httpStatus: 404 });
+    if (!res.ok) throw new TokenVaultError(`Approval lookup failed (HTTP ${res.status})`, { code: 'UNEXPECTED_RESPONSE', httpStatus: res.status });
+    return body as AgentApprovalBody;
+  }
+
+  /** Polls an approval until a human decides (or it lapses), and returns it. */
+  async waitForApproval(id: string, options: WaitForApprovalOptions = {}): Promise<AgentApprovalBody> {
+    const deadline = Date.now() + (options.timeoutMs ?? 10 * 60_000);
+    const interval = Math.max(1000, options.intervalMs ?? 5000);
+    for (;;) {
+      const a = await this.getApproval(id);
+      if (a.status !== 'PENDING') return a;
+      if (Date.now() + interval > deadline) throw new TokenVaultError(`Approval ${id} is still pending`, { code: 'APPROVAL_WAIT_TIMEOUT' });
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(resolve, interval);
+        options.signal?.addEventListener('abort', () => (clearTimeout(t), reject(options.signal!.reason)), { once: true });
+      });
+    }
+  }
+
+  /**
+   * Runs the request an approval was given for, exactly as it was approved (same
+   * integration, operation, resource and input). Throws like execute().
+   */
+  async executeApproved<T = unknown>(approvalId: string): Promise<ExecuteResult<T>> {
+    const a = await this.getApproval(approvalId);
+    return this.execute<T>({ integrationId: a.integration_id, operation: a.operation, resource: a.resource, input: a.input, approvalId });
   }
 
   /** One of this agent's own past requests, by request ID. */

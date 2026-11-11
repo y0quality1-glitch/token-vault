@@ -152,6 +152,17 @@ describe('GitHub through the generic executor (mock)', () => {
     expect((await run('github.repositories.read', { repository: 'demo-org/missing' })).upstreamStatus).toBe(404);
   });
 
+  it('runs destructive operations only when the route allows them (approved request, opted-in webhook)', async () => {
+    await expect(run('github.repositories.delete', { repository: 'demo-org/demo-repo' })).rejects.toMatchObject({ code: 'UNSUPPORTED_OPERATION' });
+    const allowed = (operation: string, resource: Record<string, string>, input: Record<string, unknown> = {}) => executeOperation('mock', github, { operation, resource, input, allowDestructive: true }, pat);
+    expect((await allowed('github.repositories.delete', { repository: 'demo-org/demo-repo' })).upstreamStatus).toBe(204);
+    // The simulated deletion leaves the demo data intact.
+    expect((await run('github.repositories.read', { repository: 'demo-org/demo-repo' })).upstreamStatus).toBe(200);
+    const written = await allowed('github.contents.write', { repository: 'demo-org/demo-repo', path: 'docs/notes.md' }, { message: 'Add notes', content: Buffer.from('hello').toString('base64') });
+    expect(written).toMatchObject({ upstreamStatus: 201, body: { path: 'docs/notes.md', commit: expect.any(String) } });
+    await expect(allowed('github.contents.write', { repository: 'demo-org/demo-repo', path: 'x.md' }, { message: 'No content' })).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+  });
+
   it('tests credentials with the definition test request', async () => {
     const ok = await testCredential('mock', github, github.auth.find((a) => a.id === 'PAT')!, pat);
     expect(ok).toMatchObject({ upstreamStatus: 200, body: { login: 'demo-bot', type: 'Bot' } });

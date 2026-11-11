@@ -8,11 +8,12 @@ import { isValidCidr } from '../../lib/net';
 import { parse } from '../../lib/validate';
 import { orgCtx, requirePermission } from '../../middleware/auth';
 import { agentRepo, auditRepo, grantRepo, integrationRepo, policyRepo } from '../../store/repos';
-import type { GrantRecord, IntegrationRecord } from '../../store/types';
+import type { AgentRecord, GrantRecord, IntegrationRecord } from '../../store/types';
 import { effectiveGrantStatus, loadLookups, toGrant } from '../../store/views';
 import { recordEvent, userActor } from '../audit/audit.service';
-import { GENERIC_RESOURCE, foreignOperations, grantableOperationIds, resourceProblem } from '../providers/registry';
-import { policyMatches } from '../policy-engine/engine';
+import { GENERIC_RESOURCE, foreignOperations, getOperation, resourceProblem } from '../providers/registry';
+import { approvalPolicyCovering, policyMatches } from '../policy-engine/engine';
+import { budgetUsageFor } from '../broker/broker.service';
 
 export const grantsRouter = Router();
 
@@ -21,11 +22,15 @@ const restrictionsSchema = z.object({
   scopes: z
     .array(z.string())
     .min(1, 'Select at least one permission')
-    .refine((s) => s.every((x) => grantableOperationIds().includes(x)), 'Destructive or unknown operations cannot be granted in the POC'),
+    // Destructive operations are checked separately: they need an approval policy (validateDestructive).
+    .refine((s) => s.every((x) => !!getOperation(x)), 'Unknown operation'),
   repositories: z.array(z.string().trim().regex(GENERIC_RESOURCE, 'Enter one resource per line, without spaces')).max(20).default([]),
   validFrom: z.string().datetime({ offset: true, message: 'Enter a valid start date/time' }),
   expiresAt: z.string().datetime({ offset: true, message: 'Enter a valid expiry date/time' }),
   rateLimitPerMinute: z.number().int().min(1, 'Must be at least 1').max(600, 'Maximum 600 per minute'),
+  // Budgets (optional): counted over rolling windows from the access log.
+  maxRequestsPerDay: z.number().int().min(1, 'Must be at least 1').max(100_000, 'At most 100000').nullable().default(null),
+  maxWritesPerHour: z.number().int().min(1, 'Must be at least 1').max(10_000, 'At most 10000').nullable().default(null),
   allowedCidrs: z.array(z.string().trim().refine(isValidCidr, 'Use IPv4 CIDR notation')).max(20).default([]),
 });
 
@@ -62,21 +67,45 @@ function validateRepos(integration: IntegrationRecord, repos: string[], scopes?:
   }
 }
 
+const facts = (id: string) => {
+  const o = getOperation(id);
+  return o ? { id: o.id, provider: o.provider, risk: o.risk } : undefined;
+};
+
+/**
+ * A destructive operation may be granted only where an enabled, unconditional Require approval
+ * policy covers it for this agent and integration, so it can never run without a human's approval.
+ * (The engine also refuses it at request time if that policy is later disabled.)
+ */
+async function validateDestructive(agent: AgentRecord, integration: IntegrationRecord, scopes: string[], ex?: Executor) {
+  const destructive = scopes.map((id) => getOperation(id)).filter((o) => o?.destructive);
+  if (!destructive.length) return;
+  const policies = await policyRepo.listPolicies(agent.organizationId, ex);
+  const uncovered = destructive.filter((o) => !approvalPolicyCovering(policies, { agent, integration, operationId: o!.id, operation: facts(o!.id) }));
+  if (uncovered.length) {
+    const names = uncovered.map((o) => `"${o!.label}"`).join(', ');
+    throw badRequest('Request validation failed', {
+      fields: { scopes: `${names} ${uncovered.length > 1 ? 'are' : 'is'} destructive and can be granted only with human approval: first create an enabled Require approval policy that covers ${uncovered.length > 1 ? 'them' : 'it'} for this agent (without a time window, source IP or argument rules).` },
+    });
+  }
+}
+
 async function toDetail(g: GrantRecord): Promise<GrantDetail> {
-  const [requests, chain, lookups, agent, integration, policies] = await Promise.all([
+  const [requests, chain, lookups, agent, integration, policies, budgets] = await Promise.all([
     auditRepo.accessRequestsForGrant(g.id),
     grantRepo.versionChain(g.organizationId, g),
     loadLookups(g.organizationId, [g.createdBy]),
     agentRepo.getAgent(g.organizationId, g.agentId),
     integrationRepo.getIntegration(g.organizationId, g.integrationId),
     policyRepo.listPolicies(g.organizationId),
+    budgetUsageFor([g]),
   ]);
   const since = Date.now() - 86400e3;
   const matchingPolicies =
     agent && integration
       ? policies
           .filter((p) => p.enabled)
-          .filter((p) => g.scopes.some((op) => policyMatches(p, { agent, integration, operationId: op })))
+          .filter((p) => g.scopes.some((op) => policyMatches(p, { agent, integration, operationId: op, operation: facts(op) })))
           .map((p) => ({ id: p.id, name: p.name, effect: p.effect }))
       : [];
   return {
@@ -89,6 +118,7 @@ async function toDetail(g: GrantRecord): Promise<GrantDetail> {
     recentRequests: requests.slice(0, 20),
     versions: chain.map((v) => ({ id: v.id, version: v.version, status: effectiveGrantStatus(v), createdAt: v.createdAt })),
     matchingPolicies,
+    budgetUsage: budgets.get(g.id) ?? null,
   };
 }
 
@@ -122,6 +152,7 @@ grantsRouter.post('/grants', requirePermission(PERMISSIONS.GRANT_MANAGE), async 
     if (body.environment !== integration.environment) throw badRequest('Request validation failed', { fields: { environment: `Must match the integration environment (${integration.environment})` } });
     validateWindow(body.validFrom, body.expiresAt);
     validateRepos(integration, body.repositories, body.scopes);
+    await validateDestructive(agent, integration, body.scopes, tx);
     if (await grantRepo.grantNameExists(ctx.org.id, body.name, tx)) throw conflict('A grant with that name already exists');
 
     const created = await grantRepo.insertGrant(
@@ -135,6 +166,8 @@ grantsRouter.post('/grants', requirePermission(PERMISSIONS.GRANT_MANAGE), async 
         scopes: body.scopes,
         resourceConstraints: { repositories: body.repositories },
         rateLimitPerMinute: body.rateLimitPerMinute,
+        maxRequestsPerDay: body.maxRequestsPerDay,
+        maxWritesPerHour: body.maxWritesPerHour,
         allowedCidrs: body.allowedCidrs,
         validFrom: new Date(body.validFrom).toISOString(),
         expiresAt: new Date(body.expiresAt).toISOString(),
@@ -160,7 +193,7 @@ grantsRouter.post('/grants', requirePermission(PERMISSIONS.GRANT_MANAGE), async 
         actor: userActor(ctx),
         eventType: 'grant.created',
         target: { type: 'grant', id: created.id, name: created.name },
-        metadata: { agentId: agent.id, integrationId: integration.id, scopes: created.scopes, repositories: body.repositories, expiresAt: created.expiresAt, status: created.storedStatus },
+        metadata: { agentId: agent.id, integrationId: integration.id, scopes: created.scopes, repositories: body.repositories, expiresAt: created.expiresAt, status: created.storedStatus, maxRequestsPerDay: body.maxRequestsPerDay, maxWritesPerHour: body.maxWritesPerHour },
       },
       tx,
     );
@@ -225,6 +258,9 @@ grantsRouter.post('/grants/:id/versions', requirePermission(PERMISSIONS.GRANT_MA
     const integration = await integrationRepo.getIntegration(ctx.org.id, g.integrationId, tx);
     if (!integration) throw badRequest('The integration for this grant no longer exists');
     validateRepos(integration, body.repositories, body.scopes);
+    const agent = await agentRepo.getAgent(ctx.org.id, g.agentId, tx);
+    if (!agent) throw badRequest('The agent for this grant no longer exists');
+    await validateDestructive(agent, integration, body.scopes, tx);
     await grantRepo.updateGrant(g.id, { storedStatus: 'SUPERSEDED' }, tx);
     const created = await grantRepo.insertGrant(
       {
@@ -233,6 +269,8 @@ grantsRouter.post('/grants/:id/versions', requirePermission(PERMISSIONS.GRANT_MA
         scopes: body.scopes,
         resourceConstraints: { repositories: body.repositories },
         rateLimitPerMinute: body.rateLimitPerMinute,
+        maxRequestsPerDay: body.maxRequestsPerDay,
+        maxWritesPerHour: body.maxWritesPerHour,
         allowedCidrs: body.allowedCidrs,
         validFrom: new Date(body.validFrom).toISOString(),
         expiresAt: new Date(body.expiresAt).toISOString(),

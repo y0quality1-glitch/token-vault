@@ -46,6 +46,7 @@ function looksLikeToken(token: string) {
 
 /** The installation permission GitHub requires for a request (App tokens only). */
 function requiredPermission(method: string, rest: string[]): [string, 'read' | 'write'] {
+  if (rest.length === 0 && method === 'DELETE') return ['administration', 'write'];
   if (rest[0] === 'contents') return ['contents', method === 'GET' ? 'read' : 'write'];
   if (rest[0] === 'issues') return ['issues', method === 'GET' ? 'read' : 'write'];
   return ['metadata', 'read'];
@@ -128,6 +129,21 @@ export const githubSimulator: Simulator = async (req: UpstreamRequest) => {
       repo.issues.push(issue);
       return json(201, { number: issue.number, title: issue.title, state: issue.state, html_url: `https://github.com/${repoName}/issues/${issue.number}`, created_at: issue.created_at, node_id: 'I_mock_' + randomUUID().slice(0, 8) });
     }
+  }
+  // Destructive operations (run only after human approval). Simulated without changing the mock
+  // repositories, so the demo data stays intact.
+  if (req.method === 'DELETE' && rest.length === 0) return json(204, null);
+  if (req.method === 'PUT' && rest[0] === 'contents' && rest.length > 1) {
+    let input: Record<string, unknown> = {};
+    try {
+      input = JSON.parse(req.body ?? '{}');
+    } catch {
+      return json(400, { message: 'Problems parsing JSON' });
+    }
+    if (!input.message || typeof input.content !== 'string' || !/^[A-Za-z0-9+/=\s]*$/.test(input.content)) return json(422, { message: 'Invalid request: message and base64 content are required' });
+    const path = rest.slice(1).join('/');
+    const sha = 'mock' + randomUUID().replace(/-/g, '').slice(0, 12);
+    return json(201, { content: { path, sha, html_url: `https://github.com/${repoName}/blob/main/${path}` }, commit: { sha: 'c' + sha } });
   }
   return NOT_FOUND;
 };

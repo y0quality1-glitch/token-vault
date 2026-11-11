@@ -100,7 +100,7 @@ export function preview(def: ProviderDefinition, operationId: string, resource: 
     return {
       request: { method: op.request.method, url: url.toString(), headers, body: op.request.body === undefined ? null : renderBody(op.request.body, vars) },
       mockResponse: op.mock ? { status: op.mock.status, body: op.mock.status < 300 ? mapResponse(op.mock.body, op.response) : op.mock.body } : null,
-      error: op.risk === 'destructive' ? 'Destructive operation: known to policies, never executed by the webhook.' : null,
+      error: op.risk === 'destructive' ? 'Destructive operation: runs only for a request a human approved in Token Vault, and only on webhooks started with WEBHOOK_ALLOW_DESTRUCTIVE=true.' : null,
     };
   } catch (e) {
     return { request: { method: op.request.method, url: '', headers: [], body: null }, mockResponse: null, error: e instanceof TemplateError ? e.message : 'Could not build the request' };

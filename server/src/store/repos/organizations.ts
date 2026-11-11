@@ -15,7 +15,7 @@ export async function findOrganizationBySlug(slug: string, ex: Executor = db): P
   return row ?? null;
 }
 
-export async function updateOrganization(id: string, patch: Partial<Pick<Organization, 'name' | 'environment' | 'updatedAt'>>, ex: Executor = db) {
+export async function updateOrganization(id: string, patch: Partial<Pick<Organization, 'name' | 'environment' | 'updatedAt' | 'emergencyStoppedAt' | 'emergencyStoppedBy' | 'emergencyStopReason'>>, ex: Executor = db) {
   const [row] = await ex.update(organizations).set(patch).where(eq(organizations.id, id)).returning();
   return row!;
 }

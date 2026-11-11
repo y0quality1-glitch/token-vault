@@ -1,7 +1,7 @@
 import { McpServer, type RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { DECISION_LABELS, operationLabel } from '@token-vault/shared';
+import { DECISION_LABELS, operationLabel, type ExecuteResponseBody } from '@token-vault/shared';
 import { TokenVault, TokenVaultError } from '@token-vault/sdk';
 import { catalogTools } from './catalog-tools';
 import { resolveIntegration } from './resolve';
@@ -47,6 +47,7 @@ export function createServer(tv: TokenVault): TokenVaultMcpServer {
       'Access to GitHub and other applications, brokered by Token Vault. Call token_vault_list_access first to see which integrations, operations and resources this agent is granted. ' +
       'If a call is denied, do not try other resources or operations to work around it. When the denial says access can be requested, you may call ' +
       'token_vault_request_access once, with a concrete justification for the specific task; a human decides. Do not resubmit or rephrase requests to get a different answer. ' +
+      'Some requests are held until a human approves that exact request (APPROVAL_REQUIRED); then tell the user and use token_vault_check_approval later instead of resending. ' +
       'Report denials and request IDs to the user.',
   });
 
@@ -63,13 +64,37 @@ export function createServer(tv: TokenVault): TokenVaultMcpServer {
       if (!target.ok) return text(target.message, true);
 
       const { httpStatus, body } = await tv.executeRaw({ integrationId: target.integrationId, operation, resource: c.resource, input: c.input });
-      const label = DECISION_LABELS[body.decision_code] ?? body.decision_code;
+      return present({ httpStatus, body, operation, providerName: c.provider.name, primary });
+    } catch (e) {
+      if (e instanceof TokenVaultError) return text(`Token Vault error (${e.code}): ${e.message}`, true);
+      return text('Unexpected error while calling Token Vault.', true);
+    }
+  }
 
+  /** Turns a Token Vault decision into a tool result the model can act on. */
+  function present({ httpStatus, body, operation, providerName, primary }: { httpStatus: number; body: ExecuteResponseBody; operation: string; providerName: string; primary?: string }): CallToolResult {
+    const label = DECISION_LABELS[body.decision_code] ?? body.decision_code;
+    {
       if (body.decision === 'ALLOW' && body.execution.status === 'SUCCEEDED') {
-        const mode = body.execution.simulated ? ` (simulated ${c.provider.name})` : '';
+        const mode = body.execution.simulated ? ` (simulated ${providerName})` : '';
         return {
           content: [{ type: 'text', text: `${labelOf(operation)} succeeded${mode}. Token Vault request ${body.request_id}.\n\n${JSON.stringify(body.result, null, 2)}` }],
           structuredContent: { request_id: body.request_id, upstream_status: body.execution.upstream_status, simulated: body.execution.simulated, result: body.result },
+        };
+      }
+      if (body.decision_code === 'APPROVAL_REQUIRED' && body.approval) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                `Nothing was done yet: a human must approve this exact request first. ${body.reason}\n` +
+                `Approval ID: ${body.approval.approval_id} (lapses at ${body.approval.expires_at} if nobody decides). Request ID: ${body.request_id}.\n` +
+                `Tell the user that approval is needed. Later, call token_vault_check_approval with approval_id "${body.approval.approval_id}": once approved, it runs the request exactly as approved. ` +
+                'Do not resend the request with changes to get around the approval.',
+            },
+          ],
+          structuredContent: { request_id: body.request_id, decision_code: body.decision_code, approval: body.approval },
         };
       }
       if (body.decision === 'DENY') {
@@ -79,9 +104,6 @@ export function createServer(tv: TokenVault): TokenVaultMcpServer {
         return text(`Access denied by Token Vault: ${label} (${body.decision_code}, HTTP ${httpStatus}).\n${body.reason}\nRequest ID: ${body.request_id}.\n${next}`, true);
       }
       return text(`Authorized, but the operation failed: ${label} (${body.decision_code}).\n${body.reason}\nRequest ID: ${body.request_id}.`, true);
-    } catch (e) {
-      if (e instanceof TokenVaultError) return text(`Token Vault error (${e.code}): ${e.message}`, true);
-      return text('Unexpected error while calling Token Vault.', true);
     }
   }
 
@@ -107,7 +129,9 @@ export function createServer(tv: TokenVault): TokenVaultMcpServer {
             `  integration: ${g.integration_name} (${g.integration_id}, ${g.provider})`,
             `  operations: ${g.operations.map(labelOf).join(', ')}`,
             `  resources: ${g.repositories.length ? g.repositories.join(', ') : 'any the integration allows'}`,
-            `  expires: ${g.expires_at}; rate limit ${g.rate_limit_per_minute}/min`,
+            `  expires: ${g.expires_at}; rate limit ${g.rate_limit_per_minute}/min` +
+              (g.max_requests_per_day ? `; budget ${g.max_requests_per_day} requests per 24 h` : '') +
+              (g.max_writes_per_hour ? `; budget ${g.max_writes_per_hour} writes per hour` : ''),
           ].join('\n'),
         );
         return {
@@ -239,19 +263,56 @@ export function createServer(tv: TokenVault): TokenVaultMcpServer {
     },
   );
 
+  server.registerTool(
+    'token_vault_check_approval',
+    {
+      title: 'Check an approval, and run the request once approved',
+      description:
+        'For a request Token Vault held for human approval (APPROVAL_REQUIRED): returns the approval status. ' +
+        'When it is APPROVED, this runs the request exactly as it was approved, once, and returns the result.',
+      inputSchema: { approval_id: z.string().min(1).max(64) },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    },
+    async ({ approval_id }) => {
+      try {
+        const a = await tv.getApproval(approval_id);
+        if (a.status === 'APPROVED') {
+          const { httpStatus, body } = await tv.executeRaw({ integrationId: a.integration_id, operation: a.operation, resource: a.resource, input: a.input, approvalId: a.approval_id });
+          const providerKey = a.operation.split('.')[0]!;
+          return present({ httpStatus, body, operation: a.operation, providerName: providerKey === 'github' ? 'GitHub' : providerKey, primary: Object.values(a.resource)[0] });
+        }
+        const detail =
+          a.status === 'PENDING'
+            ? ` Still waiting for a human (lapses at ${a.expires_at}). Check again later; do not resend the request.`
+            : a.status === 'REJECTED'
+              ? ` Rejected${a.decision_note ? `: "${a.decision_note}"` : ''}. Do not retry; tell the user.`
+              : a.status === 'EXECUTED'
+                ? ` Already used by request ${a.executed_request_id}. Each approval runs one request.`
+                : ' Nobody decided in time, or it was not used in time. Tell the user.';
+        return { content: [{ type: 'text', text: `Approval ${a.approval_id} for ${labelOf(a.operation)}: ${a.status}.${detail}` }], structuredContent: a as unknown as Record<string, unknown> };
+      } catch (e) {
+        return text(e instanceof TokenVaultError ? `Token Vault error (${e.code}): ${e.message}` : 'Unexpected error while calling Token Vault.', true);
+      }
+    },
+  );
+
   // ------------------------------------------------------------ tools from the catalog
   const dynamic = new Map<string, RegisteredTool>();
   let version: string | null = null;
   let inFlight: Promise<boolean> | null = null;
 
   async function sync(): Promise<boolean> {
-    const body = await tv.operations();
-    if (body.version === version) return false;
+    const [body, caps] = await Promise.all([tv.operations(), tv.capabilities()]);
+    // Destructive operations are offered only to an agent that holds a grant for them.
+    const destructiveIds = new Set(body.providers.flatMap((p) => p.operations.filter((o) => o.risk === 'destructive').map((o) => o.id)));
+    const grantedDestructive = new Set(caps.grants.filter((g) => g.status === 'ACTIVE').flatMap((g) => g.operations).filter((id) => destructiveIds.has(id)));
+    const key = `${body.version}|${[...grantedDestructive].sort().join(',')}`;
+    if (key === version) return false;
     for (const t of dynamic.values()) t.remove();
     dynamic.clear();
     labels.clear();
     for (const p of body.providers) for (const o of p.operations) labels.set(o.id, o.label);
-    for (const t of catalogTools(body)) {
+    for (const t of catalogTools(body, grantedDestructive)) {
       dynamic.set(
         t.name,
         server.registerTool(t.name, { title: t.title, description: t.description, inputSchema: t.inputSchema, annotations: t.annotations }, (args: Record<string, unknown>) => {
@@ -260,7 +321,7 @@ export function createServer(tv: TokenVault): TokenVaultMcpServer {
         }),
       );
     }
-    version = body.version;
+    version = key;
     return true;
   }
   /** Single-flight: concurrent refreshes share one request. */
