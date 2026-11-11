@@ -102,7 +102,7 @@ Optionally restrict the agent to source IP ranges.
 The 5-step wizard asks for:
 
 1. **Agent.**
-2. **Integration.**
+2. **Integrations.** Select one, or several to give the agent several applications at once.
 3. **Operations** the agent may perform (for example *Read repository*, *Create issue*). Destructive operations (for example *Delete repository*) can be granted only if a Require approval policy covers them for this agent; each request then waits for a human, and the webhook must allow destructive operations (`WEBHOOK_ALLOW_DESTRUCTIVE=true`).
 4. **Restrictions**:
    - **Resources**: for example one repository. Recommended.
@@ -113,6 +113,8 @@ The 5-step wizard asks for:
    - **Source IP** (optional).
    - **Approval required** (optional): the grant stays pending until a Security Administrator approves it.
 5. **Review** and create.
+
+With several integrations, step 3 asks for operations per application and step 4 for each grant's name and resources, then the validity, rate limit, budgets, user and IP settings once for all. One grant is created per application, all or none, so each can still be edited, reviewed or revoked on its own. The agent uses all of them with its one API key.
 
 Changing restrictions later (**Edit restrictions** on the grant) creates a new version; the old one is kept for the audit trail.
 
