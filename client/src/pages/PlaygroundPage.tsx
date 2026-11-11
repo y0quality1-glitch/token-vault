@@ -87,6 +87,7 @@ export function PlaygroundPage() {
   const [payload, setPayload] = useState(JSON.stringify(DEFAULT_INPUT, null, 2));
   const [payloadError, setPayloadError] = useState<string | null>(null);
   const [repeat, setRepeat] = useState(1);
+  const [userToken, setUserToken] = useState('');
   const [useInvalid, setUseInvalid] = useState(false);
   const [activePreset, setActivePreset] = useState<Preset | null>(null);
   const [sending, setSending] = useState(false);
@@ -168,6 +169,7 @@ export function PlaygroundPage() {
             resource: { [op?.resourceName ?? 'repository']: repository, ...(operation === 'github.contents.read' ? { path } : {}) },
             input: op?.mutating ? input : {},
             idempotency_key: `pg-${Date.now().toString(36)}-${n}`,
+            ...(userToken.trim() ? { on_behalf_of: userToken.trim() } : {}),
           },
           session?.currentOrganization?.slug ?? '',
         );
@@ -331,6 +333,9 @@ export function PlaygroundPage() {
                   <Textarea rows={4} className="font-mono text-xs" value={payload} onChange={(e) => setPayload(e.target.value)} invalid={!!payloadError} />
                 </Field>
               )}
+              <Field label="On behalf of a user (optional)" hint="A signed user token (JWT) from an issuer under Settings → User Identity. Empty: the agent acts for itself.">
+                <Textarea aria-label="User token" rows={2} className="font-mono text-xs" value={userToken} onChange={(e) => setUserToken(e.target.value)} placeholder="eyJhbGciOi…" />
+              </Field>
             </CardBody>
             <div className="flex items-center justify-between gap-2 border-t border-slate-100 px-5 py-3.5">
               <Button variant="ghost" onClick={clear}>

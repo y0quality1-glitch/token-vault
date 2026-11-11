@@ -34,14 +34,14 @@ Also shipped: operation selectors that cover operations published later (`github
 - Budgets in money (for example $100 of spend), which needs a cost per operation in the provider definitions.
 - One policy naming several agents or integrations (today: one agent or agent type, one application or integration).
 
-## Phase 2: Identity and data safety (about 6–8 weeks)
+## Phase 2: Identity and data safety (in progress)
 
-| Feature | What it does | Why it matters |
-| --- | --- | --- |
-| Acting on behalf of a user | An agent acts for a specific signed-in user and is limited by both its own grant and that user's permissions. The audit records "Agent X for user Y". | Most real agents act for a person. Vault only knows the workload. |
-| Delegation to sub-agents | An agent can pass a narrower, short-lived grant to a sub-agent (fewer operations and resources, earlier expiry). Revoking the parent grant revokes everything delegated from it. | Multi-agent systems need this. Vault has no concept of narrower delegation. |
-| Response filtering | The webhook removes or masks fields (emails, tokens, personal data) and can flag likely prompt-injection text before the response reaches the model | Stops the model leaking data or being manipulated. Only possible because Token Vault sits in the request path. |
-| Session tracing | Each call carries the agent's session or trace ID (OpenTelemetry), so the audit links each tool call to the conversation or task that made it | Shows why an action happened, not just that it did |
+| Feature | Status | What it does | Why it matters |
+| --- | --- | --- | --- |
+| Acting on behalf of a user | Done | The customer's application signs a short-lived user token (JWT); the agent sends it as `on_behalf_of`. Token Vault verifies it with the public key of an issuer registered under **Settings → User Identity**, then limits the request to both the agent's grant and the user's own permissions (`token_vault` claim). Grants choose whether the agent acts for itself, only for users, or either, and which user groups. Policies can match `user.*` fields. Approvals are bound to the user. The access log records and filters "Agent X for user Y". SDK: `tv.forUser(token)`; MCP: `TOKEN_VAULT_USER_TOKEN_FILE`. | Most real agents act for a person. Vault only knows the workload. |
+| Delegation to sub-agents | Done | An agent can pass a narrower, short-lived grant to a sub-agent (fewer operations and resources, earlier expiry). Revoking the parent grant revokes everything delegated from it. | Multi-agent systems need this. Vault has no concept of narrower delegation. |
+| Response filtering | Planned | The webhook removes or masks fields (emails, tokens, personal data) and can flag likely prompt-injection text before the response reaches the model | Stops the model leaking data or being manipulated. Only possible because Token Vault sits in the request path. |
+| Session tracing | Planned | Each call carries the agent's session or trace ID (OpenTelemetry), so the audit links each tool call to the conversation or task that made it | Shows why an action happened, not just that it did |
 
 ## Phase 3: Platform reach and intelligence (about 8–10 weeks)
 
@@ -65,7 +65,11 @@ These don't set Token Vault apart from HashiCorp, but enterprise customers won't
 
 ## Recommended next step
 
-Start Phase 2 with **acting on behalf of a user**: most real agents act for a person, and the approval and audit records built in Phase 1 can then name that person. Finish the Slack approvals from Phase 1 alongside it, since it is the most requested way to approve.
+Continue Phase 2 with **response filtering**: Token Vault already sits in the request path, so it can mask personal data and flag likely prompt injection before a result reaches the model. Finish the Slack approvals from Phase 1 alongside it, since it is the most requested way to approve.
+
+Delegation to sub-agents shipped: an agent (or sub-agent, up to 3 levels) hands a narrower, short-lived, optionally request-capped slice of one grant to a sub-agent with its own `tvdt_` token (SDK `delegate()`). Requests run against the parent's grant, so revoking the grant, the agent, or any delegation up the chain stops everything below it. Delegations inherit the user they act for, show on the agent and grant pages with a Revoke action, and the access log says "via sub-agent".
+
+Left open from acting on behalf of a user: fetching issuer keys from a JWKS URL (with rotation), budgets per user, and a console view of activity per user.
 
 ## Possible later integrations with HashiCorp
 

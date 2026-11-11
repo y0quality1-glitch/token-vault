@@ -1,7 +1,8 @@
+import { DelegationsCard } from '@/components/grant/DelegationsCard';
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { CalendarClock, CheckCircle2, FileClock, History, Pencil, ShieldOff, TimerOff } from 'lucide-react';
-import { PERMISSIONS, type GrantDetail } from '@token-vault/shared';
+import { PERMISSIONS, type GrantDetail, type OnBehalfOfMode } from '@token-vault/shared';
 import { operationLabel, useProviders } from '@/lib/providers';
 import { useApi, useMutation } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
@@ -16,6 +17,7 @@ import { DataTable } from '@/components/ui/table';
 import { PageHeader } from '@/components/ui/navigation';
 import { Mono } from '@/components/ui/secret';
 import { useToast } from '@/components/ui/toast';
+import { ActingForFields, actingForText } from '@/components/grant/ActingFor';
 import { formatDateTime, fromLocalInput, relativeTime, splitList, toLocalInput } from '@/lib/utils';
 
 export function GrantDetailPage() {
@@ -141,6 +143,7 @@ export function GrantDetailPage() {
                       'None'
                     ),
                 },
+                { label: 'Acting for users', value: actingForText(g.onBehalfOf, g.allowedUserGroups) },
                 { label: 'Source IP restriction', value: g.allowedCidrs.length ? g.allowedCidrs.join(', ') : 'None' },
                 { label: 'Approval', value: g.approvalRequired ? (g.approvedAt ? `Approved ${formatDateTime(g.approvedAt)}` : 'Required (pending)') : 'Not required' },
                 { label: 'Created by', value: `${g.createdByName} · ${formatDateTime(g.createdAt)}` },
@@ -180,6 +183,8 @@ export function GrantDetailPage() {
           </Card>
         </div>
       </div>
+
+      <DelegationsCard grantId={g.id} />
 
       <Card>
         <CardHeader title="Access history" description="Most recent decisions that referenced this grant" />
@@ -277,7 +282,7 @@ function EditRestrictionsDialog({ open, grant, onClose, onSaved }: { open: boole
   const provider = grant.scopes.map((x) => all.find((o) => o.id === x)?.provider).find(Boolean);
   const grantable = provider ? all.filter((o) => o.provider === provider) : all;
   const toast = useToast();
-  const [f, setF] = useState({ scopes: [] as string[], repositories: '', validFrom: '', expiresAt: '', rateLimitPerMinute: '', maxRequestsPerDay: '', maxWritesPerHour: '', allowedCidrs: '' });
+  const [f, setF] = useState({ scopes: [] as string[], repositories: '', validFrom: '', expiresAt: '', rateLimitPerMinute: '', maxRequestsPerDay: '', maxWritesPerHour: '', allowedCidrs: '', onBehalfOf: 'ALLOWED' as OnBehalfOfMode, allowedUserGroups: '' });
   const save = useMutation((body: unknown) => api.post<GrantDetail>(`/grants/${grant.id}/versions`, body));
   useEffect(() => {
     if (open)
@@ -290,6 +295,8 @@ function EditRestrictionsDialog({ open, grant, onClose, onSaved }: { open: boole
         maxRequestsPerDay: grant.maxRequestsPerDay ? String(grant.maxRequestsPerDay) : '',
         maxWritesPerHour: grant.maxWritesPerHour ? String(grant.maxWritesPerHour) : '',
         allowedCidrs: grant.allowedCidrs.join(', '),
+        onBehalfOf: grant.onBehalfOf ?? 'ALLOWED',
+        allowedUserGroups: (grant.allowedUserGroups ?? []).join(', '),
       });
   }, [open, grant]);
   const fe = save.fieldErrors;
@@ -318,6 +325,8 @@ function EditRestrictionsDialog({ open, grant, onClose, onSaved }: { open: boole
                 maxRequestsPerDay: f.maxRequestsPerDay.trim() ? Number(f.maxRequestsPerDay) : null,
                 maxWritesPerHour: f.maxWritesPerHour.trim() ? Number(f.maxWritesPerHour) : null,
                 allowedCidrs: splitList(f.allowedCidrs),
+                onBehalfOf: f.onBehalfOf,
+                allowedUserGroups: f.onBehalfOf === 'NOT_ALLOWED' ? [] : splitList(f.allowedUserGroups),
               });
               if (r) {
                 toast.success(`Grant version v${r.version} created`);
@@ -361,6 +370,7 @@ function EditRestrictionsDialog({ open, grant, onClose, onSaved }: { open: boole
           <Field label="Expiry" error={fe.expiresAt}>
             <Input type="datetime-local" value={f.expiresAt} onChange={(e) => setF({ ...f, expiresAt: e.target.value })} />
           </Field>
+          <ActingForFields mode={f.onBehalfOf} groups={f.allowedUserGroups} errors={fe} onChange={(v) => setF({ ...f, ...(v.mode ? { onBehalfOf: v.mode } : {}), ...(v.groups !== undefined ? { allowedUserGroups: v.groups } : {}) })} />
           <Field label="Allowed source CIDRs" error={fe['allowedCidrs.0']} className="sm:col-span-2">
             <Input className="font-mono text-xs" value={f.allowedCidrs} onChange={(e) => setF({ ...f, allowedCidrs: e.target.value })} />
           </Field>

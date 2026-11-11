@@ -109,6 +109,7 @@ The 5-step wizard asks for:
    - **Validity**: start and expiry (at most one year).
    - **Rate limit**: requests per minute.
    - **Budgets** (optional): requests per 24 hours, and writes (operations that change data) per hour. Over budget, requests are denied with `BUDGET_EXCEEDED`.
+   - **Acting for users**: whether the agent works for itself, only on behalf of a signed-in user, or either; optionally only for users in certain groups. See step 6.
    - **Source IP** (optional).
    - **Approval required** (optional): the grant stays pending until a Security Administrator approves it.
 5. **Review** and create.
@@ -135,17 +136,34 @@ Deny is checked before grants and always wins. Require approval is checked last,
 
 More detail, with every argument operator: [AGENTS.md](AGENTS.md#argument-rules-budgets-and-the-emergency-stop).
 
+### Agents that act on behalf of users (optional)
+
+**Who:** Security Administrator · **Where:** Settings → User Identity
+
+When an agent works for a signed-in person, Token Vault can limit it to what that person may do and record who it acted for.
+
+1. Your application team issues short-lived signed tokens (JWTs) for signed-in users and gives you the issuer (`iss`), the audience (`aud`) and the **public** key.
+2. **Add issuer** with those values. Use **Check a user token** on a sample token: it shows the user, groups and permissions Token Vault reads from it.
+3. On grants used for people, set **Acting for users** to *Only on behalf of a signed-in user*, and optionally limit the user groups.
+4. Optional policies on the user: argument rules on `user.groups`, `user.email` or `user.sub` (for example, deny when `user.groups` is one of `contractors`).
+
+**Check:** in the Access Playground, paste a user token into *On behalf of a user* and send a request. In **Access Logs**, the record shows "for <user>", and the *On behalf of user* filter finds it. More detail: [AGENTS.md](AGENTS.md#acting-on-behalf-of-a-user).
+
 ## 7. Connect the agent
 
 **Who:** Agent Developer · **Where:** the machine or service the agent runs on
 
 - **MCP clients (Claude Code, Claude Desktop):** run `npm run mcp:config` for ready-to-paste configuration, and export the agent's key as `TOKEN_VAULT_API_KEY`. The agent gets tools such as `github_create_issue` and `token_vault_list_access`.
-- **Your own code:** use the TypeScript SDK, `new TokenVault()` then `tv.execute({...})`.
+- **Your own code:** use the TypeScript SDK, `new TokenVault()` then `tv.execute({...})`. For an agent working for a person, `tv.forUser(userToken)`.
 - **Services on Kubernetes:** load the key from your secrets manager at start-up; see [examples/kubernetes](../examples/kubernetes/README.md).
 
 Either way, the agent holds only its Token Vault key, never the provider credential. Full guide: [AGENTS.md](AGENTS.md).
 
 **Check:** ask the agent to do something it is granted. The request appears in **Access Logs** as allowed.
+
+---
+
+**Sub-agents.** An agent that starts helpers can delegate part of a grant to each (SDK: `tv.delegate(…)`): fewer operations and resources, a short expiry, an optional request cap. You don't configure anything for this. Delegations show on the agent's **Access Grants** tab and on the grant's page, where you can **Revoke** one; that also stops every delegation made from it. The access log shows "via sub-agent <label>". More: [AGENTS.md](AGENTS.md#delegation-to-sub-agents).
 
 ---
 

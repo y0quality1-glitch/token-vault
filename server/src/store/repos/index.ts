@@ -13,3 +13,5 @@ export * as policyRepo from './policies';
 export * as auditRepo from './audit';
 export * as grantRequestRepo from './grant-requests';
 export * as approvalRepo from './operation-approvals';
+export * as userIssuerRepo from './user-issuers';
+export * as delegationRepo from './delegations';

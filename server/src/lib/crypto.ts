@@ -54,3 +54,18 @@ export function parseAgentCredential(apiKey: string): { keyId: string } | null {
 export function maskAgentKey(keyId: string) {
   return `${AGENT_KEY_PREFIX}${keyId}_••••••••••••`;
 }
+
+// ------------------------------------------------------------------ sub-agent delegation credentials
+// Format: tvdt_<keyId>_<secret>, like agent keys: keyId public (lookup), scrypt hash of the whole token stored.
+export const DELEGATION_TOKEN_PREFIX = 'tvdt_';
+
+export function generateDelegationToken() {
+  const keyId = randomBytes(6).toString('hex');
+  const token = `${DELEGATION_TOKEN_PREFIX}${keyId}_${randomBytes(24).toString('base64url')}`;
+  return { keyId, token, hash: hashSecret(token) };
+}
+
+export function parseDelegationToken(token: string): { keyId: string } | null {
+  const m = /^tvdt_([0-9a-f]{12})_[A-Za-z0-9_-]{20,64}$/.exec(token);
+  return m ? { keyId: m[1]! } : null;
+}

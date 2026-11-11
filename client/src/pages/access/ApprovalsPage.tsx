@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Check, Clock, Hand, ShieldAlert, X } from 'lucide-react';
-import { PERMISSIONS, type OperationApproval, type OperationApprovalStatus } from '@token-vault/shared';
+import { PERMISSIONS, actingUserLabel, type OperationApproval, type OperationApprovalStatus } from '@token-vault/shared';
 import { getOperation, operationLabel } from '@/lib/providers';
 import { useApi, useMutation } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
@@ -94,7 +94,17 @@ export function ApprovalsPage() {
             }
             columns={[
               { key: 'when', header: 'Requested', cell: (r) => <span className="whitespace-nowrap text-slate-500">{relativeTime(r.createdAt)}</span> },
-              { key: 'agent', header: 'Agent', cell: (r) => <span className="font-medium text-slate-900">{r.agentName}</span> },
+              {
+                key: 'agent',
+                header: 'Agent',
+                cell: (r) => (
+                  <div className="min-w-0">
+                    <span className="font-medium text-slate-900">{r.agentName}</span>
+                    {r.delegation && <span className="block text-xs text-slate-500">via sub-agent {r.delegation.label}</span>}
+                    {r.onBehalfOf && <span className="block text-xs text-slate-500">for {actingUserLabel(r.onBehalfOf)}</span>}
+                  </div>
+                ),
+              },
               { key: 'op', header: 'Operation', cell: (r) => <Badge tone={isDestructive(r.operation) ? 'red' : 'blue'}>{operationLabel(r.operation)}{isDestructive(r.operation) ? ' · destructive' : ''}</Badge> },
               { key: 'res', header: 'Resource', cell: (r) => <span className="font-mono text-xs">{resourceText(r.resource)}</span>, hideBelow: 'md' },
               { key: 'policy', header: 'Policy', cell: (r) => r.policyName, hideBelow: 'xl' },
@@ -159,6 +169,8 @@ function ApprovalDrawer({ approval: r, onClose, onDecided }: { approval: Operati
         <DetailList
           items={[
             { label: 'Agent', value: <Link className="text-brand-700 hover:underline" to={`/agents/${r.agentId}`}>{r.agentName}</Link> },
+            ...(r.delegation ? [{ label: 'Via sub-agent', value: `${r.delegation.label} (delegation ${r.delegation.id})` }] : []),
+            { label: 'On behalf of', value: r.onBehalfOf ? `${actingUserLabel(r.onBehalfOf)} (verified by ${r.onBehalfOf.issuer})` : 'The agent itself' },
             { label: 'Integration', value: r.integrationName },
             { label: 'Required by', value: <Link className="text-brand-700 hover:underline" to="/access/policies">{r.policyName}</Link> },
             { label: 'Requested', value: formatDateTime(r.createdAt) },

@@ -219,6 +219,119 @@ export interface Grant {
   /** Access reviews: when a reviewer last certified the grant (null: never reviewed). */
   lastReviewedAt?: ISODate | null;
   lastReviewedBy?: string | null;
+  /** Acting for users: whether requests must, may or must not carry a signed user token (default ALLOWED). */
+  onBehalfOf?: OnBehalfOfMode;
+  /** When set, the acting user must be in one of these groups (from the user token). Empty: any user. */
+  allowedUserGroups?: string[];
+}
+
+/**
+ * Acting on behalf of a user. ALLOWED: the agent may act for itself or for a user.
+ * REQUIRED: every request must carry a valid user token. NOT_ALLOWED: the agent acts only for itself.
+ */
+export type OnBehalfOfMode = 'ALLOWED' | 'REQUIRED' | 'NOT_ALLOWED';
+
+/** The user an agent acted for, from a verified user token. */
+export interface ActingUser {
+  /** The token's subject: the user's id in the customer's identity system. */
+  sub: string;
+  email?: string | null;
+  name?: string | null;
+  groups: string[];
+  /**
+   * What this user may let an agent do, from the token's "token_vault" claim (absent: no
+   * limit beyond the grant). Operations are selectors (github.issues.create, github.*, github:write,
+   * risk:read); resources are values of the operation's primary resource, "*" at the end
+   * matching any suffix (demo-org/*).
+   */
+  permissions?: { operations?: string[]; resources?: string[] } | null;
+  /** The registered issuer that vouched for the user. */
+  issuerId: string;
+  issuer: string;
+}
+
+/**
+ * An identity provider (or the customer's own application) trusted to vouch for the users
+ * agents act for. Tokens are JWTs signed with an asymmetric key (RS256, ES256 or EdDSA).
+ */
+export interface UserIssuer {
+  id: string;
+  organizationId: string;
+  name: string;
+  /** Must equal the token's "iss" claim. */
+  issuer: string;
+  /** Must be one of the token's "aud" values. */
+  audience: string;
+  /** Public key, PEM or JWK (JSON). Never a secret. */
+  publicKey: string;
+  /** Short fingerprint of the key, for display. */
+  keyFingerprint: string;
+  /** Claim holding the user's groups (default "groups"). */
+  groupsClaim: string;
+  /** Longest accepted token lifetime (exp - iat), in seconds. */
+  maxTokenLifetimeSeconds: number;
+  enabled: boolean;
+  createdAt: ISODate;
+  updatedAt: ISODate;
+  lastUsedAt?: ISODate | null;
+}
+
+/**
+ * Delegation to a sub-agent: a narrower, short-lived slice of one of an agent's grants,
+ * used with its own one-time token (tvdt_…). It can only narrow: operations and resources
+ * within the grant (or the parent delegation), an earlier expiry, an optional request cap.
+ * Every request still runs against the parent agent's grant, so revoking that grant (or
+ * disabling the agent, or revoking any delegation up the chain) stops it.
+ */
+export interface Delegation {
+  id: string;
+  organizationId: string;
+  /** The agent whose grant is delegated. */
+  agentId: string;
+  grantId: string;
+  /** Set when a sub-agent delegated further (depth 2 or 3). */
+  parentDelegationId: string | null;
+  depth: number;
+  /** What the sub-agent is for, as the delegating agent described it (agent-written). */
+  label: string;
+  operations: string[];
+  /** Allowed values of the primary resource. Empty: whatever the grant allows. */
+  resources: string[];
+  /** Cap on authorized requests over the delegation's life (null: none beyond the grant's limits). */
+  maxRequests: number | null;
+  /** The user every request is made for, when the delegation was created on behalf of one. */
+  onBehalfOf: ActingUser | null;
+  keyId: string;
+  createdAt: ISODate;
+  expiresAt: ISODate;
+  revokedAt: ISODate | null;
+  /** "agent:<id>", "delegation:<id>" or a console user id. */
+  revokedBy: string | null;
+  revocationReason: string | null;
+  lastUsedAt: ISODate | null;
+}
+
+export type DelegationStatus = 'ACTIVE' | 'EXPIRED' | 'REVOKED';
+
+/** Console view of a delegation. */
+export interface DelegationView extends Delegation {
+  /** Effective status: REVOKED also when a delegation up the chain was revoked. */
+  status: DelegationStatus;
+  statusReason: string | null;
+  agentName: string;
+  grantName: string;
+  integrationId: string;
+  integrationName: string;
+  /** Authorized requests made with it so far. */
+  used: number;
+}
+
+/** What an access record or approval keeps about the delegation a request came through. */
+export interface DelegationRef {
+  id: string;
+  label: string;
+  depth: number;
+  parentId: string | null;
 }
 
 export interface GrantDetail extends Grant {
@@ -317,6 +430,10 @@ export interface AccessRequest {
   idempotencyKey: string | null;
   checks: DecisionCheck[];
   createdAt: ISODate;
+  /** The user the agent acted for (absent: the agent acted for itself). */
+  onBehalfOf?: ActingUser | null;
+  /** The sub-agent delegation the request came through (absent: the agent itself). */
+  delegation?: DelegationRef | null;
   /** Tamper evidence: position in the organization's hash chain (null for pre-chain records). */
   seq?: number | null;
   prevHash?: string | null;
@@ -379,6 +496,8 @@ export interface ExecuteRequestBody {
   idempotency_key?: string;
   /** An APPROVED operation approval for exactly this request (same integration, operation, resource and input). */
   approval_id?: string;
+  /** A signed user token (JWT from a registered issuer): the agent acts for that user. */
+  on_behalf_of?: string;
 }
 
 export interface ExecuteResponseBody {
@@ -403,6 +522,10 @@ export interface ExecuteResponseBody {
   checks: DecisionCheck[];
   /** Set when a REQUIRE_APPROVAL policy applies: the approval this request waits for, or the one it used. */
   approval?: { approval_id: string; status: OperationApprovalStatus; expires_at: ISODate } | null;
+  /** The verified user the request was made for (absent: the agent acted for itself). */
+  acting_for?: { sub: string; email: string | null; name: string | null; issuer: string } | null;
+  /** The delegation the request came through, when a sub-agent sent it. */
+  delegation?: { delegation_id: string; label: string; used: number; max_requests: number | null } | null;
 }
 
 export interface ApiErrorBody {
@@ -417,6 +540,8 @@ export interface Paginated<T> {
 /** GET /agent/v1/capabilities: the calling agent's own grants and their current status (superseded versions omitted). */
 export interface AgentCapabilitiesBody {
   agent: { id: string; name: string; status: 'ACTIVE' | 'DISABLED'; organization: string };
+  /** Set when the caller is a sub-agent: its one grant is narrowed to the delegation. */
+  delegation?: AgentDelegationBody | null;
   grants: {
     grant_id: string;
     name: string;
@@ -431,6 +556,9 @@ export interface AgentCapabilitiesBody {
     /** Budgets (null: no limit): authorized requests per rolling 24 hours, write operations per rolling hour. */
     max_requests_per_day: number | null;
     max_writes_per_hour: number | null;
+    /** Whether requests must (REQUIRED), may (ALLOWED) or must not (NOT_ALLOWED) carry a user token. */
+    on_behalf_of: OnBehalfOfMode;
+    allowed_user_groups: string[];
     valid_from: ISODate;
     expires_at: ISODate;
   }[];
@@ -550,6 +678,29 @@ export interface OperationApproval {
   decisionNote: string | null;
   executedAt: ISODate | null;
   executedRequestId: string | null;
+  /** The user the agent asked to act for: the approval covers only requests for this user. */
+  onBehalfOf?: ActingUser | null;
+  /** The sub-agent delegation that asked (absent: the agent itself). */
+  delegation?: DelegationRef | null;
+}
+
+/** Agent API view of a delegation (never includes its token, except once on creation). */
+export interface AgentDelegationBody {
+  delegation_id: string;
+  label: string;
+  grant_id: string;
+  parent_delegation_id: string | null;
+  depth: number;
+  operations: string[];
+  resources: string[];
+  max_requests: number | null;
+  used: number;
+  on_behalf_of: { sub: string; email: string | null; issuer: string } | null;
+  status: DelegationStatus;
+  status_reason: string | null;
+  created_at: ISODate;
+  expires_at: ISODate;
+  revoked_at: ISODate | null;
 }
 
 /** Agent API view of an approval its request is waiting for. */
@@ -565,6 +716,8 @@ export interface AgentApprovalBody {
   decided_at: ISODate | null;
   decision_note: string | null;
   executed_request_id: string | null;
+  /** The user the request acts for: running it again needs a valid token for this user. */
+  on_behalf_of?: { sub: string; issuer: string } | null;
 }
 
 // ---------------------------------------------------------------- Audit integrity

@@ -29,6 +29,20 @@ export const DECISION_CODES = {
   APPROVAL_REJECTED: 'APPROVAL_REJECTED',
   /** The approval_id sent is unknown, expired, already used, or for a different request. */
   APPROVAL_INVALID: 'APPROVAL_INVALID',
+  /** The on_behalf_of user token is malformed, expired, from an unknown issuer, or its signature is invalid. */
+  USER_TOKEN_INVALID: 'USER_TOKEN_INVALID',
+  /** The grant only allows acting for a user, and the request carries no user token. */
+  USER_REQUIRED: 'USER_REQUIRED',
+  /** The grant does not allow acting for this user (acting for users not allowed, or the user is not in an allowed group). */
+  USER_NOT_ALLOWED: 'USER_NOT_ALLOWED',
+  /** The request is outside what the user's token permits (operations or resources). */
+  USER_PERMISSION_DENIED: 'USER_PERMISSION_DENIED',
+  /** The sub-agent's delegation, or one up its chain, was revoked. */
+  DELEGATION_REVOKED: 'DELEGATION_REVOKED',
+  /** The sub-agent's delegation, or one up its chain, expired. */
+  DELEGATION_EXPIRED: 'DELEGATION_EXPIRED',
+  /** The request is outside what the delegation allows (grant, operation, resource, user, or its request cap). */
+  DELEGATION_DENIED: 'DELEGATION_DENIED',
   WEBHOOK_UNAVAILABLE: 'WEBHOOK_UNAVAILABLE',
   UPSTREAM_ERROR: 'UPSTREAM_ERROR',
 } as const;
@@ -59,6 +73,13 @@ export const DECISION_LABELS: Record<string, string> = {
   APPROVAL_POLICY_MISSING: 'Destructive operation without approval policy',
   APPROVAL_REJECTED: 'Approval rejected',
   APPROVAL_INVALID: 'Invalid approval',
+  USER_TOKEN_INVALID: 'Invalid user token',
+  USER_REQUIRED: 'User required',
+  USER_NOT_ALLOWED: 'User not allowed',
+  USER_PERMISSION_DENIED: 'Outside user permissions',
+  DELEGATION_REVOKED: 'Delegation revoked',
+  DELEGATION_EXPIRED: 'Delegation expired',
+  DELEGATION_DENIED: 'Outside delegation',
   WEBHOOK_UNAVAILABLE: 'Webhook unavailable',
   UPSTREAM_ERROR: 'Upstream provider error',
 };

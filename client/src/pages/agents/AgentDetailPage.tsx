@@ -1,3 +1,4 @@
+import { DelegationsCard } from '@/components/grant/DelegationsCard';
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Ban, Bot, KeyRound, Power, RefreshCw, ShieldOff } from 'lucide-react';
@@ -210,6 +211,8 @@ export function AgentDetailPage() {
           />
         </Card>
       )}
+
+      {tab === 'grants' && <DelegationsCard agentId={a.id} />}
 
       {tab === 'activity' && (
         <Card>

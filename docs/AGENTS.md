@@ -62,10 +62,12 @@ Each GitHub tool takes `repository` (`owner/name`) and an optional `integration`
 
 | Variable | Purpose |
 | --- | --- |
-| `TOKEN_VAULT_API_KEY` | The agent's credential (required) |
+| `TOKEN_VAULT_API_KEY` | The agent's credential, or a sub-agent's delegation token (`tvdt_…`) (required) |
 | `TOKEN_VAULT_URL` | Control plane URL (default `http://localhost:4000`) |
 | `TOKEN_VAULT_ORG` | Optional org slug, used only to attribute failed authentication in the audit log |
 | `TOKEN_VAULT_TOOLS_REFRESH_S` | How often to re-read the catalog for new or changed application tools (default 60; `0` = only at start-up) |
+| `TOKEN_VAULT_USER_TOKEN_FILE` | Optional: act on behalf of a user. A file with the user's signed token, re-read on every call |
+| `TOKEN_VAULT_USER_TOKEN` | Optional: the user's signed token itself (it expires, so prefer the file) |
 
 The server speaks MCP over stdio and writes diagnostics to stderr only. It never prints the key.
 
@@ -141,6 +143,92 @@ A missing field counts as empty text. For *is greater than* and *is less than*, 
 - Both are audited: `organization.emergency_stop` (critical) and `organization.emergency_stop_lifted`.
 - To stop a single agent or integration instead, disable that agent or integration.
 
+## Acting on behalf of a user
+
+Most agents work for a person: a support assistant answers for the signed-in customer, a coding assistant files issues for the developer who asked. Token Vault can limit such an agent to what **both** its own grant and that user allow, and record "agent X for user Y" in the access log.
+
+**How the user is proven.** Your application (or identity provider) signs a short-lived JWT for the signed-in user. The agent sends it as `on_behalf_of` with each request. Token Vault checks it against an issuer registered under **Settings → User Identity**, using only that issuer's public key, so nothing in Token Vault can mint a user token.
+
+1. **Register the issuer** (Settings → User Identity → *Add issuer*; Owner or Security Administrator): its `iss`, the `aud` your tokens name, and the public key (PEM or JWK; RSA 2048+, EC P-256/P-384 or Ed25519). A private key is refused. Set the longest token lifetime you accept (default 1 hour) and the claim holding the user's groups (default `groups`). *Check a user token* verifies a token without running anything.
+2. **Choose per grant** (*Acting for users*):
+   - *For itself or for a signed-in user* (default): requests may carry a user token.
+   - *Only on behalf of a signed-in user*: a request without a valid user token is denied (`USER_REQUIRED`).
+   - *Only for itself*: a request with a user token is denied (`USER_NOT_ALLOWED`), for background jobs.
+   - *Allowed user groups* (optional): the user must be in one of them (`USER_NOT_ALLOWED` otherwise).
+3. **Mint the token** in your application:
+
+   ```json
+   {
+     "iss": "https://login.acme.com",
+     "aud": "token-vault",
+     "sub": "u_8f2c",
+     "email": "ada@acme.com",
+     "name": "Ada Lovelace",
+     "groups": ["support"],
+     "token_vault": { "operations": ["github:read", "github.issues.create"], "resources": ["acme/support-*"] },
+     "iat": 1794405600,
+     "exp": 1794406200
+   }
+   ```
+
+   Signed with RS256/384/512, ES256/384 or EdDSA (never HS256 or `none`). `exp` is required; `sub` names the user.
+
+**The user's own permissions.** The optional `token_vault` claim says what this user may let an agent do. `operations` are selectors (`github.issues.create`, `github.*`, `github:write`, `risk:read`); `resources` are values of the operation's primary resource, with `*` at the end matching any suffix (`acme/support-*`). A request outside them is denied with `USER_PERMISSION_DENIED`, even if the agent's grant would allow it. Without the claim, only the grant applies.
+
+**Policies can name users** through argument rules: `user.sub`, `user.email`, `user.name`, `user.groups` (holds when any of the user's groups matches; a negated rule when none does) and `user.issuer`. They are empty when the agent acts for itself. Examples:
+
+| Rule | Decision | Effect |
+| --- | --- | --- |
+| `user.groups` is one of `contractors` | Deny | Contractors can't have agents act for them here |
+| `user.sub` equals `""` | Deny | No request without a user, for every grant the policy covers |
+| `user.groups` is not one of `finance` | Require approval | A human approves requests for anyone outside finance |
+
+**What is checked, in order.** An invalid token (forged, expired, unknown or disabled issuer, wrong audience, too long-lived) is denied with `USER_TOKEN_INVALID` before anything else, and recorded. Otherwise step 9 of the evaluation, *Acting user*, picks a grant that fits the user (or the absence of one) and applies the user's permissions.
+
+**Approvals are per user.** An approval given for a request made for one user cannot run that request for another: the user is part of the approved request. Running it again needs a valid token for the same user.
+
+**What is recorded.** Each access record keeps the verified user (subject, email, name, groups, permissions, issuer). The access log shows "for Ada Lovelace (ada@acme.com)" and filters by user. The customer webhook receives the user's subject, email and issuer (`acting_user`) and logs the subject.
+
+**Connecting.**
+
+- SDK: `tv.forUser(token)` returns a client that sends the token on every request; pass a function to fetch a fresh token each time. Or pass `onBehalfOf` per request.
+- MCP: set `TOKEN_VAULT_USER_TOKEN_FILE` to a file holding the token (re-read on every call, so another process can refresh it), or `TOKEN_VAULT_USER_TOKEN`. `token_vault_list_access` says which grants need a user. User denials are reported to the model as not resolvable by an access request.
+- Access Playground: paste a token into *On behalf of a user*.
+
+## Delegation to sub-agents
+
+Multi-agent systems split work: a coordinator starts helpers, each needing a little of its access for a short time. Instead of sharing its API key, the agent **delegates**: it hands a sub-agent a narrower, short-lived slice of one grant, with its own token.
+
+```ts
+const tv = new TokenVault(); // the coordinator, with its own tvak_ key
+const d = await tv.delegate({
+  grantId: 'grt_…',
+  label: 'Issue triage helper',          // shown to administrators and in the audit log
+  operations: ['github.issues.list'],    // within the grant, never destructive
+  resources: ['acme/support'],           // within the grant's; empty = as the grant allows
+  expiresInSeconds: 900,                 // default 1 hour, at most 24 hours
+  maxRequests: 50,                       // optional cap over the delegation's life
+});
+const helper = new TokenVault({ apiKey: d.token }); // tvdt_…, shown once
+```
+
+**It can only narrow.** Operations and resources must be within the grant (for a sub-agent delegating further: within its own delegation). Destructive operations cannot be delegated. The expiry never passes the grant's, the parent delegation's, or (when acting for a user) the user token's. A request cap is never above the parent's. Delegations nest at most 3 levels, and an agent can have at most 50 active ones.
+
+**Every request is still the agent's.** A sub-agent's request is evaluated as the delegating agent's, restricted to the delegated grant, then step 10 (*Delegation limits*) checks the delegated operations, resources and request cap (`DELEGATION_DENIED`). Policies, budgets, rate limits and approvals of the agent apply as usual. So:
+
+- revoking the grant, disabling the agent, or the emergency stop stops every delegation made from them;
+- revoking a delegation (`DELEGATION_REVOKED`) stops it and everything delegated from it, from the next request;
+- an expired one is denied with `DELEGATION_EXPIRED`;
+- a new grant version (Edit restrictions) carries its delegations over, and they are narrowed by it.
+
+**Users.** A delegation created on behalf of a user (`onBehalfOf`, or a client made with `forUser`) makes every sub-agent request for that user, and never outlives the user's token. A sub-agent cannot send a user token of its own (`DELEGATION_DENIED`). A delegation made for the agent itself cannot be used for a user.
+
+**What a sub-agent can do through the agent API:** `/execute`, `/capabilities` (only its slice, plus a `delegation` block), `/operations`, `/requests/:id` and `/approvals/:id` for its own requests, and `/delegations` to delegate further, list and revoke what it delegated. It cannot request access just in time (403): it may only narrow. Approvals are bound to the sub-agent that asked.
+
+**Seeing and stopping them.** Each agent's **Access Grants** tab and each grant's page list its delegations: what was delegated, how many requests were used, status, and who it acts for. Owners, Vault Administrators and Security Administrators can **Revoke** one with a reason. The access log shows "via sub-agent <label>" on every request a sub-agent made, and the audit has `delegation.created` and `delegation.revoked`.
+
+**MCP.** Start the sub-agent's MCP server with its delegation token as `TOKEN_VAULT_API_KEY`. `token_vault_list_access` tells the model it is a sub-agent and what it was delegated; delegation denials are reported as final.
+
 ## 2b. TypeScript SDK
 
 ```ts
@@ -184,6 +272,8 @@ try {
     if (a.status === 'APPROVED') await tv.executeApproved(e.approvalId);
   }
   ```
+- To hand part of a grant to a sub-agent, `tv.delegate({ grantId, label, operations, resources?, expiresInSeconds?, maxRequests? })` returns a `tvdt_` token for `new TokenVault({ apiKey: token })`; `listDelegations()` and `revokeDelegation(id)` manage them. See *Delegation to sub-agents*.
+- To act on behalf of a user, use `const ada = tv.forUser(userToken)` (or a function returning a fresh token) and call `ada.execute(…)`, or pass `onBehalfOf` per request. User denials (`USER_REQUIRED`, `USER_NOT_ALLOWED`, `USER_PERMISSION_DENIED`, `USER_TOKEN_INVALID`) are thrown as `AccessDeniedError`. The token is never logged or serialized.
 - An idempotency key is generated for every request, so retrying a creating operation is safe.
 - The key is held in a private field: `console.log(tv)` and `JSON.stringify(tv)` show only `baseUrl` and the public `keyId`.
 

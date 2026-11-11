@@ -28,6 +28,7 @@ import { AccessLogsPage } from '@/pages/audit/AccessLogsPage';
 import { SecurityEventsPage } from '@/pages/audit/SecurityEventsPage';
 import { OrganizationSettingsPage } from '@/pages/settings/OrganizationSettingsPage';
 import { MembersPage } from '@/pages/settings/MembersPage';
+import { UserIdentityPage } from '@/pages/settings/UserIdentityPage';
 import { ApiClientsPage } from '@/pages/settings/ApiClientsPage';
 import { OAuthCallbackPage } from '@/pages/integrations/OAuthCallbackPage';
 
@@ -89,6 +90,7 @@ export function App() {
         <Route path="settings/organization" element={<OrganizationSettingsPage />} />
         <Route path="settings/members" element={<MembersPage />} />
         <Route path="settings/api-clients" element={<ApiClientsPage />} />
+        <Route path="settings/user-identity" element={<UserIdentityPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>

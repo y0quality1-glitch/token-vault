@@ -13,6 +13,8 @@ import { dashboardRouter } from './modules/dashboard/dashboard.routes';
 import { demoRouter } from './modules/demo/demo.routes';
 import { grantRequestsRouter } from './modules/grant-requests/grant-requests.routes';
 import { approvalsRouter } from './modules/approvals/approvals.routes';
+import { userIssuersRouter } from './modules/user-issuers/user-issuers.routes';
+import { delegationsRouter } from './modules/delegations/delegations.routes';
 import { accessReviewsRouter } from './modules/access-reviews/access-reviews.routes';
 import { agentRouter } from './modules/broker/agent.routes';
 import { providersRouter } from './modules/providers/providers.routes';
@@ -46,6 +48,8 @@ export function createApp() {
   orgScoped.use(approvalsRouter);
   orgScoped.use(accessReviewsRouter);
   orgScoped.use(policiesRouter);
+  orgScoped.use(userIssuersRouter);
+  orgScoped.use(delegationsRouter);
   orgScoped.use(auditRouter);
   orgScoped.use(demoRouter);
   api.use(orgScoped);

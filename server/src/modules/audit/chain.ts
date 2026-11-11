@@ -29,10 +29,17 @@ export function canonical(value: unknown): string {
   return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(',')}}`;
 }
 
+/**
+ * Columns added after chaining began. They are left out of the hashed content when null,
+ * so records written before the column existed (read back as null) keep their hash.
+ */
+export const LATER_FIELDS = ['onBehalfOf', 'delegation'] as const;
+
 /** The record's own content, without chain fields. */
 export function content<T extends Record<string, unknown>>(record: T): Record<string, unknown> {
   const out: Record<string, unknown> = { ...record };
   for (const f of CHAIN_FIELDS) delete out[f];
+  for (const f of LATER_FIELDS) if (out[f] === null) delete out[f];
   return out;
 }
 

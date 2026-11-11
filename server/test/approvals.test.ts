@@ -105,7 +105,7 @@ suite('operation approvals', () => {
     // Re-sending the approved request runs it (the webhook is not running in this test).
     const run = await createIssue('Release checklist');
     expect(run.body).toMatchObject({ decision: 'ALLOW', approval: { approval_id: pending!.id, status: 'EXECUTED' } });
-    expect(run.body.checks.find((c) => c.step === 11)).toMatchObject({ passed: true, detail: expect.stringContaining('Approved by') });
+    expect(run.body.checks.find((c) => c.name === 'Human approval')).toMatchObject({ passed: true, detail: expect.stringContaining('Approved by') });
     expect(await m.repos.approvalRepo.getApproval(m.seed.IDS.demoOrg, pending!.id)).toMatchObject({ status: 'EXECUTED', executedRequestId: run.body.request_id });
 
     // Used once: the explicit approval_id is now refused, and a plain re-send asks again.

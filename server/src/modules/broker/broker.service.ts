@@ -2,6 +2,8 @@ import { z } from 'zod';
 import {
   DECISION_CODES,
   type AccessRequest,
+  type ActingUser,
+  type DelegationRef,
   type DecisionCheck,
   type AgentCapabilitiesBody,
   type AgentOperationsBody,
@@ -15,7 +17,11 @@ import { isCredentialRejection, reportCredentialRejected } from '../integrations
 import { parseAgentCredential, verifySecret } from '../../lib/crypto';
 import { correlationId as newCorrelationId, nonce, requestId as newRequestId } from '../../lib/ids';
 import { transaction } from '../../db/client';
-import { agentRepo, approvalRepo, auditRepo, grantRepo, integrationRepo, orgRepo, policyRepo, webhookRepo } from '../../store/repos';
+import { agentRepo, approvalRepo, auditRepo, grantRepo, integrationRepo, orgRepo, policyRepo, userIssuerRepo, webhookRepo } from '../../store/repos';
+import { USER_TOKEN_LIMITS, verifyUserToken } from '../../lib/user-token';
+import { DELEGATION_TOKEN_PREFIX } from '../../lib/crypto';
+import { delegationRepo } from '../../store/repos';
+import { agentBody as delegationAgentBody, refOf, resolveDelegationToken, type DelegationContext } from '../delegations/delegations.service';
 import { APPROVAL_LIMITS, approvalSummary, createPending, lookupApproval, requestDigest } from '../approvals/approvals.service';
 import type { AgentRecord, GrantRecord, IntegrationRecord } from '../../store/types';
 import { effectiveGrantStatus } from '../../store/views';
@@ -41,6 +47,8 @@ const bodySchema = z.object({
   input: z.record(z.unknown()).default({}),
   idempotency_key: z.string().min(1).max(128).optional(),
   approval_id: z.string().min(1).max(64).optional(),
+  /** A signed user token (JWT): the agent acts on behalf of that user. */
+  on_behalf_of: z.string().min(1).max(USER_TOKEN_LIMITS.MAX_TOKEN_LENGTH).optional(),
 });
 
 // ---------------------------------------------------------------- rate limit + idempotency (in-memory)
@@ -79,6 +87,11 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
   const started = Date.now();
   const requestId = newRequestId();
   const correlationId = newCorrelationId();
+  /** Set once the user token is verified: every later decision is recorded as made for this user. */
+  let actingUser: ActingUser | null = null;
+  /** Set when a sub-agent sent the request with a delegation token. */
+  let viaDelegation: DelegationRef | null = null;
+  let delegationNote: { used: number; max: number | null } | null = null;
 
   const respond = async (args: {
     status: number;
@@ -123,6 +136,8 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
       result: args.result,
       checks: args.checks,
       ...(args.approval ? { approval: args.approval } : {}),
+      ...(actingUser ? { acting_for: { sub: actingUser.sub, email: actingUser.email ?? null, name: actingUser.name ?? null, issuer: actingUser.issuer } } : {}),
+      ...(viaDelegation ? { delegation: { delegation_id: viaDelegation.id, label: viaDelegation.label, used: (delegationNote?.used ?? 0) + (args.decision === 'ALLOW' ? 1 : 0), max_requests: delegationNote?.max ?? null } } : {}),
     };
     const waiting = args.code === DECISION_CODES.APPROVAL_REQUIRED;
     // Every decision is audited (when the organization can be attributed).
@@ -156,15 +171,17 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
           idempotencyKey: args.idempotencyKey,
           checks: args.checks,
           createdAt: new Date().toISOString(),
+          onBehalfOf: actingUser,
+          delegation: viaDelegation,
         }, tx);
         await recordEvent({
           orgId,
-          actor: args.agent ? { type: 'AGENT', id: args.agent.id, name: args.agent.name } : { type: 'AGENT', id: 'unknown', name: 'Unknown agent' },
+          actor: args.agent ? { type: 'AGENT', id: args.agent.id, name: viaDelegation ? `${args.agent.name} via ${viaDelegation.label}` : args.agent.name } : { type: 'AGENT', id: 'unknown', name: 'Unknown agent' },
           eventType: waiting ? 'access.approval_required' : args.decision === 'DENY' ? 'access.denied' : failed ? 'access.execution_failed' : 'access.allowed',
           target: args.integration ? { type: 'integration', id: args.integration.id, name: args.integration.displayName } : { type: 'integration', id: 'unknown', name: '—' },
           outcome: args.decision === 'DENY' ? 'DENIED' : failed ? 'FAILURE' : 'SUCCESS',
           severity: (args.decision === 'ALLOW' && !failed) || waiting ? 'info' : ['AGENT_UNAUTHENTICATED', 'POLICY_DENIED', 'AGENT_DISABLED', 'GRANT_REVOKED', 'EMERGENCY_STOP'].includes(args.code) ? 'critical' : 'warning',
-          metadata: { requestId, operation: args.operation, ...args.resource, decisionCode: args.code, grantId: args.grant?.id ?? null, upstreamStatus: args.upstreamStatus, ...(args.credential ? { credential: args.credential } : {}), ...(args.approval ? { approvalId: args.approval.approval_id } : {}) },
+          metadata: { requestId, operation: args.operation, ...args.resource, decisionCode: args.code, grantId: args.grant?.id ?? null, upstreamStatus: args.upstreamStatus, ...(args.credential ? { credential: args.credential } : {}), ...(args.approval ? { approvalId: args.approval.approval_id } : {}), ...(actingUser ? { onBehalfOf: actingUser.sub, userIssuer: actingUser.issuer } : {}), ...(viaDelegation ? { delegationId: viaDelegation.id } : {}) },
           correlationId,
         }, tx);
       });
@@ -179,7 +196,24 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
 
   // ---- Step 1: authenticate the caller from its credential (never from a caller-supplied agent id)
   const token = /^Bearer\s+(\S+)$/i.exec(ctx.authorization ?? '')?.[1] ?? '';
-  const verified = await verifyAgentKey(token);
+  // A sub-agent authenticates with a delegation token; it acts as the delegating agent, narrowed.
+  let delegation: DelegationContext | null = null;
+  let verified: { agent: AgentRecord | null; ok: boolean; previousKeyExpiresAt: string | null; reason?: string };
+  if (token.startsWith(DELEGATION_TOKEN_PREFIX)) {
+    const d = await resolveDelegationToken(token);
+    if (!d.ok && d.delegation && d.agent) {
+      // A genuine but revoked or expired delegation: denied, and recorded against its agent.
+      viaDelegation = refOf(d.delegation);
+      return respond({ ...base, status: 403, orgId: d.agent.organizationId, agent: d.agent, integration: null, operation: opGuess, resource: resGuess, decision: 'DENY', code: d.code, reason: d.reason, checks: [{ step: 1, name: CHECK_NAMES[0], passed: false, detail: d.reason }, ...skippedChecks(2)] });
+    }
+    verified = d.ok ? { agent: d.agent, ok: true, previousKeyExpiresAt: null } : { agent: d.agent, ok: false, previousKeyExpiresAt: null, reason: d.reason };
+    if (d.ok) {
+      delegation = d.ctx;
+      viaDelegation = refOf(d.ctx.delegation);
+    }
+  } else {
+    verified = await verifyAgentKey(token);
+  }
   const agent = verified.agent;
   if (!verified.ok || !agent) {
     // Attribute to an org only for audit visibility: the key's org if the key id is known, else the non-authoritative hint.
@@ -206,7 +240,7 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
     step: 1,
     name: CHECK_NAMES[0],
     passed: true,
-    detail: `Authenticated as ${agent.name} (${agent.id}) from credential${verified.previousKeyExpiresAt ? `; this key was rotated and stops working at ${verified.previousKeyExpiresAt}` : ''}`,
+    detail: `Authenticated as ${agent.name} (${agent.id}) from ${delegation ? `delegation ${delegation.delegation.id} to sub-agent "${delegation.delegation.label}"` : 'credential'}${verified.previousKeyExpiresAt ? `; this key was rotated and stops working at ${verified.previousKeyExpiresAt}` : ''}`,
   };
 
   // ---- Request validation (malformed requests are denied and audited)
@@ -239,8 +273,29 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
     return respond({ ...base, status: 400, orgId, agent, integration, operation: operation.id, resource, decision: 'DENY', code: DECISION_CODES.UNKNOWN_OPERATION, reason: `Operation "${operation.id}" belongs to ${operation.provider}, but integration "${integration.displayName}" is ${integration.provider}.`, checks: [authCheck, ...skippedChecks(2)] });
   }
 
-  // ---- Human approval (REQUIRE_APPROVAL policies): find the approval for exactly this request.
-  const shape = { integrationId: integration.id, operation: operation.id, resource, input: req.input };
+  // ---- Acting on behalf of a user: verify the user token before anything is decided for that user.
+  // A sub-agent acts for the user its delegation was created for (or for nobody), never another.
+  if (delegation) {
+    if (req.on_behalf_of !== undefined) {
+      const reason = delegation.delegation.onBehalfOf
+        ? `Sub-agent "${delegation.delegation.label}" acts for ${delegation.delegation.onBehalfOf.sub}, as its delegation says; it does not send a user token.`
+        : `Sub-agent "${delegation.delegation.label}" was delegated access for the agent itself, not on behalf of a user.`;
+      return respond({ ...base, status: 403, orgId, agent, integration, operation: operation.id, resource, decision: 'DENY', code: DECISION_CODES.DELEGATION_DENIED, reason, checks: [authCheck, ...skippedChecks(2)], idempotencyKey: req.idempotency_key ?? null });
+    }
+    actingUser = delegation.delegation.onBehalfOf;
+  } else if (req.on_behalf_of !== undefined) {
+    const issuers = await userIssuerRepo.listIssuers(orgId);
+    const verifiedUser = verifyUserToken(req.on_behalf_of, issuers);
+    if (!verifiedUser.ok) {
+      const reason = `${verifiedUser.reason} Nothing was run.`;
+      return respond({ ...base, status: 403, orgId, agent, integration, operation: operation.id, resource, decision: 'DENY', code: DECISION_CODES.USER_TOKEN_INVALID, reason, checks: [authCheck, ...skippedChecks(2)], idempotencyKey: req.idempotency_key ?? null });
+    }
+    actingUser = verifiedUser.user;
+    await userIssuerRepo.updateIssuer(orgId, actingUser.issuerId, { lastUsedAt: new Date().toISOString() });
+  }
+
+  // ---- Human approval (REQUIRE_APPROVAL policies): find the approval for exactly this request (and user).
+  const shape = { integrationId: integration.id, operation: operation.id, resource, input: req.input, onBehalfOf: actingUser, delegation: viaDelegation };
   const digest = requestDigest(shape);
   const approval = await lookupApproval(agent, digest, req.approval_id);
   if (approval.kind === 'invalid') {
@@ -251,6 +306,8 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
   // Fresh reads on every request: revocation, expiry and policy edits apply immediately.
   const [pairGrants, orgPolicies, org] = await Promise.all([grantRepo.grantsForPair(orgId, agent.id, integration.id), policyRepo.listPolicies(orgId), orgRepo.getOrganization(orgId)]);
   const usage = await budgetUsageFor(pairGrants);
+  const delegationUsed = delegation ? ((await delegationRepo.usage([delegation.delegation.id])).get(delegation.delegation.id) ?? 0) : 0;
+  if (delegation) delegationNote = { used: delegationUsed, max: delegation.delegation.maxRequests };
   const evaluation = evaluate({
     agent,
     integration,
@@ -265,6 +322,8 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
     request: { resource, input: req.input },
     organization: org,
     budgetUsage: (id) => usage.get(id) ?? { requestsLast24h: 0, writesLastHour: 0 },
+    user: actingUser,
+    delegation: delegation ? { id: delegation.delegation.id, label: delegation.delegation.label, grantId: delegation.delegation.grantId, operations: delegation.delegation.operations, resources: delegation.delegation.resources, maxRequests: delegation.delegation.maxRequests, used: delegationUsed } : null,
   });
   evaluation.checks[0] = authCheck;
 
@@ -290,6 +349,7 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
   const grant = evaluation.grant!;
   recordHit(grant.id);
   await grantRepo.recordGrantUse(grant.id);
+  if (delegation) await delegationRepo.touch(delegation.delegation.id, new Date().toISOString());
 
   // Idempotency is honoured only AFTER authorization, so a revoked grant cannot replay a cached success.
   if (req.idempotency_key) {
@@ -331,6 +391,9 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
     input: req.input,
     // The webhook runs a destructive operation only for a request a human approved (and only if its operator allows them).
     ...(usedApproval ? { approval_id: usedApproval.approval_id } : {}),
+    // Who the agent acts for, so the customer side can attribute the upstream call.
+    ...(actingUser ? { acting_user: { sub: actingUser.sub, email: actingUser.email ?? null, issuer: actingUser.issuer } } : {}),
+    ...(viaDelegation ? { delegation_id: viaDelegation.id } : {}),
   };
 
   let wh;
@@ -424,12 +487,26 @@ export async function authenticate(authorization: string | undefined, onPrevious
   return v.agent;
 }
 
-/** Agents may look up only their own requests. */
-export async function getOwnRequest(authorization: string | undefined, id: string, onPreviousKey?: (expiresAt: string) => void) {
+/**
+ * Resolves the caller of the agent API: an agent (by its API key) or a sub-agent (by a
+ * delegation token, acting as that agent, narrowed). Null when neither is valid and active.
+ */
+export async function authenticateCaller(authorization: string | undefined, onPreviousKey?: (expiresAt: string) => void): Promise<{ agent: AgentRecord; delegation: DelegationContext | null } | null> {
+  const token = /^Bearer\s+(\S+)$/i.exec(authorization ?? '')?.[1] ?? '';
+  if (token.startsWith(DELEGATION_TOKEN_PREFIX)) {
+    const d = await resolveDelegationToken(token);
+    return d.ok ? { agent: d.agent, delegation: d.ctx } : null;
+  }
   const agent = await authenticate(authorization, onPreviousKey);
-  if (!agent) return { status: 401 as const };
-  const r = await auditRepo.getAccessRequestForAgent(agent.id, id);
-  if (!r) return { status: 404 as const };
+  return agent ? { agent, delegation: null } : null;
+}
+
+/** Agents may look up only their own requests; a sub-agent only those it sent. */
+export async function getOwnRequest(authorization: string | undefined, id: string, onPreviousKey?: (expiresAt: string) => void) {
+  const caller = await authenticateCaller(authorization, onPreviousKey);
+  if (!caller) return { status: 401 as const };
+  const r = await auditRepo.getAccessRequestForAgent(caller.agent.id, id);
+  if (!r || (caller.delegation && r.delegation?.id !== caller.delegation.delegation.id)) return { status: 404 as const };
   return { status: 200 as const, body: r };
 }
 
@@ -442,11 +519,12 @@ export async function getOwnRequest(authorization: string | undefined, id: strin
  */
 /** Operation shapes for the providers of the agent's grants (for typed agent tools). */
 export async function getAgentOperations(authorization: string | undefined, onPreviousKey?: (expiresAt: string) => void): Promise<{ status: 200; body: AgentOperationsBody } | { status: 401 }> {
-  const agent = await authenticate(authorization, onPreviousKey);
-  if (!agent) return { status: 401 };
+  const caller = await authenticateCaller(authorization, onPreviousKey);
+  if (!caller) return { status: 401 };
+  const agent = caller.agent;
   const [grants, integrations] = await Promise.all([grantRepo.listGrants(agent.organizationId, { agentId: agent.id }), integrationRepo.listIntegrations(agent.organizationId)]);
   const byId = new Map(integrations.map((i) => [i.id, i]));
-  const keys = [...new Set(grants.filter((g) => g.storedStatus !== 'SUPERSEDED' && byId.has(g.integrationId)).map((g) => byId.get(g.integrationId)!.provider))].sort();
+  const keys = [...new Set(grants.filter((g) => g.storedStatus !== 'SUPERSEDED' && byId.has(g.integrationId) && (!caller.delegation || g.id === caller.delegation.delegation.grantId)).map((g) => byId.get(g.integrationId)!.provider))].sort();
   const entries = keys.flatMap((k) => registry.entry(k) ?? []);
   const field = (name: string, f: { label: string; pattern: string; caseInsensitive: boolean; example?: string }) => ({ name, label: f.label, pattern: f.pattern, case_insensitive: f.caseInsensitive, example: f.example ?? null });
   return {
@@ -474,19 +552,23 @@ export async function getAgentOperations(authorization: string | undefined, onPr
 }
 
 export async function getCapabilities(authorization: string | undefined, onPreviousKey?: (expiresAt: string) => void): Promise<{ status: 200; body: AgentCapabilitiesBody } | { status: 401 }> {
-  const agent = await authenticate(authorization, onPreviousKey);
-  if (!agent) return { status: 401 };
+  const caller = await authenticateCaller(authorization, onPreviousKey);
+  if (!caller) return { status: 401 };
+  const agent = caller.agent;
+  const dlg = caller.delegation?.delegation ?? null;
   const [org, grants, integrations] = await Promise.all([
     orgRepo.getOrganization(agent.organizationId),
     grantRepo.listGrants(agent.organizationId, { agentId: agent.id }),
     integrationRepo.listIntegrations(agent.organizationId),
   ]);
   const byId = new Map(integrations.map((i) => [i.id, i]));
-  const visible = grants.filter((g) => g.storedStatus !== 'SUPERSEDED' && byId.has(g.integrationId));
+  // A sub-agent sees only its delegated grant, narrowed to the delegation.
+  const visible = grants.filter((g) => g.storedStatus !== 'SUPERSEDED' && byId.has(g.integrationId) && (!dlg || g.id === dlg.grantId));
   return {
     status: 200,
     body: {
       agent: { id: agent.id, name: agent.name, status: agent.status, organization: org?.slug ?? '' },
+      ...(dlg ? { delegation: await delegationAgentBody(dlg) } : {}),
       grants: visible.map((g) => {
         const i = byId.get(g.integrationId)!;
         return {
@@ -497,13 +579,15 @@ export async function getCapabilities(authorization: string | undefined, onPrevi
           integration_name: i.displayName,
           provider: i.provider,
           integration_available: i.credentialStatus === 'CONNECTED',
-          operations: g.scopes,
-          repositories: g.resourceConstraints.repositories,
+          operations: dlg ? g.scopes.filter((o) => dlg.operations.includes(o)) : g.scopes,
+          repositories: dlg && dlg.resources.length ? dlg.resources : g.resourceConstraints.repositories,
           rate_limit_per_minute: g.rateLimitPerMinute,
           max_requests_per_day: g.maxRequestsPerDay ?? null,
           max_writes_per_hour: g.maxWritesPerHour ?? null,
+          on_behalf_of: g.onBehalfOf ?? 'ALLOWED',
+          allowed_user_groups: g.allowedUserGroups ?? [],
           valid_from: g.validFrom,
-          expires_at: g.expiresAt,
+          expires_at: dlg && dlg.expiresAt < g.expiresAt ? dlg.expiresAt : g.expiresAt,
         };
       }),
     },
