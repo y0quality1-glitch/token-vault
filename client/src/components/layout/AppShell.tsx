@@ -23,12 +23,13 @@ import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/components/ui/toast';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/utils';
+import { EmergencyStopBanner } from '@/components/EmergencyStop';
 
 interface NavGroup {
   label: string;
   icon: React.ComponentType<{ className?: string }>;
   to?: string;
-  children?: { label: string; to: string; badge?: 'pendingRequests' | 'reviewsDue' }[];
+  children?: { label: string; to: string; badge?: 'pendingRequests' | 'reviewsDue' | 'pendingApprovals' }[];
   badge?: string;
 }
 
@@ -50,6 +51,7 @@ const NAV: NavGroup[] = [
     children: [
       { label: 'Access Grants', to: '/access/grants' },
       { label: 'Access Requests', to: '/access/requests', badge: 'pendingRequests' },
+      { label: 'Approvals', to: '/access/approvals', badge: 'pendingApprovals' },
       { label: 'Access Reviews', to: '/access/reviews', badge: 'reviewsDue' },
       { label: 'Policies', to: '/access/policies' },
     ],
@@ -82,14 +84,14 @@ const NAV: NavGroup[] = [
   },
 ];
 
-/** Sidebar counts (pending access requests, grants due for review), refreshed on navigation and every 30 s. */
-function useNavCounts(pathname: string): { pendingRequests: number; reviewsDue: number } {
-  const [counts, setCounts] = useState({ pendingRequests: 0, reviewsDue: 0 });
+/** Sidebar counts (pending access requests and approvals, grants due for review), refreshed on navigation and every 30 s. */
+function useNavCounts(pathname: string): { pendingRequests: number; reviewsDue: number; pendingApprovals: number } {
+  const [counts, setCounts] = useState({ pendingRequests: 0, reviewsDue: 0, pendingApprovals: 0 });
   useEffect(() => {
     let cancelled = false;
     const load = () =>
-      Promise.all([api.get<{ pending: number }>('/grant-requests?status=PENDING'), api.get<{ due: number }>('/access-reviews?summary=1')])
-        .then(([r, v]) => !cancelled && setCounts({ pendingRequests: r.pending, reviewsDue: v.due }))
+      Promise.all([api.get<{ pending: number }>('/grant-requests?status=PENDING'), api.get<{ due: number }>('/access-reviews?summary=1'), api.get<{ pending: number }>('/approvals?status=PENDING')])
+        .then(([r, v, a]) => !cancelled && setCounts({ pendingRequests: r.pending, reviewsDue: v.due, pendingApprovals: a.pending }))
         .catch(() => undefined);
     void load();
     const t = setInterval(load, 30_000);
@@ -299,6 +301,7 @@ export function AppShell() {
       )}
       <div className="lg:pl-64">
         <Header onMenu={() => setMobileOpen(true)} />
+        <EmergencyStopBanner />
         <main className="mx-auto max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8">
           <Outlet />
         </main>

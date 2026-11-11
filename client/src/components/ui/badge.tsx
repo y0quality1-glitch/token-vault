@@ -62,6 +62,7 @@ export function DecisionBadge({ decision, code }: { decision: 'ALLOW' | 'DENY'; 
   if (decision === 'ALLOW' && code && code !== 'ALLOWED') {
     return <Badge tone="amber" dot>Allowed · {DECISION_LABELS[code] ?? code}</Badge>;
   }
+  if (code === 'APPROVAL_REQUIRED') return <Badge tone="amber" dot>{DECISION_LABELS[code]}</Badge>;
   return <StatusBadge status={decision} />;
 }
 
