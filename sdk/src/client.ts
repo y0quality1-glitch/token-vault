@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { AgentAccessRequestBody, AgentApprovalBody, AgentCapabilitiesBody, AgentDelegationBody, AgentOperationsBody, ExecuteRequestBody, ExecuteResponseBody } from '@token-vault/shared';
-import { AccessDeniedError, ApprovalRequiredError, AuthenticationError, ExecutionFailedError, TokenVaultError } from './errors';
+import { AccessDeniedError, ApprovalRequiredError, AuthenticationError, ExecutionFailedError, ResponseWithheldError, TokenVaultError } from './errors';
 
 export type GitHubOperation = 'github.repositories.read' | 'github.contents.read' | 'github.issues.list' | 'github.issues.create';
 
@@ -100,6 +100,8 @@ export interface ExecuteResult<T = unknown> {
   simulated: boolean;
   durationMs: number;
   idempotentReplay: boolean;
+  /** Set when a Filter responses policy masked, removed or flagged something in `data`. */
+  filtering: ExecuteResponseBody['filtering'] | null;
   response: ExecuteResponseBody;
 }
 
@@ -184,6 +186,9 @@ export class TokenVault {
    */
   async execute<T = unknown>(options: ExecuteOptions): Promise<ExecuteResult<T>> {
     const { httpStatus, body } = await this.executeRaw(options);
+    if (body.decision_code === 'RESPONSE_WITHHELD') {
+      throw new ResponseWithheldError(body.reason, { code: body.decision_code, httpStatus, requestId: body.request_id, response: body });
+    }
     if (body.decision === 'ALLOW' && body.execution.status === 'SUCCEEDED') {
       return {
         data: body.result as T,
@@ -192,6 +197,7 @@ export class TokenVault {
         simulated: body.execution.simulated,
         durationMs: body.execution.duration_ms,
         idempotentReplay: body.execution.idempotent_replay,
+        filtering: body.filtering ?? null,
         response: body,
       };
     }

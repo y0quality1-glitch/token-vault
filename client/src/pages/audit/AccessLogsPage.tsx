@@ -158,7 +158,18 @@ export function AccessLogsPage() {
               },
               { key: 'int', header: 'Integration', cell: (r) => r.integrationName, hideBelow: 'lg' },
               { key: 'op', header: 'Operation', cell: (r) => operationLabel(r.operation), hideBelow: 'md' },
-              { key: 'd', header: 'Decision', cell: (r) => <DecisionBadge decision={r.decision} code={r.decisionCode} /> },
+              {
+                key: 'd',
+                header: 'Decision',
+                cell: (r) => (
+                  <div className="flex flex-wrap items-center gap-1">
+                    <DecisionBadge decision={r.decision} code={r.decisionCode} />
+                    {r.filtering && !r.filtering.withheld && (
+                      <Badge tone={r.filtering.injection.detected ? 'amber' : 'violet'}>{r.filtering.injection.detected ? 'Flagged' : 'Filtered'}</Badge>
+                    )}
+                  </div>
+                ),
+              },
               { key: 'reason', header: 'Reason', cell: (r) => <span className="text-slate-500">{DECISION_LABELS[r.decisionCode] ?? r.decisionCode}</span>, hideBelow: 'lg' },
               { key: 'src', header: 'Source', cell: (r) => <span className="text-xs text-slate-500">{r.source} · {r.sourceIp}</span>, hideBelow: 'xl' },
               { key: 'dur', header: 'Duration', cell: (r) => <span className="text-slate-500">{formatDuration(r.durationMs)}</span>, hideBelow: 'md' },
@@ -218,6 +229,26 @@ function AccessDetailDrawer({ id, onClose }: { id: string | null; onClose: () =>
               { label: 'Chain position', value: r.seq ? `#${r.seq} · ${r.hash?.slice(0, 16)}…` : 'Predates the chain', mono: true },
             ]}
           />
+          {r.filtering && (
+            <div className="rounded-lg border border-violet-200 bg-violet-50/30 p-3.5 text-sm">
+              <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-violet-800">Response filtering</p>
+              <p className="text-slate-700">
+                {r.filtering.policyNames.join(', ')} · applied by {r.filtering.appliedBy === 'webhook' ? 'your webhook' : 'Token Vault (the webhook did not filter)'}
+              </p>
+              <ul className="mt-1 list-disc space-y-0.5 pl-5 text-slate-600">
+                {r.filtering.masked.length > 0 && <li>Masked: {r.filtering.masked.map((m) => `${m.count} ${m.kind.replace('_', ' ')}`).join(', ')}</li>}
+                {r.filtering.removedFields > 0 && <li>Removed {r.filtering.removedFields} field{r.filtering.removedFields > 1 ? 's' : ''}</li>}
+                {r.filtering.injection.detected && (
+                  <li>
+                    Possible prompt injection{r.filtering.withheld ? ', so the result was withheld' : ', flagged to the agent'}:{' '}
+                    {r.filtering.injection.signals.map((s) => `${s.signal} (${s.path})`).join('; ')}
+                  </li>
+                )}
+                {!r.filtering.masked.length && !r.filtering.removedFields && !r.filtering.injection.detected && !r.filtering.withheld && <li>Nothing needed filtering</li>}
+                {r.filtering.withheld && !r.filtering.injection.detected && <li>Result withheld</li>}
+              </ul>
+            </div>
+          )}
           {r.checks.length > 0 && (
             <div>
               <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Decision trace</p>

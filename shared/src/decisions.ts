@@ -43,6 +43,8 @@ export const DECISION_CODES = {
   DELEGATION_EXPIRED: 'DELEGATION_EXPIRED',
   /** The request is outside what the delegation allows (grant, operation, resource, user, or its request cap). */
   DELEGATION_DENIED: 'DELEGATION_DENIED',
+  /** The operation ran, but a Filter responses policy withheld its result (likely prompt injection, or too large to filter). */
+  RESPONSE_WITHHELD: 'RESPONSE_WITHHELD',
   WEBHOOK_UNAVAILABLE: 'WEBHOOK_UNAVAILABLE',
   UPSTREAM_ERROR: 'UPSTREAM_ERROR',
 } as const;
@@ -80,6 +82,7 @@ export const DECISION_LABELS: Record<string, string> = {
   DELEGATION_REVOKED: 'Delegation revoked',
   DELEGATION_EXPIRED: 'Delegation expired',
   DELEGATION_DENIED: 'Outside delegation',
+  RESPONSE_WITHHELD: 'Result withheld by filter',
   WEBHOOK_UNAVAILABLE: 'Webhook unavailable',
   UPSTREAM_ERROR: 'Upstream provider error',
 };

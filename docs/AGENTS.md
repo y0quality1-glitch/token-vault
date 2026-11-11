@@ -197,6 +197,25 @@ Most agents work for a person: a support assistant answers for the signed-in cus
 - MCP: set `TOKEN_VAULT_USER_TOKEN_FILE` to a file holding the token (re-read on every call, so another process can refresh it), or `TOKEN_VAULT_USER_TOKEN`. `token_vault_list_access` says which grants need a user. User denials are reported to the model as not resolvable by an access request.
 - Access Playground: paste a token into *On behalf of a user*.
 
+## Response filtering
+
+What an application returns goes straight into the model's context. A **Filter responses** policy (Access Management → Policies → Decision: *Filter responses*) shapes it first, for the agents, applications and operations the policy's Who / Where / What select. It never changes whether a request is allowed.
+
+| Setting | Effect |
+| --- | --- |
+| **Mask** | Replaces detected values with `[REDACTED:<kind>]`: email addresses, phone numbers, payment card numbers (Luhn-checked), IP addresses, and secrets (GitHub, AWS, Slack, Stripe and Google keys, JWTs, private keys, `password=…`, `Bearer …`, Token Vault keys) |
+| **Custom patterns** | Up to 10 named regular expressions, e.g. `employee_id` = `EMP-\d{3,}` |
+| **Remove fields** | A field name removes it everywhere (`email`); a path ending removes it only there (`author.email`) |
+| **Prompt injection** | Looks for text that tries to instruct the model: "ignore previous instructions", role changes, chat markup, "send this to https://…", "don't tell the user". *Flag* passes the result with a warning; *Withhold the result* returns no result (`RESPONSE_WITHHELD`) |
+
+**Where it runs.** The control plane sends the filter in the signed execution request, and the customer webhook applies it, so masked or removed values never leave your side. If a webhook doesn't apply exactly that filter (an older version), the control plane applies it instead: an agent never receives an unfiltered result. Several matching policies combine: everything any of them masks or removes, and the strictest prompt injection setting. A result too large or too deeply nested to inspect is withheld (fails closed).
+
+**What agents see.** The response carries `filtering` (policies, what was masked and removed, prompt injection signals with their location). A withheld result is `decision: ALLOW`, `decision_code: RESPONSE_WITHHELD`, `result: null`: the operation ran, but its result is not passed on. The SDK throws `ResponseWithheldError`, and `execute()` results have `filtering`. The MCP server tells the model when a result contains flagged text, to treat it as data and not follow it, and that a withheld result should not be retried.
+
+**What is recorded.** Each access record keeps the counts, the signals and whether the webhook or the control plane filtered. It never keeps the values. The access log marks requests *Filtered* or *Flagged*, and the request detail shows what happened.
+
+Prompt injection detection is a heuristic: it catches common attacks, not every possible one. Combine it with narrow grants, approvals for writes, and agents that treat tool results as data.
+
 ## Delegation to sub-agents
 
 Multi-agent systems split work: a coordinator starts helpers, each needing a little of its access for a short time. Instead of sharing its API key, the agent **delegates**: it hands a sub-agent a narrower, short-lived slice of one grant, with its own token.
@@ -274,6 +293,7 @@ try {
     if (a.status === 'APPROVED') await tv.executeApproved(e.approvalId);
   }
   ```
+- When a Filter responses policy applies, `execute()` results include `filtering` (what was masked, removed or flagged), and a withheld result throws `ResponseWithheldError` (code `RESPONSE_WITHHELD`): the operation ran, so don't simply retry.
 - To hand part of a grant to a sub-agent, `tv.delegate({ grantId, label, operations, resources?, expiresInSeconds?, maxRequests? })` returns a `tvdt_` token for `new TokenVault({ apiKey: token })`; `listDelegations()` and `revokeDelegation(id)` manage them. See *Delegation to sub-agents*.
 - To act on behalf of a user, use `const ada = tv.forUser(userToken)` (or a function returning a fresh token) and call `ada.execute(…)`, or pass `onBehalfOf` per request. User denials (`USER_REQUIRED`, `USER_NOT_ALLOWED`, `USER_PERMISSION_DENIED`, `USER_TOKEN_INVALID`) are thrown as `AccessDeniedError`. The token is never logged or serialized.
 - An idempotency key is generated for every request, so retrying a creating operation is safe.

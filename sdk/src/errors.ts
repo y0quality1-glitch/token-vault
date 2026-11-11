@@ -43,5 +43,12 @@ export class ApprovalRequiredError extends AccessDeniedError {
   }
 }
 
+/**
+ * The operation ran, but a Filter responses policy withheld its result (code RESPONSE_WITHHELD),
+ * for example because it looked like prompt injection. Do not simply retry: the operation already
+ * ran. `response.filtering` says why.
+ */
+export class ResponseWithheldError extends TokenVaultError {}
+
 /** Authorized, but execution failed safely (customer webhook unavailable or upstream provider error). */
 export class ExecutionFailedError extends TokenVaultError {}

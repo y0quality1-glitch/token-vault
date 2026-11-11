@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { ARGUMENT_OPERATORS, PERMISSIONS, argumentProblem, describeOperationSelector, operationSelectorProblem, selectorApplication, type ArgumentOperator, type Policy } from '@token-vault/shared';
+import { ARGUMENT_OPERATORS, DATA_DETECTORS, FILTER_LIMITS, PERMISSIONS, argumentProblem, responseFilterProblem, type DataDetector, describeOperationSelector, operationSelectorProblem, selectorApplication, type ArgumentOperator, type Policy } from '@token-vault/shared';
 import { badRequest, notFound } from '../../lib/errors';
 import { newId } from '../../lib/ids';
 import { isValidCidr } from '../../lib/net';
@@ -17,7 +17,7 @@ export const policiesRouter = Router();
 const policySchema = z.object({
   name: z.string().trim().min(3, 'Name must be at least 3 characters').max(80),
   description: z.string().trim().max(300).default(''),
-  effect: z.enum(['ALLOW', 'DENY', 'REQUIRE_APPROVAL']),
+  effect: z.enum(['ALLOW', 'DENY', 'REQUIRE_APPROVAL', 'FILTER']),
   priority: z.number().int().min(1, 'Priority must be between 1 and 1000').max(1000, 'Priority must be between 1 and 1000'),
   enabled: z.boolean(),
   conditions: z.object({
@@ -58,6 +58,20 @@ const policySchema = z.object({
         }
       }),
   }),
+  // FILTER policies: what to mask, remove or check in results before the agent gets them.
+  responseFilter: z
+    .object({
+      mask: z.array(z.enum(DATA_DETECTORS.map((d) => d.id) as [DataDetector, ...DataDetector[]])).max(DATA_DETECTORS.length).default([]),
+      customPatterns: z.array(z.object({ name: z.string().trim().max(40), pattern: z.string().max(FILTER_LIMITS.MAX_PATTERN_LENGTH) })).max(FILTER_LIMITS.MAX_PATTERNS).default([]),
+      removeFields: z.array(z.string().trim().min(1).max(200)).max(FILTER_LIMITS.MAX_FIELDS).default([]),
+      promptInjection: z.enum(['off', 'flag', 'block']).default('off'),
+    })
+    .nullable()
+    .optional()
+    .superRefine((f, ctx) => {
+      const problem = f ? responseFilterProblem(f) : null;
+      if (problem) ctx.addIssue({ code: z.ZodIssueCode.custom, message: problem });
+    }),
 });
 
 policiesRouter.get('/policies', async (req, res) => {
@@ -102,13 +116,20 @@ async function validateTargets(orgId: string, c: z.infer<typeof policySchema>['c
 
 const normalize = (c: z.infer<typeof policySchema>['conditions']) => ({ ...c, timeWindow: c.timeWindow ?? null, sourceCidrs: c.sourceCidrs ?? [], arguments: c.arguments ?? [] });
 
+/** A Filter responses policy needs a filter; other decisions never carry one. */
+function filterOf(body: z.infer<typeof policySchema>) {
+  if (body.effect !== 'FILTER') return null;
+  if (!body.responseFilter) throw badRequest('Request validation failed', { fields: { responseFilter: 'Choose what to mask, remove or check' } });
+  return body.responseFilter;
+}
+
 policiesRouter.post('/policies', requirePermission(PERMISSIONS.POLICY_MANAGE), async (req, res) => {
   const ctx = orgCtx(req);
   const body = parse(policySchema, req.body);
   await validateTargets(orgCtx(req).org.id, body.conditions);
   const now = new Date().toISOString();
   const policy = await transaction(async (tx) => {
-    const created = await policyRepo.insertPolicy({ id: newId('pol'), organizationId: ctx.org.id, ...body, conditions: normalize(body.conditions), createdAt: now, updatedAt: now } satisfies Policy, tx);
+    const created = await policyRepo.insertPolicy({ id: newId('pol'), organizationId: ctx.org.id, ...body, conditions: normalize(body.conditions), responseFilter: filterOf(body), createdAt: now, updatedAt: now } satisfies Policy, tx);
     await recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: 'policy.created', target: { type: 'policy', id: created.id, name: created.name }, metadata: { effect: created.effect, priority: created.priority, enabled: created.enabled } }, tx);
     return created;
   });
@@ -122,7 +143,7 @@ policiesRouter.put('/policies/:id', requirePermission(PERMISSIONS.POLICY_MANAGE)
   const updated = await transaction(async (tx) => {
     const existing = await policyRepo.getPolicy(ctx.org.id, String(req.params.id), tx);
     if (!existing) throw notFound('Policy');
-    const policy = await policyRepo.updatePolicy(existing.id, { ...body, conditions: normalize(body.conditions), updatedAt: new Date().toISOString() }, tx);
+    const policy = await policyRepo.updatePolicy(existing.id, { ...body, conditions: normalize(body.conditions), responseFilter: filterOf(body), updatedAt: new Date().toISOString() }, tx);
     await recordEvent(
       {
         orgId: ctx.org.id,

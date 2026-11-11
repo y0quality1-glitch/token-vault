@@ -5,7 +5,7 @@ import { PgNonceStore } from './security/nonce-store';
 import { hmacHex, signResponse, verifySignedRequest } from './security/signature';
 import * as store from './store/credential-store';
 import { createHash } from 'node:crypto';
-import type { AuthMethodDefinition, CredentialUseInfo, ProviderDefinition } from '@token-vault/shared';
+import { applyResponseFilter, describeFilterReport, filterFingerprint, responseFilterProblem, type AuthMethodDefinition, type CredentialUseInfo, type ProviderDefinition, type ResponseFilter } from '@token-vault/shared';
 import * as oauth from './providers/oauth';
 import { ExecutionError, executeOperation, getExecutableOperation, injectionFor, testCredential, type ProviderCall, type ProviderResult } from './providers/executor';
 import * as app from './providers/github-app';
@@ -86,6 +86,22 @@ function credentialFailure(req: SignedRequest, res: Response, e: unknown, contex
 }
 
 /** Non-secret description of the credential actually used, for the control plane and audit. */
+
+/**
+ * The response filter the control plane asked for, when it is well formed. A malformed one is
+ * ignored here: the control plane then sees no matching filter_applied and filters itself.
+ */
+function requestedFilter(v: unknown): ResponseFilter | null {
+  if (!v || typeof v !== 'object') return null;
+  const f = v as Partial<ResponseFilter>;
+  const filter: ResponseFilter = {
+    mask: Array.isArray(f.mask) ? f.mask : [],
+    customPatterns: Array.isArray(f.customPatterns) ? f.customPatterns : [],
+    removeFields: Array.isArray(f.removeFields) ? f.removeFields : [],
+    promptInjection: f.promptInjection === 'flag' || f.promptInjection === 'block' ? f.promptInjection : 'off',
+  };
+  return responseFilterProblem(filter) ? null : filter;
+}
 
 /** " for=<user>" when the control plane says the agent acts for a user (the user's subject only). */
 function actingFor(v: unknown): string {
@@ -446,12 +462,16 @@ export function buildRouter() {
       const result = await store.withSecret(rec, (secret) =>
         runWithCredential(rec, secret, { operation: claims.operation, resource: stringRecord(claims.resource), input: claims.input && typeof claims.input === 'object' ? claims.input : {}, allowDestructive }),
       );
-      console.log(`[vault] execute ${claims.request_id} op=${claims.operation} ref=${rec.credentialRef}${actingFor(claims.acting_user)} upstream=${result.upstreamStatus}${result.credential ? ' (minted App token, revoked)' : ''}`);
+      // Response filtering happens here, on the customer side: masked or removed values never reach the control plane.
+      const filter = requestedFilter(claims.response_filter);
+      const filtered = filter ? applyResponseFilter(result.body, filter) : null;
+      console.log(`[vault] execute ${claims.request_id} op=${claims.operation} ref=${rec.credentialRef}${actingFor(claims.acting_user)} upstream=${result.upstreamStatus}${result.credential ? ' (minted App token, revoked)' : ''}${filtered ? ` filter: ${describeFilterReport(filtered.report)}` : ''}`);
       signedJson(req, res, 200, {
         request_id: claims.request_id,
         upstream_status: result.upstreamStatus,
         simulated: result.simulated,
-        result: result.body,
+        result: filtered ? filtered.value : result.body,
+        ...(filter && filtered ? { filter_applied: filterFingerprint(filter), filter_report: filtered.report } : {}),
         duration_ms: Date.now() - started,
         ...(result.credential ? { credential: result.credential } : {}),
       });

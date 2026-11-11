@@ -1,4 +1,4 @@
-import { DECISION_CODES, actingUserLabel, argumentHolds, operationSelectorMatches, userPermissionProblem, type ActingUser, type DecisionCheck, type MatchedRule, type OperationDef, type OperationFacts, type Policy, type RequestContent } from '@token-vault/shared';
+import { DECISION_CODES, type ResponseFilter, actingUserLabel, argumentHolds, operationSelectorMatches, userPermissionProblem, type ActingUser, type DecisionCheck, type MatchedRule, type OperationDef, type OperationFacts, type Policy, type RequestContent } from '@token-vault/shared';
 import { ipAllowed, ipInCidr } from '../../lib/net';
 import type { AgentRecord, GrantRecord, IntegrationRecord } from '../../store/types';
 
@@ -82,6 +82,8 @@ export interface EvaluationResult {
   allowPolicies: { id: string; name: string }[];
   /** The REQUIRE_APPROVAL policy that applied (decision APPROVAL_REQUIRED, or ALLOW with an approval). */
   approvalPolicy?: { id: string; name: string } | null;
+  /** ALLOW only: enabled Filter responses policies that apply to this request (the broker filters the result with them). */
+  filterPolicies?: { id: string; name: string; filter: ResponseFilter }[];
 }
 
 export interface PolicyContext {
@@ -320,6 +322,8 @@ export function evaluate(input: EvaluationInput): EvaluationResult {
   else pass(13, input.approval ? `No approval policy applies any more; approval ${input.approval.id} is used anyway` : 'No approval policy matched');
 
   const allowPolicies = enabled.filter((p) => p.effect === 'ALLOW' && policyMatches(p, pctx)).map((p) => ({ id: p.id, name: p.name }));
+  // Filter responses policies never change the decision: they shape what the agent gets back.
+  const filterPolicies = enabled.filter((p) => p.effect === 'FILTER' && p.responseFilter && policyMatches(p, pctx)).map((p) => ({ id: p.id, name: p.name, filter: p.responseFilter! }));
   return {
     decision: 'ALLOW',
     code: DECISION_CODES.ALLOWED,
@@ -329,5 +333,6 @@ export function evaluate(input: EvaluationInput): EvaluationResult {
     checks,
     allowPolicies,
     approvalPolicy: approvalRef,
+    filterPolicies,
   };
 }
