@@ -47,7 +47,7 @@ Errors use one shape: `{ "error": { "code": "…", "message": "…", "details": 
 | POST | `/agents/:id/revoke-grants` | `grant:revoke` | |
 | GET | `/api-clients` | any role | key IDs and masked keys only |
 | GET | `/grants` | any role | `?status=&agentId=&integrationId=` |
-| POST | `/grants` | `grant:manage` | optional budgets `maxRequestsPerDay` (rolling 24 h) and `maxWritesPerHour` (rolling hour); `null` = no limit |
+| POST | `/grants` | `grant:manage` | optional budgets `maxRequestsPerDay` (rolling 24 h) and `maxWritesPerHour` (rolling hour); `null` = no limit; `onBehalfOf` (`ALLOWED` default, `REQUIRED`, `NOT_ALLOWED`) and `allowedUserGroups` for acting on behalf of users |
 | GET | `/grants/:id` | any role | usage, history, versions, matching policies |
 | POST | `/grants/:id/revoke` | `grant:revoke` | `{reason}`; takes effect on the next authorization check |
 | POST | `/grants/:id/approve` | `grant:approve` | simulated approval |
@@ -55,11 +55,11 @@ Errors use one shape: `{ "error": { "code": "…", "message": "…", "details": 
 | POST | `/grants/:id/versions` | `grant:manage` | edit restrictions → new version; the old version becomes `SUPERSEDED` |
 | POST | `/grants/:id/expire-now` | `grant:manage` | demo (Scenario E) |
 | GET | `/policies` | any role | |
-| POST | `/policies` · PUT `/policies/:id` | `policy:manage` | `effect`: `DENY`, `ALLOW` or `REQUIRE_APPROVAL`; `conditions.operations`: exact operation ids or selectors that also cover operations published later (`*`, `github.*` for every operation of an application, `risk:read` / `risk:write` / `risk:destructive`, `github:write` for one risk in one application); `conditions.arguments`: up to 10 `{field, op, value}` argument rules (`field` is `input.<name>` or `resource.<name>`; `op` is one of `equals, not_equals, contains, not_contains, matches, not_matches, in, not_in, longer_than, greater_than, less_than`) |
+| POST | `/policies` · PUT `/policies/:id` | `policy:manage` | `effect`: `DENY`, `ALLOW` or `REQUIRE_APPROVAL`; `conditions.operations`: exact operation ids or selectors that also cover operations published later (`*`, `github.*` for every operation of an application, `risk:read` / `risk:write` / `risk:destructive`, `github:write` for one risk in one application); `conditions.arguments`: up to 10 `{field, op, value}` argument rules (`field` is `input.<name>`, `resource.<name>`, or `user.sub`, `user.email`, `user.name`, `user.groups`, `user.issuer` for the user the agent acts for; `op` is one of `equals, not_equals, contains, not_contains, matches, not_matches, in, not_in, longer_than, greater_than, less_than`) |
 | GET | `/organizations/current/emergency-stop` | any role | `{stopped, stoppedAt, stoppedBy, stoppedByName, reason}` |
 | POST | `/organizations/current/emergency-stop` | `grant:revoke` | `{reason}`: denies every agent request with `EMERGENCY_STOP` until lifted |
 | POST | `/organizations/current/emergency-stop/lift` | `grant:approve` | `{note?}` |
-| GET | `/access-requests` · `/access-requests/:id` | `audit:read` | filters: `agentId, integrationId, grantId, decision, operation, from, to, search` |
+| GET | `/access-requests` · `/access-requests/:id` | `audit:read` | filters: `agentId, integrationId, grantId, decision, operation, from, to, search, user` (`user` matches the subject or email of the user the agent acted for); each record has `onBehalfOf` |
 | GET | `/audit-events` · `/audit-events/:id` | `audit:read` | filters: `eventType, outcome, actorType, search, category=security` |
 | GET | `/grant-requests` · `/grant-requests/:id` | any role | just-in-time access requests (`?status=PENDING`); includes the `pending` count |
 | POST | `/grant-requests/:id/approve` | `grant:approve` | `{durationMinutes, operations?, repositories?, rateLimitPerMinute?, note?}`; may narrow but not widen the request; the agent's owner cannot approve it; creates an expiring grant |
@@ -67,6 +67,12 @@ Errors use one shape: `{ "error": { "code": "…", "message": "…", "details": 
 | GET | `/approvals` · `/approvals/:id` | any role | requests held by `REQUIRE_APPROVAL` policies, with the exact operation, resource and input (`?status=PENDING`); includes the `pending` count |
 | POST | `/approvals/:id/approve` | `grant:approve` | `{note?}`; the agent's owner cannot approve it; the agent may then run that exact request once, within 15 minutes |
 | POST | `/approvals/:id/reject` | `grant:approve` | `{note?}`; the same request is answered with `APPROVAL_REJECTED` for 24 hours |
+| GET | `/delegations` | any role | `?agentId=` or `?grantId=`: sub-agent delegations with effective `status` (`ACTIVE`, `EXPIRED`, `REVOKED`, also when one up the chain was revoked), `statusReason` and `used` |
+| POST | `/delegations/:id/revoke` | `grant:revoke` | `{reason}`; stops it and everything delegated from it |
+| GET | `/user-issuers` | any role | identity providers trusted to vouch for users (public keys only) |
+| POST | `/user-issuers` · PUT `/user-issuers/:id` | `policy:manage` | `{name, issuer, audience, publicKey, groupsClaim?, maxTokenLifetimeSeconds?, enabled?}`; `publicKey` is PEM or JWK (RSA 2048+, EC P-256/P-384, Ed25519), private keys are refused; `issuer` is unique per organization |
+| DELETE | `/user-issuers/:id` | `policy:manage` | tokens from it are refused from the next request |
+| POST | `/user-issuers/verify-token` | `policy:manage` | `{token}` → `{valid: true, user}` or `{valid: false, reason}`; runs nothing |
 | GET | `/audit-integrity` | `audit:read` | verifies both audit hash chains → `{ok, verifiedAt, chains: [{table, ok, chainedRecords, legacyRecords, headSeq, headHash, problems}]}` |
 | GET | `/access-reviews` | any role | active grants with review status, 30-day usage, due / unused / expiring counts (`?summary=1` for counts only) |
 | POST | `/access-reviews/certify` | `grant:revoke` | `{grantIds[], note?}`: records the review and restarts the 30-day interval. Revoke with `/grants/:id/revoke` |
@@ -85,9 +91,12 @@ Authenticated **only** with `Authorization: Bearer tvak_<keyId>_<secret>`. Admin
   "operation": "github.issues.create",
   "resource": { "repository": "demo-org/demo-repo" },
   "input": { "title": "Token Vault POC test", "body": "Created through credential brokering." },
-  "idempotency_key": "demo-request-0001"
+  "idempotency_key": "demo-request-0001",
+  "on_behalf_of": "eyJhbGciOiJFUzI1NiJ9.…"
 }
 ```
+
+`on_behalf_of` is optional: a signed user token (JWT) from an issuer registered under Settings → User Identity. With it, the agent acts for that user (see below).
 
 Response (the same shape for allow and deny):
 
@@ -106,7 +115,7 @@ Response (the same shape for allow and deny):
 }
 ```
 
-HTTP status codes: 200 allowed · 202 waiting for human approval · 400 malformed or unknown operation · 401 unauthenticated · 403 denied (including `APPROVAL_REJECTED` and `EMERGENCY_STOP`) · 404 unknown integration · 409 `APPROVAL_INVALID` · 429 rate limited or `BUDGET_EXCEEDED` · 502 upstream error · 503 webhook unavailable.
+HTTP status codes: 200 allowed · 202 waiting for human approval · 400 malformed or unknown operation · 401 unauthenticated · 403 denied (including `APPROVAL_REJECTED`, `EMERGENCY_STOP` and the `USER_*` codes) · 404 unknown integration · 409 `APPROVAL_INVALID` · 429 rate limited or `BUDGET_EXCEEDED` · 502 upstream error · 503 webhook unavailable.
 
 **Human approval.** When a `REQUIRE_APPROVAL` policy matches a request that every other check allows, nothing runs. The response is HTTP 202 with `decision: "DENY"`, `decision_code: "APPROVAL_REQUIRED"` and:
 
@@ -115,6 +124,26 @@ HTTP status codes: 200 allowed · 202 waiting for human approval · 400 malforme
 ```
 
 Sending the same request again returns the same pending approval rather than a new one. Once a human approves it, send the identical request again (same integration, operation, resource and input), optionally with `"approval_id": "apv_…"`. All checks run again, so a revoked grant still wins, and the approval is then used up: the response carries `approval.status: "EXECUTED"`. A request with an `approval_id` that is unknown, for a different request, expired or already used is denied with `APPROVAL_INVALID`. An agent can have at most 10 approvals waiting; pending approvals lapse after 1 hour.
+
+**Acting on behalf of a user.** With `on_behalf_of`, the token is verified first: signature (RS256/384/512, ES256/384 or EdDSA with the issuer's public key), `iss` registered and enabled, `aud` matching, `exp` not passed, lifetime within the issuer's maximum, and a `sub`. Any failure is denied with `USER_TOKEN_INVALID` (403), recorded, and nothing runs. Then step 9 (*Acting user*) applies the grant's setting and the user's own permissions from the token's `token_vault` claim:
+
+| Code | When |
+| --- | --- |
+| `USER_REQUIRED` | The grant works only on behalf of a user, and the request has no user token |
+| `USER_NOT_ALLOWED` | The grant works only for the agent itself, or the user is not in its allowed groups |
+| `USER_PERMISSION_DENIED` | The operation or resource is outside the user's `token_vault` permissions |
+
+The response then carries `"acting_for": { "sub", "email", "name", "issuer" }`. Approvals are bound to the user: an approval for one user's request is `APPROVAL_INVALID` for another user. `GET /agent/v1/approvals/:id` includes `on_behalf_of` (`sub`, `issuer`), and capabilities include each grant's `on_behalf_of` (`ALLOWED`, `REQUIRED` or `NOT_ALLOWED`) and `allowed_user_groups`.
+
+**Delegation to sub-agents.** `Authorization: Bearer tvdt_…` (a delegation token) works on every agent endpoint except `POST /access-requests` (403). The request is evaluated as the delegating agent's, restricted to the delegated grant, operations, resources and request cap; the response then carries `"delegation": { "delegation_id", "label", "used", "max_requests" }`.
+
+| Code | HTTP | When |
+| --- | --- | --- |
+| `DELEGATION_DENIED` | 403 | Outside the delegated grant, operations or resources; the request cap is used up; or the sub-agent sent its own user token |
+| `DELEGATION_REVOKED` | 403 | The delegation, or one it came from, was revoked |
+| `DELEGATION_EXPIRED` | 403 | The delegation, or one it came from, expired |
+
+`POST /agent/v1/delegations` `{grant_id, label, operations[], resources[]?, expires_in_seconds? (60–86400, default 3600), max_requests?, on_behalf_of?}` returns 201 with the delegation and its `token` (shown once). Called with a delegation token, it delegates further from that delegation (`grant_id` optional). 400 when it would widen anything or includes a destructive operation, 403 when the grant is not active or the depth would exceed 3, 429 at 50 active delegations. `GET /agent/v1/delegations` lists what the caller delegated (with `status`, `used`); `POST /agent/v1/delegations/:id/revoke` `{reason?}` revokes one (and so everything delegated from it).
 
 `GET /agent/v1/approvals/:id` returns one of the agent's own approvals: `status` (`PENDING`, `APPROVED`, `REJECTED`, `EXPIRED` or `EXECUTED`), the exact `integration_id`, `operation`, `resource` and `input` that were approved, `decision_note` and `executed_request_id`.
 
