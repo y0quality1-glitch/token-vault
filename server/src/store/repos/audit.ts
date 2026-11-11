@@ -59,6 +59,8 @@ export interface AccessRequestFilter {
   from?: string;
   to?: string;
   search?: string;
+  /** The user the agent acted for: matches the subject or email (case-insensitive, partial). */
+  user?: string;
 }
 
 export async function listAccessRequests(organizationId: string, f: AccessRequestFilter, limit: number, ex: Executor = db): Promise<{ items: AccessRequest[]; total: number }> {
@@ -72,7 +74,11 @@ export async function listAccessRequests(organizationId: string, f: AccessReques
   if (f.to) where.push(lte(accessRequests.createdAt, f.to));
   if (f.search) {
     const p = `%${escapeLike(f.search)}%`;
-    where.push(or(ilike(accessRequests.id, p), ilike(accessRequests.correlationId, p), ilike(accessRequests.agentName, p), ilike(accessRequests.integrationName, p), ilike(accessRequests.decisionCode, p))!);
+    where.push(or(ilike(accessRequests.id, p), ilike(accessRequests.correlationId, p), ilike(accessRequests.agentName, p), ilike(accessRequests.integrationName, p), ilike(accessRequests.decisionCode, p), sql`${accessRequests.onBehalfOf}->>'sub' ilike ${p}`, sql`${accessRequests.onBehalfOf}->>'email' ilike ${p}`)!);
+  }
+  if (f.user) {
+    const p = `%${escapeLike(f.user)}%`;
+    where.push(or(sql`${accessRequests.onBehalfOf}->>'sub' ilike ${p}`, sql`${accessRequests.onBehalfOf}->>'email' ilike ${p}`)!);
   }
   const cond = and(...where);
   const [items, [totalRow]] = await Promise.all([

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { TokenVault, TokenVaultError } from '@token-vault/sdk';
 import { createServer } from './server';
@@ -7,18 +8,35 @@ import { createServer } from './server';
  *
  * Configuration comes from the environment only (never command-line arguments, which
  * other users on the machine can see in the process list):
- *   TOKEN_VAULT_API_KEY  this agent's Token Vault credential (tvak_…), required
+ *   TOKEN_VAULT_API_KEY  this agent's Token Vault credential (tvak_…), or a sub-agent's
+ *                        delegation token (tvdt_…, created with the SDK's delegate()), required
  *   TOKEN_VAULT_URL      control plane URL (default http://localhost:4000)
  *   TOKEN_VAULT_ORG      optional organization slug (audit attribution of failed auth)
  *   TOKEN_VAULT_TOOLS_REFRESH_S  how often to re-read the catalog for new or changed
  *                        application tools (default 60, 0 = only at start-up)
+ *   TOKEN_VAULT_USER_TOKEN_FILE  optional: act on behalf of a user. A file holding the user's
+ *                        signed token (JWT), re-read on every call so another process can
+ *                        keep it fresh. Takes precedence over TOKEN_VAULT_USER_TOKEN.
+ *   TOKEN_VAULT_USER_TOKEN  optional: the user's signed token itself (expires; prefer the file)
  *
  * stdout carries the MCP protocol, so all diagnostics go to stderr.
  */
 async function main() {
   let tv: TokenVault;
+  const tokenFile = process.env.TOKEN_VAULT_USER_TOKEN_FILE || undefined;
+  const userToken = tokenFile
+    ? () => {
+        try {
+          return readFileSync(tokenFile, 'utf8').trim();
+        } catch {
+          console.error('[token-vault-mcp] warning: cannot read TOKEN_VAULT_USER_TOKEN_FILE; the request is sent without a user');
+          return '';
+        }
+      }
+    : process.env.TOKEN_VAULT_USER_TOKEN || undefined;
   try {
     tv = new TokenVault({
+      userToken,
       organization: process.env.TOKEN_VAULT_ORG || undefined,
       onKeyExpiry: (at) => console.error(`[token-vault-mcp] warning: this API key was rotated and stops working at ${at}. Set TOKEN_VAULT_API_KEY to the new key and restart.`),
     });
@@ -36,7 +54,7 @@ async function main() {
   };
   await refresh('loaded');
   await server.connect(new StdioServerTransport());
-  console.error(`[token-vault-mcp] ready: ${tv.baseUrl} (key ${tv.keyId})`);
+  console.error(`[token-vault-mcp] ready: ${tv.baseUrl} (${tv.isDelegated ? 'sub-agent delegation' : 'key'} ${tv.keyId})${tv.actsForUser ? ', acting on behalf of a user' : ''}`);
   const every = Number(process.env.TOKEN_VAULT_TOOLS_REFRESH_S ?? 60);
   if (every > 0) setInterval(() => void refresh('updated'), every * 1000).unref();
 }

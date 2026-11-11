@@ -1,7 +1,7 @@
 import { McpServer, type RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { DECISION_LABELS, operationLabel, type ExecuteResponseBody } from '@token-vault/shared';
+import { DECISION_LABELS, operationLabel, type AgentCapabilitiesBody, type ExecuteResponseBody } from '@token-vault/shared';
 import { TokenVault, TokenVaultError } from '@token-vault/sdk';
 import { catalogTools } from './catalog-tools';
 import { resolveIntegration } from './resolve';
@@ -48,6 +48,7 @@ export function createServer(tv: TokenVault): TokenVaultMcpServer {
       'If a call is denied, do not try other resources or operations to work around it. When the denial says access can be requested, you may call ' +
       'token_vault_request_access once, with a concrete justification for the specific task; a human decides. Do not resubmit or rephrase requests to get a different answer. ' +
       'Some requests are held until a human approves that exact request (APPROVAL_REQUIRED); then tell the user and use token_vault_check_approval later instead of resending. ' +
+      'When you act on behalf of a user, Token Vault also limits you to what that user may do (USER_* denials): report those to the user, never work around them. ' +
       'Report denials and request IDs to the user.',
   });
 
@@ -76,7 +77,7 @@ export function createServer(tv: TokenVault): TokenVaultMcpServer {
     const label = DECISION_LABELS[body.decision_code] ?? body.decision_code;
     {
       if (body.decision === 'ALLOW' && body.execution.status === 'SUCCEEDED') {
-        const mode = body.execution.simulated ? ` (simulated ${providerName})` : '';
+        const mode = (body.execution.simulated ? ` (simulated ${providerName})` : '') + (body.acting_for ? ` on behalf of ${body.acting_for.email ?? body.acting_for.sub}` : '');
         return {
           content: [{ type: 'text', text: `${labelOf(operation)} succeeded${mode}. Token Vault request ${body.request_id}.\n\n${JSON.stringify(body.result, null, 2)}` }],
           structuredContent: { request_id: body.request_id, upstream_status: body.execution.upstream_status, simulated: body.execution.simulated, result: body.result },
@@ -98,13 +99,32 @@ export function createServer(tv: TokenVault): TokenVaultMcpServer {
         };
       }
       if (body.decision === 'DENY') {
-        const next = REQUESTABLE.has(body.decision_code)
+        const next = USER_NEXT_STEP[body.decision_code] ?? (REQUESTABLE.has(body.decision_code)
           ? `If this access is genuinely needed for the user's task, you may ask a human for it once with token_vault_request_access (operations: ["${operation}"]${primary ? `, resource: "${primary}"` : ''}, denied_request_id: "${body.request_id}"). Until a human approves, it stays denied.`
-          : 'This denial cannot be resolved by requesting access. Do not retry with a different resource or operation; report it to the user.';
+          : 'This denial cannot be resolved by requesting access. Do not retry with a different resource or operation; report it to the user.');
         return text(`Access denied by Token Vault: ${label} (${body.decision_code}, HTTP ${httpStatus}).\n${body.reason}\nRequest ID: ${body.request_id}.\n${next}`, true);
       }
       return text(`Authorized, but the operation failed: ${label} (${body.decision_code}).\n${body.reason}\nRequest ID: ${body.request_id}.`, true);
     }
+  }
+
+  /** What to do about denials that concern the user the agent acts for (none is resolvable by an access request). */
+  const USER_NEXT_STEP: Record<string, string> = {
+    USER_TOKEN_INVALID: "Token Vault could not verify the user's sign-in token (it may have expired). Ask the user to sign in again; do not retry without a new token.",
+    USER_REQUIRED: 'This access may only be used on behalf of a signed-in user, and this session has no user token. Tell the user; do not retry.',
+    USER_NOT_ALLOWED: 'The grant does not allow acting for this user. Report it to the user; do not retry.',
+    USER_PERMISSION_DENIED: "The user is not permitted to do this, so you may not do it for them. Report it to the user; do not try another operation or resource.",
+    DELEGATION_DENIED: 'You are a sub-agent and this is outside what was delegated to you. Report it to the agent or person that started you; do not try another operation or resource.',
+    DELEGATION_REVOKED: 'The delegation you run under was revoked. Stop and report it; do not retry.',
+    DELEGATION_EXPIRED: 'The delegation you run under expired. Stop and report it; do not retry.',
+  };
+
+  /** Whether a grant is used for the agent itself or on behalf of users, for token_vault_list_access. */
+  function userLines(g: AgentCapabilitiesBody['grants'][number]): string[] {
+    const groups = g.allowed_user_groups?.length ? ` in ${g.allowed_user_groups.join(', ')}` : '';
+    if (g.on_behalf_of === 'REQUIRED') return [`  only on behalf of a signed-in user${groups}${tv.actsForUser ? '' : ' (this session has no user, so requests will be denied)'}`];
+    if (g.on_behalf_of === 'NOT_ALLOWED') return ['  only for the agent itself, not on behalf of users'];
+    return groups ? [`  on behalf of users only${groups}`] : [];
   }
 
   const GITHUB = { key: 'github', name: 'GitHub' };
@@ -123,6 +143,10 @@ export function createServer(tv: TokenVault): TokenVaultMcpServer {
         await refreshTools().catch(() => false); // a new grant may bring a new application's tools
         const caps = await tv.capabilities();
         if (caps.grants.length === 0) return text(`Agent "${caps.agent.name}" has no access grants. Everything is denied by default.`);
+        const d = caps.delegation;
+        const header = d
+          ? `You are sub-agent "${d.label}" of agent "${caps.agent.name}" (delegation ${d.delegation_id}, ${d.status}, until ${d.expires_at}${d.max_requests ? `, ${d.used} of ${d.max_requests} requests used` : ''}${d.on_behalf_of ? `, on behalf of ${d.on_behalf_of.email ?? d.on_behalf_of.sub}` : ''}). You may only narrow this access, never request more.\n`
+          : '';
         const lines = caps.grants.map((g) =>
           [
             `- ${g.name} [${g.status}${g.integration_available ? '' : ', integration unavailable'}]`,
@@ -132,10 +156,11 @@ export function createServer(tv: TokenVault): TokenVaultMcpServer {
             `  expires: ${g.expires_at}; rate limit ${g.rate_limit_per_minute}/min` +
               (g.max_requests_per_day ? `; budget ${g.max_requests_per_day} requests per 24 h` : '') +
               (g.max_writes_per_hour ? `; budget ${g.max_writes_per_hour} writes per hour` : ''),
+            ...userLines(g),
           ].join('\n'),
         );
         return {
-          content: [{ type: 'text', text: `Agent "${caps.agent.name}" (${caps.agent.status}) in ${caps.agent.organization}:\n${lines.join('\n')}` }],
+          content: [{ type: 'text', text: `${header}Agent "${caps.agent.name}" (${caps.agent.status}) in ${caps.agent.organization}:\n${lines.join('\n')}` }],
           structuredContent: caps as unknown as Record<string, unknown>,
         };
       } catch (e) {

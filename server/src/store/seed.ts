@@ -474,7 +474,7 @@ function seedHistory() {
 }
 
 // ------------------------------------------------------------------ persistence
-const TABLES_IN_INSERT_ORDER = ['organizations', 'users', 'organization_members', 'webhooks', 'integrations', 'agents', 'grants', 'grant_requests', 'operation_approvals', 'policies', 'access_requests', 'audit_events'];
+const TABLES_IN_INSERT_ORDER = ['organizations', 'users', 'organization_members', 'webhooks', 'integrations', 'agents', 'grants', 'grant_requests', 'operation_approvals', 'policies', 'user_issuers', 'delegations', 'access_requests', 'audit_events'];
 
 async function insertSeed(data: SeedData, ex: Executor) {
   await ex.insert(t.organizations).values(data.organizations);

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { canonicalJson, type AgentApprovalBody, type OperationApproval, type OperationApprovalStatus } from '@token-vault/shared';
+import { canonicalJson, type ActingUser, type AgentApprovalBody, type DelegationRef, type OperationApproval, type OperationApprovalStatus } from '@token-vault/shared';
 import { transaction } from '../../db/client';
 import { conflict, forbidden, notFound } from '../../lib/errors';
 import { newId } from '../../lib/ids';
@@ -15,7 +15,8 @@ import { recordEvent, userActor } from '../audit/audit.service';
  * Human approval of one exact request (REQUIRE_APPROVAL policies).
  *
  * - The approval is bound to a digest of the request (integration, operation, resource,
- *   input): an approval for one issue title cannot run a different one.
+ *   input, and the user the agent acts for): an approval for one issue title cannot run a
+ *   different one, and an approval for one user cannot run for another.
  * - It is single use, and must be used within EXECUTE_WINDOW_MS of being approved.
  * - Every other check still runs when it is used: revoking the grant still wins.
  * - The agent's owner may not approve their own agent's request (separation of duties).
@@ -34,11 +35,18 @@ export interface RequestShape {
   operation: string;
   resource: Record<string, string>;
   input: Record<string, unknown>;
+  /** The user the agent acts for (null or absent: for itself). */
+  onBehalfOf?: ActingUser | null;
+  /** The sub-agent delegation sending it (null or absent: the agent itself). */
+  delegation?: DelegationRef | null;
 }
 
-/** sha256 over the canonical request, domain-separated. */
+/** sha256 over the canonical request, domain-separated. The user is included only when there is one, so digests without a user are unchanged. */
 export function requestDigest(r: RequestShape): string {
-  const payload = canonicalJson({ integration_id: r.integrationId, operation: r.operation, resource: r.resource, input: r.input });
+  const user = r.onBehalfOf ? { on_behalf_of: { issuer: r.onBehalfOf.issuer, sub: r.onBehalfOf.sub } } : {};
+  // An approval given to one sub-agent is not usable by another, nor by the agent itself.
+  const via = r.delegation ? { delegation_id: r.delegation.id } : {};
+  const payload = canonicalJson({ integration_id: r.integrationId, operation: r.operation, resource: r.resource, input: r.input, ...user, ...via });
   return createHash('sha256').update(`token-vault/operation-approval/v1:${payload}`).digest('hex');
 }
 
@@ -71,7 +79,7 @@ export async function lookupApproval(agent: AgentRecord, digest: string, approva
   if (approvalId) {
     const r = await approvalRepo.getApprovalForAgent(agent.id, approvalId);
     if (!r) return { kind: 'invalid', reason: `Approval "${approvalId}" does not exist for this agent.`, record: null };
-    if (r.requestDigest !== digest) return { kind: 'invalid', reason: `Approval ${r.id} was given for a different request (integration, operation, resource or input differ). Send exactly the approved request.`, record: r };
+    if (r.requestDigest !== digest) return { kind: 'invalid', reason: `Approval ${r.id} was given for a different request (integration, operation, resource, input, user or sub-agent differ). Send exactly the approved request.`, record: r };
     return classify(r, now);
   }
   const [latest] = await approvalRepo.forAgentDigest(agent.id, digest);
@@ -128,6 +136,8 @@ export async function createPending(args: {
         decisionNote: null,
         executedAt: null,
         executedRequestId: null,
+        onBehalfOf: args.request.onBehalfOf ?? null,
+        delegation: args.request.delegation ?? null,
       },
       tx,
     );
@@ -137,7 +147,7 @@ export async function createPending(args: {
         actor: { type: 'AGENT', id: args.agent.id, name: args.agent.name },
         eventType: 'approval.requested',
         target: { type: 'integration', id: args.integration.id, name: args.integration.displayName },
-        metadata: { approvalId: record.id, requestId: args.requestId, policyId: args.policy.id, policyName: args.policy.name, operation: args.request.operation, ...args.request.resource },
+        metadata: { approvalId: record.id, requestId: args.requestId, policyId: args.policy.id, policyName: args.policy.name, operation: args.request.operation, ...args.request.resource, ...(args.request.onBehalfOf ? { onBehalfOf: args.request.onBehalfOf.sub } : {}), ...(args.request.delegation ? { delegationId: args.request.delegation.id } : {}) },
         correlationId: args.correlationId,
       },
       tx,
@@ -179,6 +189,8 @@ export async function toViews(organizationId: string, records: OperationApproval
     decisionNote: r.decisionNote,
     executedAt: r.executedAt,
     executedRequestId: r.executedRequestId,
+    onBehalfOf: r.onBehalfOf ?? null,
+    delegation: r.delegation ?? null,
   }));
 }
 
@@ -195,12 +207,15 @@ export function agentBody(r: OperationApprovalRecord): AgentApprovalBody {
     decided_at: r.decidedAt,
     decision_note: r.decisionNote,
     executed_request_id: r.executedRequestId,
+    on_behalf_of: r.onBehalfOf ? { sub: r.onBehalfOf.sub, issuer: r.onBehalfOf.issuer } : null,
   };
 }
 
-export async function getForAgent(agent: AgentRecord, id: string): Promise<AgentApprovalBody | null> {
+/** One of the agent's approvals; a sub-agent sees only those it asked for. */
+export async function getForAgent(agent: AgentRecord, id: string, delegationId: string | null = null): Promise<AgentApprovalBody | null> {
   const r = await approvalRepo.getApprovalForAgent(agent.id, id);
-  return r ? agentBody(r) : null;
+  if (!r || (delegationId && r.delegation?.id !== delegationId)) return null;
+  return agentBody(r);
 }
 
 // ---------------------------------------------------------------- admin side

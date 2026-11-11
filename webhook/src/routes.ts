@@ -86,6 +86,13 @@ function credentialFailure(req: SignedRequest, res: Response, e: unknown, contex
 }
 
 /** Non-secret description of the credential actually used, for the control plane and audit. */
+
+/** " for=<user>" when the control plane says the agent acts for a user (the user's subject only). */
+function actingFor(v: unknown): string {
+  const sub = v && typeof v === 'object' ? (v as { sub?: unknown }).sub : undefined;
+  return typeof sub === 'string' && /^[\w.@:+-]{1,256}$/.test(sub) ? ` for=${sub}` : '';
+}
+
 export type CredentialUse = CredentialUseInfo;
 
 /** The definition's auth method a stored (non-plugin) secret is used with. */
@@ -439,7 +446,7 @@ export function buildRouter() {
       const result = await store.withSecret(rec, (secret) =>
         runWithCredential(rec, secret, { operation: claims.operation, resource: stringRecord(claims.resource), input: claims.input && typeof claims.input === 'object' ? claims.input : {}, allowDestructive }),
       );
-      console.log(`[vault] execute ${claims.request_id} op=${claims.operation} ref=${rec.credentialRef} upstream=${result.upstreamStatus}${result.credential ? ' (minted App token, revoked)' : ''}`);
+      console.log(`[vault] execute ${claims.request_id} op=${claims.operation} ref=${rec.credentialRef}${actingFor(claims.acting_user)} upstream=${result.upstreamStatus}${result.credential ? ' (minted App token, revoked)' : ''}`);
       signedJson(req, res, 200, {
         request_id: claims.request_id,
         upstream_status: result.upstreamStatus,

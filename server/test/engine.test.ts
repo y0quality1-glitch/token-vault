@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { argumentHolds, argumentProblem, getOperation, operationSelectorProblem, scopeSelectors, selectorApplication, type Policy } from '@token-vault/shared';
+import { argumentHolds, argumentProblem, getOperation, resourcePatternMatches, type ActingUser, operationSelectorProblem, scopeSelectors, selectorApplication, type Policy } from '@token-vault/shared';
 import { approvalPolicyCovering, evaluate, policyMatches } from '../src/modules/policy-engine/engine';
 import type { GrantRecord } from '../src/store/types';
 import { sanitize } from '../src/lib/sanitize';
@@ -75,6 +75,8 @@ function run(opts: {
   input?: Record<string, unknown>;
   stoppedAt?: string | null;
   budget?: { requestsLast24h: number; writesLastHour: number };
+  user?: ActingUser | null;
+  delegation?: { id: string; label: string; grantId: string; operations: string[]; resources: string[]; maxRequests: number | null; used: number } | null;
 }) {
   return evaluate({
     agent: { ...agent, status: opts.agentStatus ?? 'ACTIVE' },
@@ -90,6 +92,8 @@ function run(opts: {
     request: { resource: { repository: opts.repo ?? 'demo-org/demo-repo' }, input: opts.input ?? {} },
     organization: { emergencyStoppedAt: opts.stoppedAt ?? null, emergencyStopReason: opts.stoppedAt ? 'Incident 42' : null },
     budgetUsage: () => opts.budget ?? { requestsLast24h: 0, writesLastHour: 0 },
+    user: opts.user ?? null,
+    delegation: opts.delegation ?? null,
   });
 }
 
@@ -137,13 +141,13 @@ describe('REQUIRE_APPROVAL policies', () => {
   it('holds a request every other check allows until a human approves it', () => {
     const r = run({ policies });
     expect(r).toMatchObject({ decision: 'DENY', code: 'APPROVAL_REQUIRED', approvalPolicy: { id: 'pol_2' }, matchedRule: { type: 'policy', id: 'pol_2' } });
-    expect(r.checks.slice(0, 10).every((c) => c.passed)).toBe(true);
-    expect(r.checks[10]).toMatchObject({ step: 11, name: 'Human approval', passed: false });
+    expect(r.checks.slice(0, 12).every((c) => c.passed)).toBe(true);
+    expect(r.checks[12]).toMatchObject({ step: 13, name: 'Human approval', passed: false });
   });
   it('allows the request with a verified approval', () => {
     const r = run({ policies, approval: { id: 'apv_1', approvedBy: 'Sam Security' } });
     expect(r).toMatchObject({ decision: 'ALLOW', code: 'ALLOWED', approvalPolicy: { id: 'pol_2' } });
-    expect(r.checks[10]?.detail).toContain('Sam Security');
+    expect(r.checks[12]?.detail).toContain('Sam Security');
   });
   it('never asks for approval of a request another check denies', () => {
     expect(run({ policies, repo: 'demo-org/other-repo' }).code).toBe('RESOURCE_DENIED');
@@ -197,7 +201,7 @@ describe('budgets', () => {
     expect(run({ grants: [budgeted], op: 'github.repositories.read', budget: { requestsLast24h: 50, writesLastHour: 0 } })).toMatchObject({ code: 'BUDGET_EXCEEDED' });
     const ok = run({ grants: [budgeted], op: 'github.repositories.read', budget: { requestsLast24h: 49, writesLastHour: 0 } });
     expect(ok.code).toBe('ALLOWED');
-    expect(ok.checks[8]?.detail).toContain('50 of 50 requests in 24 h');
+    expect(ok.checks[10]?.detail).toContain('50 of 50 requests in 24 h');
   });
   it('counts writes against the hourly write budget, but not reads', () => {
     expect(run({ grants: [budgeted], budget: { requestsLast24h: 10, writesLastHour: 3 } }).code).toBe('BUDGET_EXCEEDED');
@@ -283,5 +287,80 @@ describe('sanitize & net helpers', () => {
     expect(ipInCidr('10.1.2.3', '10.0.0.0/8')).toBe(true);
     expect(ipInCidr('192.168.1.1', '10.0.0.0/8')).toBe(false);
     expect(ipInCidr('127.0.0.1', '127.0.0.1')).toBe(true);
+  });
+});
+
+describe('acting on behalf of a user', () => {
+  const ada: ActingUser = { sub: 'u_ada', email: 'ada@example.com', name: 'Ada', groups: ['engineering'], issuerId: 'uis_1', issuer: 'https://login.example.com' };
+
+  it('ALLOWED grants work with and without a user, and the check names the user', () => {
+    expect(run({}).checks[8]).toMatchObject({ step: 9, name: 'Acting user', passed: true, detail: 'The agent acts for itself' });
+    const r = run({ user: ada });
+    expect(r.decision).toBe('ALLOW');
+    expect(r.checks[8]?.detail).toContain('Ada (ada@example.com)');
+  });
+  it('REQUIRED grants deny requests without a user; NOT_ALLOWED grants deny requests with one', () => {
+    expect(run({ grants: [grant({ onBehalfOf: 'REQUIRED' })] }).code).toBe('USER_REQUIRED');
+    expect(run({ grants: [grant({ onBehalfOf: 'REQUIRED' })], user: ada }).decision).toBe('ALLOW');
+    expect(run({ grants: [grant({ onBehalfOf: 'NOT_ALLOWED' })], user: ada }).code).toBe('USER_NOT_ALLOWED');
+  });
+  it('allowed user groups are matched case-insensitively', () => {
+    expect(run({ grants: [grant({ allowedUserGroups: ['Engineering'] })], user: ada }).decision).toBe('ALLOW');
+    const r = run({ grants: [grant({ allowedUserGroups: ['finance'] })], user: ada });
+    expect(r).toMatchObject({ code: 'USER_NOT_ALLOWED' });
+    expect(r.reason).toContain('finance');
+  });
+  it('picks the grant that fits the user when several apply', () => {
+    const forUsers = grant({ id: 'grt_users', onBehalfOf: 'REQUIRED' });
+    const forItself = grant({ id: 'grt_self', onBehalfOf: 'NOT_ALLOWED' });
+    expect(run({ grants: [forUsers, forItself] }).grant?.id).toBe('grt_self');
+    expect(run({ grants: [forUsers, forItself], user: ada }).grant?.id).toBe('grt_users');
+  });
+  it("the user's own permissions narrow the grant (operations and resources)", () => {
+    const limited = (permissions: ActingUser['permissions']) => run({ user: { ...ada, permissions } });
+    expect(limited({ operations: ['github:write'] }).decision).toBe('ALLOW');
+    expect(limited({ operations: ['risk:read'] }).code).toBe('USER_PERMISSION_DENIED');
+    expect(limited({ resources: ['demo-org/*'] }).decision).toBe('ALLOW');
+    const outside = limited({ resources: ['other-org/*'] });
+    expect(outside.code).toBe('USER_PERMISSION_DENIED');
+    expect(outside.reason).toContain('demo-org/demo-repo');
+    expect(resourcePatternMatches('Demo-Org/*', 'demo-org/x')).toBe(true);
+    expect(resourcePatternMatches('demo-org/demo', 'demo-org/demo-repo')).toBe(false);
+  });
+  it('policies see the user through argument rules (user.groups matches any group; negated rules need all)', () => {
+    const contractors: Policy = { ...denyDestructive, id: 'pol_c', name: 'No contractors', conditions: { ...denyDestructive.conditions, operations: ['*'], arguments: [{ field: 'user.groups', op: 'in', value: ['contractors'] }] } };
+    expect(run({ policies: [contractors], user: { ...ada, groups: ['engineering', 'contractors'] } }).code).toBe('POLICY_DENIED');
+    expect(run({ policies: [contractors], user: ada }).decision).toBe('ALLOW');
+    expect(run({ policies: [contractors] }).decision).toBe('ALLOW');
+    const noUser: Policy = { ...contractors, id: 'pol_n', name: 'Users only', conditions: { ...contractors.conditions, arguments: [{ field: 'user.sub', op: 'equals', value: '' }] } };
+    expect(run({ policies: [noUser] }).code).toBe('POLICY_DENIED');
+    expect(run({ policies: [noUser], user: ada }).decision).toBe('ALLOW');
+    expect(argumentHolds({ field: 'user.groups', op: 'not_in', value: ['contractors'] }, { resource: {}, input: {}, user: { ...ada, groups: ['engineering', 'contractors'] } })).toBe(false);
+    expect(argumentProblem({ field: 'user.password', op: 'equals', value: 'x' })).toContain('user.sub');
+  });
+});
+
+describe('delegation to sub-agents', () => {
+  const dlg = { id: 'dlg_1', label: 'Triage helper', grantId: 'grt_1', operations: ['github.issues.create'], resources: ['demo-org/demo-repo'], maxRequests: 3, used: 0 };
+
+  it('runs a delegated request against the parent grant, and names the sub-agent', () => {
+    const r = run({ delegation: dlg });
+    expect(r.decision).toBe('ALLOW');
+    expect(r.checks[9]).toMatchObject({ step: 10, name: 'Delegation limits', passed: true, detail: expect.stringContaining('Triage helper') });
+    expect(run({}).checks[9]?.detail).toBe('Not delegated: the agent itself');
+  });
+  it('allows only the delegated operations, resources and number of requests', () => {
+    expect(run({ delegation: dlg, op: 'github.repositories.read' }).code).toBe('DELEGATION_DENIED');
+    expect(run({ delegation: { ...dlg, resources: ['demo-org/other'] } }).code).toBe('DELEGATION_DENIED');
+    expect(run({ delegation: { ...dlg, resources: [] } }).decision).toBe('ALLOW');
+    expect(run({ delegation: { ...dlg, used: 3 } }).reason).toContain('all 3 requests');
+  });
+  it('uses only the delegated grant, and still fails when the parent grant does', () => {
+    expect(run({ delegation: { ...dlg, grantId: 'grt_other' } }).code).toBe('DELEGATION_DENIED');
+    expect(run({ delegation: dlg, grants: [grant({ storedStatus: 'REVOKED' })] }).code).toBe('GRANT_REVOKED');
+    expect(run({ delegation: dlg, repo: 'demo-org/elsewhere' }).code).toBe('RESOURCE_DENIED');
+    // A second, broader grant of the parent agent is not reachable through the delegation.
+    const broad = grant({ id: 'grt_broad', scopes: ['github.issues.list'] });
+    expect(run({ delegation: dlg, grants: [grant(), broad], op: 'github.issues.list' }).code).toBe('SCOPE_DENIED');
   });
 });

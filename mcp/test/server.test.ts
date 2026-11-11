@@ -65,6 +65,8 @@ function grant(over: Partial<AgentCapabilitiesBody['grants'][number]> = {}): Age
     rate_limit_per_minute: 10,
     max_requests_per_day: null,
     max_writes_per_hour: null,
+    on_behalf_of: 'ALLOWED',
+    allowed_user_groups: [],
     valid_from: '2026-11-01T00:00:00.000Z',
     expires_at: '2026-11-11T00:00:00.000Z',
     ...over,
@@ -167,6 +169,27 @@ describe('MCP tools', () => {
     expect(r.isError).toBe(true);
     expect(textOf(r)).toMatch(/Access denied by Token Vault: Revoked grant \(GRANT_REVOKED/);
     expect(textOf(r)).toMatch(/cannot be resolved by requesting access/); // revocation is not requestable
+  });
+
+  it('explains user denials without offering an access request, and names the user on success', async () => {
+    const denied = await connect({ httpStatus: 403, decision: 'DENY', decision_code: 'USER_PERMISSION_DENIED', reason: 'User ada may not let an agent run github.issues.create.', result: null, execution: { status: 'NOT_EXECUTED', webhook_status: 'NOT_CALLED', upstream_status: null, duration_ms: 3, simulated: true, idempotent_replay: false } });
+    const r = await denied.client.callTool({ name: 'github_create_issue', arguments: { repository: 'demo-org/demo-repo', title: 'x' } });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toContain('The user is not permitted to do this');
+    expect(textOf(r)).not.toContain('token_vault_request_access');
+
+    const ok = await connect({ acting_for: { sub: 'u_ada', email: 'ada@acme.test', name: 'Ada', issuer: 'https://login.acme.test' } });
+    expect(textOf(await ok.client.callTool({ name: 'github_create_issue', arguments: { repository: 'demo-org/demo-repo', title: 'y' } }))).toContain('on behalf of ada@acme.test');
+  });
+
+  it('tells a sub-agent what it was delegated, and that delegation denials are final', async () => {
+    const { client } = await connect({ httpStatus: 403, decision: 'DENY', decision_code: 'DELEGATION_DENIED', reason: 'Sub-agent "Triage helper" was delegated github.issues.create, not github.issues.list.', result: null, execution: { status: 'NOT_EXECUTED', webhook_status: 'NOT_CALLED', upstream_status: null, duration_ms: 3, simulated: true, idempotent_replay: false } });
+    capsNow.current = { ...capsNow.current, delegation: { delegation_id: 'dlg_1', label: 'Triage helper', grant_id: 'grt_1', parent_delegation_id: null, depth: 1, operations: ['github.issues.create'], resources: [], max_requests: 5, used: 2, on_behalf_of: null, status: 'ACTIVE', status_reason: null, created_at: '2026-11-11T10:00:00Z', expires_at: '2026-11-11T11:00:00Z', revoked_at: null } };
+    expect(textOf(await client.callTool({ name: 'token_vault_list_access', arguments: {} }))).toContain('You are sub-agent "Triage helper"');
+    const r = await client.callTool({ name: 'github_list_issues', arguments: { repository: 'demo-org/demo-repo' } });
+    expect(textOf(r)).toContain('outside what was delegated to you');
+    expect(textOf(r)).not.toContain('token_vault_request_access');
+    capsNow.current = caps();
   });
 
   it('offers a just-in-time request for denials a human can resolve', async () => {

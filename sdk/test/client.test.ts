@@ -93,6 +93,53 @@ describe('TokenVault SDK', () => {
     expect(sent).toMatchObject({ integration_id: 'int_1', operation: 'github.issues.create', resource: { repository: 'a/b' }, input: { title: 't' }, approval_id: 'apv_1' });
   });
 
+  it('acts on behalf of a user: per request, per client (forUser), or from a token function, never exposing the token', async () => {
+    const { tv, fetchMock } = client(body({ acting_for: { sub: 'ada', email: null, name: null, issuer: 'https://login.test' } }));
+    const sent = () => JSON.parse(fetchMock.mock.calls.at(-1)![1]!.body as string);
+    await tv.execute({ integrationId: 'int_1', operation: 'github.issues.list' });
+    expect(sent().on_behalf_of).toBeUndefined();
+    await tv.execute({ integrationId: 'int_1', operation: 'github.issues.list', onBehalfOf: 'jwt.for.ada' });
+    expect(sent().on_behalf_of).toBe('jwt.for.ada');
+
+    const ada = tv.forUser('jwt.ada.static');
+    await ada.execute({ integrationId: 'int_1', operation: 'github.issues.list' });
+    expect(sent().on_behalf_of).toBe('jwt.ada.static');
+    expect(ada.actsForUser).toBe(true);
+    expect(JSON.stringify(ada)).not.toContain('jwt.ada');
+    expect(inspect(ada)).not.toContain('jwt.ada');
+    expect(inspect(ada)).toContain('actsForUser: true');
+
+    let n = 0;
+    const fresh = tv.forUser(async () => `jwt.fresh.${++n}`);
+    await fresh.execute({ integrationId: 'int_1', operation: 'github.issues.list' });
+    await fresh.execute({ integrationId: 'int_1', operation: 'github.issues.list' });
+    expect(sent().on_behalf_of).toBe('jwt.fresh.2');
+    expect(tv.actsForUser).toBe(false); // the original client is unchanged
+  });
+
+  it('surfaces user denials as AccessDeniedError with their codes', async () => {
+    const { tv } = client(body({ decision: 'DENY', decision_code: 'USER_REQUIRED', reason: 'needs a user', status: 'NOT_EXECUTED', upstream: null }), 403);
+    await expect(tv.execute({ integrationId: 'int_1', operation: 'github.issues.list' })).rejects.toMatchObject({ name: 'AccessDeniedError', code: 'USER_REQUIRED' });
+  });
+
+  it('delegates to a sub-agent, which then works with the delegation token', async () => {
+    const created = { delegation_id: 'dlg_1', token: 'tvdt_0123456789ab_abcdefghijklmnopqrstuvwxyz012345', label: 'Triage helper', grant_id: 'grt_1', operations: ['github.issues.create'], resources: [], status: 'ACTIVE' };
+    const { tv, fetchMock } = client(created, 201);
+    const d = await tv.forUser('jwt.ada').delegate({ grantId: 'grt_1', label: 'Triage helper', operations: ['github.issues.create'], maxRequests: 5 });
+    expect(d.token).toMatch(/^tvdt_/);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://tv.test/agent/v1/delegations');
+    expect(JSON.parse(init!.body as string)).toEqual({ grant_id: 'grt_1', label: 'Triage helper', operations: ['github.issues.create'], resources: [], max_requests: 5, on_behalf_of: 'jwt.ada' });
+
+    const sub = new TokenVault({ apiKey: d.token, baseUrl: 'http://tv.test', fetch: fetchMock as unknown as typeof fetch });
+    expect(sub.isDelegated).toBe(true);
+    expect(tv.isDelegated).toBe(false);
+    expect(inspect(sub)).not.toContain(d.token);
+
+    const refused = client({ error: { code: 'VALIDATION_ERROR', message: 'Request validation failed', details: { fields: { operations: 'github.contents.read is not granted' } } } }, 400);
+    await expect(refused.tv.delegate({ grantId: 'grt_1', label: 'x', operations: ['github.contents.read'] })).rejects.toThrow(/not granted/);
+  });
+
   it('requests access and surfaces server validation errors', async () => {
     const ok = client({ access_request_id: 'arq_1', status: 'PENDING', operations: ['github.issues.list'] }, 201);
     expect(await ok.tv.requestAccess({ integrationId: 'int_1', operations: ['github.issues.list'], justification: 'Need to triage open issues.' })).toMatchObject({ access_request_id: 'arq_1', status: 'PENDING' });

@@ -4,6 +4,7 @@ export * from './rbac';
 export * from './decisions';
 export * from './arguments';
 export * from './operation-selectors';
+export * from './acting-user';
 export * from './seed-refs';
 export * from './providers';
 export * from './cms';

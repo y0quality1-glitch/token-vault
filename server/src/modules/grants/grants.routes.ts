@@ -7,7 +7,7 @@ import { newId } from '../../lib/ids';
 import { isValidCidr } from '../../lib/net';
 import { parse } from '../../lib/validate';
 import { orgCtx, requirePermission } from '../../middleware/auth';
-import { agentRepo, auditRepo, grantRepo, integrationRepo, policyRepo } from '../../store/repos';
+import { agentRepo, auditRepo, delegationRepo, grantRepo, integrationRepo, policyRepo } from '../../store/repos';
 import type { AgentRecord, GrantRecord, IntegrationRecord } from '../../store/types';
 import { effectiveGrantStatus, loadLookups, toGrant } from '../../store/views';
 import { recordEvent, userActor } from '../audit/audit.service';
@@ -18,7 +18,7 @@ import { budgetUsageFor } from '../broker/broker.service';
 export const grantsRouter = Router();
 
 
-const restrictionsSchema = z.object({
+const restrictionsBase = z.object({
   scopes: z
     .array(z.string())
     .min(1, 'Select at least one permission')
@@ -32,15 +32,21 @@ const restrictionsSchema = z.object({
   maxRequestsPerDay: z.number().int().min(1, 'Must be at least 1').max(100_000, 'At most 100000').nullable().default(null),
   maxWritesPerHour: z.number().int().min(1, 'Must be at least 1').max(10_000, 'At most 10000').nullable().default(null),
   allowedCidrs: z.array(z.string().trim().refine(isValidCidr, 'Use IPv4 CIDR notation')).max(20).default([]),
+  // Acting for users: whether a signed user token must, may or must not accompany requests.
+  onBehalfOf: z.enum(['ALLOWED', 'REQUIRED', 'NOT_ALLOWED']).default('ALLOWED'),
+  allowedUserGroups: z.array(z.string().trim().min(1).max(200)).max(20, 'At most 20 groups').default([]),
 });
+const userGroupsFit = (b: { onBehalfOf: string; allowedUserGroups: string[] }) => b.onBehalfOf !== 'NOT_ALLOWED' || b.allowedUserGroups.length === 0;
+const userGroupsIssue = { path: ['allowedUserGroups'], message: 'User groups apply only when the agent may act for users' };
+const restrictionsSchema = restrictionsBase.refine(userGroupsFit, userGroupsIssue);
 
-const createSchema = restrictionsSchema.extend({
+const createSchema = restrictionsBase.extend({
   name: z.string().trim().min(3, 'Grant name must be at least 3 characters').max(80),
   agentId: z.string().min(1, 'Select an agent'),
   integrationId: z.string().min(1, 'Select an integration'),
   environment: z.enum(['development', 'staging', 'production']),
   approvalRequired: z.boolean().default(false),
-});
+}).refine(userGroupsFit, userGroupsIssue);
 
 async function getGrant(orgId: string, id: string, ex?: Executor): Promise<GrantRecord> {
   const g = await grantRepo.getGrant(orgId, id, ex);
@@ -168,6 +174,8 @@ grantsRouter.post('/grants', requirePermission(PERMISSIONS.GRANT_MANAGE), async 
         rateLimitPerMinute: body.rateLimitPerMinute,
         maxRequestsPerDay: body.maxRequestsPerDay,
         maxWritesPerHour: body.maxWritesPerHour,
+        onBehalfOf: body.onBehalfOf,
+        allowedUserGroups: body.allowedUserGroups,
         allowedCidrs: body.allowedCidrs,
         validFrom: new Date(body.validFrom).toISOString(),
         expiresAt: new Date(body.expiresAt).toISOString(),
@@ -193,7 +201,7 @@ grantsRouter.post('/grants', requirePermission(PERMISSIONS.GRANT_MANAGE), async 
         actor: userActor(ctx),
         eventType: 'grant.created',
         target: { type: 'grant', id: created.id, name: created.name },
-        metadata: { agentId: agent.id, integrationId: integration.id, scopes: created.scopes, repositories: body.repositories, expiresAt: created.expiresAt, status: created.storedStatus, maxRequestsPerDay: body.maxRequestsPerDay, maxWritesPerHour: body.maxWritesPerHour },
+        metadata: { agentId: agent.id, integrationId: integration.id, scopes: created.scopes, repositories: body.repositories, expiresAt: created.expiresAt, status: created.storedStatus, maxRequestsPerDay: body.maxRequestsPerDay, maxWritesPerHour: body.maxWritesPerHour, onBehalfOf: body.onBehalfOf, allowedUserGroups: body.allowedUserGroups },
       },
       tx,
     );
@@ -271,6 +279,8 @@ grantsRouter.post('/grants/:id/versions', requirePermission(PERMISSIONS.GRANT_MA
         rateLimitPerMinute: body.rateLimitPerMinute,
         maxRequestsPerDay: body.maxRequestsPerDay,
         maxWritesPerHour: body.maxWritesPerHour,
+        onBehalfOf: body.onBehalfOf,
+        allowedUserGroups: body.allowedUserGroups,
         allowedCidrs: body.allowedCidrs,
         validFrom: new Date(body.validFrom).toISOString(),
         expiresAt: new Date(body.expiresAt).toISOString(),
@@ -283,7 +293,9 @@ grantsRouter.post('/grants/:id/versions', requirePermission(PERMISSIONS.GRANT_MA
       },
       tx,
     );
-    await recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: 'grant.version_created', target: { type: 'grant', id: created.id, name: created.name }, metadata: { previousVersionId: g.id, version: created.version, scopes: created.scopes, repositories: body.repositories } }, tx);
+    // Delegations to sub-agents follow the grant to its new version (and are narrowed by it at every request).
+    await delegationRepo.moveToGrant(g.id, created.id, tx);
+    await recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: 'grant.version_created', target: { type: 'grant', id: created.id, name: created.name }, metadata: { previousVersionId: g.id, version: created.version, scopes: created.scopes, repositories: body.repositories, onBehalfOf: body.onBehalfOf, allowedUserGroups: body.allowedUserGroups } }, tx);
     return created;
   });
   res.status(201).json(await toDetail(next));

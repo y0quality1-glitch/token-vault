@@ -1,6 +1,7 @@
 import { Router, type Response } from 'express';
 import { normalizeIp } from '../../lib/net';
-import { authenticate, executeAgentRequest, getAgentOperations, getCapabilities, getOwnRequest } from './broker.service';
+import { authenticate, authenticateCaller, executeAgentRequest, getAgentOperations, getCapabilities, getOwnRequest } from './broker.service';
+import { createDelegation, listForAgent, revokeByAgent } from '../delegations/delegations.service';
 import { createFromAgent, getForAgent } from '../grant-requests/grant-requests.service';
 import { getForAgent as getApprovalForAgent } from '../approvals/approvals.service';
 
@@ -50,8 +51,11 @@ agentRouter.get('/operations', async (req, res) => {
 
 const unauthenticated = { error: { code: 'AGENT_UNAUTHENTICATED', message: 'Invalid agent credential' } };
 
-/** Just-in-time access: the agent asks a human for a time-limited grant. */
+const isDelegationToken = (authorization: string | undefined) => /^Bearer\s+tvdt_/i.test(authorization ?? '');
+
+/** Just-in-time access: the agent asks a human for a time-limited grant. Sub-agents cannot: they only ever narrow. */
 agentRouter.post('/access-requests', async (req, res) => {
+  if (isDelegationToken(req.headers.authorization)) return void res.status(403).json({ error: { code: 'DELEGATION_DENIED', message: 'A sub-agent cannot request access; ask the agent that delegated to you.' } });
   const agent = await authenticate(req.headers.authorization, keyNotice(res));
   if (!agent) return void res.status(401).json(unauthenticated);
   const r = await createFromAgent(agent, req.body);
@@ -60,9 +64,9 @@ agentRouter.post('/access-requests', async (req, res) => {
 
 /** An approval one of this agent's requests is waiting for (REQUIRE_APPROVAL policies). */
 agentRouter.get('/approvals/:id', async (req, res) => {
-  const agent = await authenticate(req.headers.authorization, keyNotice(res));
-  if (!agent) return void res.status(401).json(unauthenticated);
-  const r = await getApprovalForAgent(agent, String(req.params.id));
+  const caller = await authenticateCaller(req.headers.authorization, keyNotice(res));
+  if (!caller) return void res.status(401).json(unauthenticated);
+  const r = await getApprovalForAgent(caller.agent, String(req.params.id), caller.delegation?.delegation.id ?? null);
   if (!r) return void res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Approval not found' } });
   res.json(r);
 });
@@ -73,4 +77,28 @@ agentRouter.get('/access-requests/:id', async (req, res) => {
   const r = await getForAgent(agent, String(req.params.id));
   if (!r) return void res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Access request not found' } });
   res.json(r);
+});
+
+/**
+ * Delegation to sub-agents: create a narrower, short-lived slice of one grant with its own
+ * token (returned once), list what this caller delegated, and revoke (everything delegated
+ * from a revoked delegation stops too). A sub-agent may delegate further, only narrower.
+ */
+agentRouter.post('/delegations', async (req, res) => {
+  const caller = await authenticateCaller(req.headers.authorization, keyNotice(res));
+  if (!caller) return void res.status(401).json(unauthenticated);
+  const r = await createDelegation(caller.agent, caller.delegation, req.body);
+  res.status(r.status).json(r.body);
+});
+
+agentRouter.get('/delegations', async (req, res) => {
+  const caller = await authenticateCaller(req.headers.authorization, keyNotice(res));
+  if (!caller) return void res.status(401).json(unauthenticated);
+  res.json({ items: await listForAgent(caller.agent, caller.delegation) });
+});
+
+agentRouter.post('/delegations/:id/revoke', async (req, res) => {
+  const caller = await authenticateCaller(req.headers.authorization, keyNotice(res));
+  if (!caller) return void res.status(401).json(unauthenticated);
+  res.json(await revokeByAgent(caller.agent, caller.delegation, String(req.params.id), req.body));
 });

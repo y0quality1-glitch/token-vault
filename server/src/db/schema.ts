@@ -1,5 +1,8 @@
 import { bigint, boolean, customType, index, integer, jsonb, pgTable, text, uniqueIndex } from 'drizzle-orm/pg-core';
 import type {
+  ActingUser,
+  DelegationRef,
+  OnBehalfOfMode,
   AgentStatus,
   AgentType,
   AuditActorType,
@@ -229,6 +232,10 @@ export const grants = pgTable(
     /** Access reviews: last time a reviewer certified this grant should keep existing. */
     lastReviewedAt: ts('last_reviewed_at'),
     lastReviewedBy: text('last_reviewed_by'),
+    /** Acting for users: ALLOWED (may), REQUIRED (must), NOT_ALLOWED (must not carry a user token). */
+    onBehalfOf: text('on_behalf_of').$type<OnBehalfOfMode>().notNull().default('ALLOWED'),
+    /** The acting user must be in one of these groups (empty: any verified user). */
+    allowedUserGroups: jsonb('allowed_user_groups').$type<string[]>().notNull().default([]),
   },
   (t) => [index('grants_org_idx').on(t.organizationId), index('grants_agent_integration_idx').on(t.agentId, t.integrationId)],
 );
@@ -285,6 +292,10 @@ export const accessRequests = pgTable(
     idempotencyKey: text('idempotency_key'),
     checks: jsonb('checks').$type<DecisionCheck[]>().notNull(),
     createdAt: ts('created_at').notNull(),
+    /** The user the agent acted for (null: for itself). Left out of the chained content when null (see audit/chain.ts). */
+    onBehalfOf: jsonb('on_behalf_of').$type<ActingUser | null>(),
+    /** The sub-agent delegation the request came through (null: the agent itself). Left out of the chained content when null. */
+    delegation: jsonb('delegation').$type<DelegationRef | null>(),
     // Tamper evidence (migration 0003): per-organization hash chain + HMAC with a key held outside the database.
     // NULL on rows written before chaining existed ("legacy").
     seq: bigint('seq', { mode: 'number' }),
@@ -405,6 +416,10 @@ export const operationApprovals = pgTable(
     decidedBy: text('decided_by'),
     decidedAt: ts('decided_at'),
     decisionNote: text('decision_note'),
+    /** The user the agent asked to act for: the approval covers only requests for this user. */
+    onBehalfOf: jsonb('on_behalf_of').$type<ActingUser | null>(),
+    /** The sub-agent delegation that asked (null: the agent itself); part of the approved request. */
+    delegation: jsonb('delegation').$type<DelegationRef | null>(),
     executedAt: ts('executed_at'),
     executedRequestId: text('executed_request_id'),
   },
@@ -441,3 +456,64 @@ export const oauthPending = pgTable('oauth_pending', {
   createdAt: ts('created_at').notNull(),
   expiresAt: ts('expires_at').notNull(),
 });
+
+/**
+ * Identity providers trusted to vouch for the users agents act for. Only public keys are
+ * stored: user tokens are signed by the customer, never by Token Vault.
+ */
+export const userIssuers = pgTable(
+  'user_issuers',
+  {
+    id: text('id').primaryKey(),
+    organizationId: text('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    issuer: text('issuer').notNull(),
+    audience: text('audience').notNull(),
+    publicKey: text('public_key').notNull(),
+    keyFingerprint: text('key_fingerprint').notNull(),
+    groupsClaim: text('groups_claim').notNull().default('groups'),
+    maxTokenLifetimeSeconds: integer('max_token_lifetime_seconds').notNull().default(3600),
+    enabled: boolean('enabled').notNull().default(true),
+    createdAt: ts('created_at').notNull(),
+    updatedAt: ts('updated_at').notNull(),
+    lastUsedAt: ts('last_used_at'),
+  },
+  (t) => [uniqueIndex('user_issuers_org_issuer_uq').on(t.organizationId, t.issuer)],
+);
+
+/**
+ * Delegations to sub-agents: narrower, short-lived slices of an agent's grant with their own
+ * credential (tvdt_<keyId>_<secret>, scrypt hash only). Revocation is a timestamp, never a
+ * delete, so access records keep pointing at it.
+ */
+export const delegations = pgTable(
+  'delegations',
+  {
+    id: text('id').primaryKey(),
+    organizationId: text('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
+    agentId: text('agent_id')
+      .notNull()
+      .references(() => agents.id),
+    grantId: text('grant_id').notNull(),
+    parentDelegationId: text('parent_delegation_id'),
+    depth: integer('depth').notNull(),
+    label: text('label').notNull(),
+    operations: jsonb('operations').$type<string[]>().notNull(),
+    resources: jsonb('resources').$type<string[]>().notNull().default([]),
+    maxRequests: integer('max_requests'),
+    onBehalfOf: jsonb('on_behalf_of').$type<ActingUser | null>(),
+    keyId: text('key_id').notNull().unique(),
+    credentialHash: text('credential_hash').notNull(),
+    createdAt: ts('created_at').notNull(),
+    expiresAt: ts('expires_at').notNull(),
+    revokedAt: ts('revoked_at'),
+    revokedBy: text('revoked_by'),
+    revocationReason: text('revocation_reason'),
+    lastUsedAt: ts('last_used_at'),
+  },
+  (t) => [index('delegations_org_idx').on(t.organizationId), index('delegations_agent_idx').on(t.agentId), index('delegations_grant_idx').on(t.grantId), index('delegations_parent_idx').on(t.parentDelegationId)],
+);

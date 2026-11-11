@@ -71,6 +71,20 @@
       "when": 1794310987904,
       "tag": "0009_budgets_emergency_stop",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1794383032445,
+      "tag": "0010_acting_users",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1794385945402,
+      "tag": "0011_delegations",
+      "breakpoints": true
     }
   ]
 }

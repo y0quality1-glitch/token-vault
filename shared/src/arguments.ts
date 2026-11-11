@@ -21,20 +21,34 @@ export const ARGUMENT_OPERATORS: { op: ArgumentOperator; label: string; value: '
   { op: 'less_than', label: 'is less than', value: 'number' },
 ];
 
-/** `input.<name>` or `resource.<name>`, names as in provider definitions. */
-export const ARGUMENT_FIELD = /^(input|resource)\.[a-zA-Z][a-zA-Z0-9_]{0,39}$/;
+/**
+ * `input.<name>` or `resource.<name>` (names as in provider definitions), or a field of the
+ * user the agent acts for: `user.sub`, `user.email`, `user.name`, `user.groups`, `user.issuer`
+ * (empty when the agent acts for itself).
+ */
+export const ARGUMENT_FIELD = /^((input|resource)\.[a-zA-Z][a-zA-Z0-9_]{0,39}|user\.(sub|email|name|groups|issuer))$/;
+export const USER_ARGUMENT_FIELDS = ['user.sub', 'user.email', 'user.name', 'user.groups', 'user.issuer'] as const;
 export const MAX_PATTERN_LENGTH = 200;
 
 export interface RequestContent {
   resource: Record<string, string>;
   input: Record<string, unknown>;
+  /** The user the agent acts for (absent or null: the agent acts for itself). */
+  user?: { sub: string; email?: string | null; name?: string | null; groups: string[]; issuer: string } | null;
 }
 
 function fieldValue(field: string, req: RequestContent): unknown {
-  const [scope, name] = field.split('.', 2) as ['input' | 'resource', string];
+  const [scope, name] = field.split('.', 2) as ['input' | 'resource' | 'user', string];
+  if (scope === 'user') {
+    const u = req.user;
+    if (name === 'groups') return u?.groups ?? [];
+    return u ? (u as unknown as Record<string, unknown>)[name] : undefined;
+  }
   const source = scope === 'input' ? req.input : req.resource;
   return Object.prototype.hasOwnProperty.call(source, name) ? source[name] : undefined;
 }
+
+const NEGATED: ArgumentOperator[] = ['not_equals', 'not_contains', 'not_matches', 'not_in'];
 
 const asText = (v: unknown): string => (v === undefined || v === null ? '' : typeof v === 'string' ? v : typeof v === 'object' ? JSON.stringify(v) : String(v));
 
@@ -46,7 +60,16 @@ function asNumber(v: unknown): number | null {
 
 /** Whether one argument rule holds for the request. Text comparisons ignore case. */
 export function argumentHolds(c: ArgumentCondition, req: RequestContent): boolean {
-  const raw = fieldValue(c.field, req);
+  const value = fieldValue(c.field, req);
+  // A list (user.groups): a rule holds when any item satisfies it; a negated rule when every item does (none matches).
+  if (Array.isArray(value)) {
+    const each = (v: unknown) => valueHolds(c, v);
+    return NEGATED.includes(c.op) ? value.every(each) : value.some(each);
+  }
+  return valueHolds(c, value);
+}
+
+function valueHolds(c: ArgumentCondition, raw: unknown): boolean {
   const text = asText(raw).toLowerCase();
   const target = typeof c.value === 'string' ? c.value.toLowerCase() : '';
   const list = Array.isArray(c.value) ? c.value.map((x) => x.toLowerCase()) : [];
@@ -87,7 +110,7 @@ export function argumentHolds(c: ArgumentCondition, req: RequestContent): boolea
 
 /** Problem with a rule as an administrator wrote it, or null. */
 export function argumentProblem(c: ArgumentCondition): string | null {
-  if (!ARGUMENT_FIELD.test(c.field)) return `"${c.field}" must be input.<name> or resource.<name>`;
+  if (!ARGUMENT_FIELD.test(c.field)) return `"${c.field}" must be input.<name>, resource.<name> or one of ${USER_ARGUMENT_FIELDS.join(', ')}`;
   const kind = ARGUMENT_OPERATORS.find((o) => o.op === c.op)?.value;
   if (!kind) return `Unknown operator "${c.op}"`;
   if (kind === 'number' && (typeof c.value !== 'number' || !Number.isFinite(c.value))) return `${c.field}: enter a number`;

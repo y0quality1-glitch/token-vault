@@ -1,4 +1,4 @@
-import { DECISION_CODES, argumentHolds, operationSelectorMatches, type DecisionCheck, type MatchedRule, type OperationDef, type OperationFacts, type Policy, type RequestContent } from '@token-vault/shared';
+import { DECISION_CODES, actingUserLabel, argumentHolds, operationSelectorMatches, userPermissionProblem, type ActingUser, type DecisionCheck, type MatchedRule, type OperationDef, type OperationFacts, type Policy, type RequestContent } from '@token-vault/shared';
 import { ipAllowed, ipInCidr } from '../../lib/net';
 import type { AgentRecord, GrantRecord, IntegrationRecord } from '../../store/types';
 
@@ -13,9 +13,11 @@ import type { AgentRecord, GrantRecord, IntegrationRecord } from '../../store/ty
  *  6. Integration is active
  *  7. Operation within grant scopes
  *  8. Resource restrictions               (grant + integration allow-lists)
- *  9. Rate limit and budgets              (per minute; requests per 24 h; writes per hour)
- * 10. Source IP restriction               (grant + agent CIDRs)
- * 11. Human approval                      (REQUIRE_APPROVAL policies)
+ *  9. Acting user                         (the grant allows acting for this user, or for none; the user's own permissions)
+ * 10. Delegation limits                   (a sub-agent: only the delegated grant, operations, resources and request cap)
+ * 11. Rate limit and budgets              (per minute; requests per 24 h; writes per hour)
+ * 12. Source IP restriction               (grant + agent CIDRs)
+ * 13. Human approval                      (REQUIRE_APPROVAL policies)
  * Deny by default if any mandatory check fails. Matching ALLOW policies are recorded
  * for traceability but never substitute for a grant. A REQUIRE_APPROVAL policy only
  * applies to a request that every other check allows: the request then waits until a
@@ -30,6 +32,8 @@ export const CHECK_NAMES = [
   'Integration is active',
   'Operation within grant scopes',
   'Resource restrictions',
+  'Acting user',
+  'Delegation limits',
   'Rate limit and budgets',
   'Source IP restriction',
   'Human approval',
@@ -59,6 +63,13 @@ export interface EvaluationInput {
   organization?: { emergencyStoppedAt?: string | null; emergencyStopReason?: string | null } | null;
   /** Authorized requests of a grant in the last 24 hours, and its authorized writes in the last hour (only for grants with budgets). */
   budgetUsage?: (grantId: string) => { requestsLast24h: number; writesLastHour: number };
+  /** The verified user the agent acts for (null or absent: the agent acts for itself). */
+  user?: ActingUser | null;
+  /**
+   * The sub-agent delegation the request came through (already checked: unrevoked and
+   * unexpired along its chain). Null or absent: the agent itself.
+   */
+  delegation?: { id: string; label: string; grantId: string; operations: string[]; resources: string[]; maxRequests: number | null; used: number } | null;
 }
 
 export interface EvaluationResult {
@@ -159,7 +170,8 @@ export function evaluate(input: EvaluationInput): EvaluationResult {
     operation: { id: input.operation.id, provider: input.operation.provider, risk: input.operation.risk },
     sourceIp: input.sourceIp,
     now: input.now,
-    request: input.request,
+    // Argument rules on user.* see the acting user.
+    request: input.request ? { ...input.request, user: input.user ?? null } : undefined,
   };
   const enabled = input.policies.filter((p) => p.enabled).sort((a, b) => a.priority - b.priority);
   const denyPolicy = enabled.find((p) => p.effect === 'DENY' && policyMatches(p, pctx));
@@ -168,8 +180,12 @@ export function evaluate(input: EvaluationInput): EvaluationResult {
   }
   pass(3, `No enabled deny policy matched (${enabled.filter((p) => p.effect === 'DENY').length} evaluated)`);
 
-  // 4. Grant exists and is active
-  const candidates = input.grants.filter((g) => g.storedStatus !== 'SUPERSEDED');
+  // 4. Grant exists and is active (a sub-agent may use only the grant it was delegated)
+  const dlg = input.delegation ?? null;
+  const candidates = input.grants.filter((g) => g.storedStatus !== 'SUPERSEDED' && (!dlg || g.id === dlg.grantId));
+  if (dlg && candidates.length === 0) {
+    return deny(4, DECISION_CODES.DELEGATION_DENIED, `Sub-agent "${dlg.label}" (delegation ${dlg.id}) may use only grant ${dlg.grantId}, which does not cover ${input.integration.displayName}.`);
+  }
   if (candidates.length === 0) {
     return deny(4, DECISION_CODES.GRANT_MISSING, `No grant authorizes ${input.agent.name} to use ${input.integration.displayName}.`);
   }
@@ -223,47 +239,85 @@ export function evaluate(input: EvaluationInput): EvaluationResult {
   }
   pass(8, grant.resourceConstraints.repositories.length ? `${input.operation.resourceLabel} matches restriction ${grant.resourceConstraints.repositories.join(', ')}` : 'No resource restriction on grant');
 
-  // 9. Rate limit
+  // 9. Acting user: the grant must allow acting for this user (or for none), within the user's own permissions.
+  const user = input.user ?? null;
+  const userFits = (g: GrantRecord) => {
+    const mode = g.onBehalfOf ?? 'ALLOWED';
+    if (!user) return mode !== 'REQUIRED';
+    if (mode === 'NOT_ALLOWED') return false;
+    const groups = g.allowedUserGroups ?? [];
+    return groups.length === 0 || groups.some((x) => user.groups.some((ug) => ug.toLowerCase() === x.toLowerCase()));
+  };
+  const forUser = resourceOk.filter(userFits);
+  if (forUser.length === 0) {
+    const rule: MatchedRule = { type: 'grant', id: grant.id, name: grant.name };
+    if (!user) return deny(9, DECISION_CODES.USER_REQUIRED, `Grant "${grant.name}" lets ${input.agent.name} act only on behalf of a signed-in user; send the user's token as on_behalf_of.`, rule);
+    if (resourceOk.every((g) => (g.onBehalfOf ?? 'ALLOWED') === 'NOT_ALLOWED')) return deny(9, DECISION_CODES.USER_NOT_ALLOWED, `Grant "${grant.name}" lets ${input.agent.name} act only for itself, not on behalf of users.`, rule);
+    return deny(9, DECISION_CODES.USER_NOT_ALLOWED, `${actingUserLabel(user)} is not in a group grant "${grant.name}" allows (${(grant.allowedUserGroups ?? []).join(', ')}).`, rule);
+  }
+  grant = forUser[0]!;
+  if (user) {
+    const problem = userPermissionProblem(user, pctx.operation!, input.resource.repository);
+    if (problem) return deny(9, DECISION_CODES.USER_PERMISSION_DENIED, problem, { type: 'grant', id: grant.id, name: grant.name });
+    pass(9, `On behalf of ${actingUserLabel(user)} (verified by ${user.issuer})${user.permissions ? "; within the user's own permissions" : ''}`);
+  } else {
+    pass(9, 'The agent acts for itself');
+  }
+
+  // 10. Delegation limits
+  if (dlg) {
+    const rule: MatchedRule = { type: 'grant', id: grant.id, name: grant.name };
+    const who = `Sub-agent "${dlg.label}" (delegation ${dlg.id})`;
+    if (!dlg.operations.includes(input.operation.id)) return deny(10, DECISION_CODES.DELEGATION_DENIED, `${who} was delegated ${dlg.operations.join(', ')}, not ${input.operation.id}.`, rule);
+    const res = (input.resource.repository ?? '').toLowerCase();
+    if (dlg.resources.length && !dlg.resources.some((r) => r.toLowerCase() === res)) return deny(10, DECISION_CODES.DELEGATION_DENIED, `${who} was delegated ${dlg.resources.join(', ')}, not ${input.resource.repository || '(no resource)'}.`, rule);
+    if (dlg.maxRequests !== null && dlg.used >= dlg.maxRequests) return deny(10, DECISION_CODES.DELEGATION_DENIED, `${who} has used all ${dlg.maxRequests} requests it was delegated.`, rule);
+    pass(10, `Via ${who}${dlg.maxRequests !== null ? `; ${dlg.used + 1} of ${dlg.maxRequests} requests` : ''}`);
+  } else {
+    pass(10, 'Not delegated: the agent itself');
+  }
+
+  // 11. Rate limit
   const used = input.recentRequests(grant.id);
   if (used >= grant.rateLimitPerMinute) {
-    return deny(9, DECISION_CODES.RATE_LIMITED, `Rate limit of ${grant.rateLimitPerMinute} requests/minute exceeded for grant "${grant.name}".`, { type: 'grant', id: grant.id, name: grant.name });
+    return deny(11, DECISION_CODES.RATE_LIMITED, `Rate limit of ${grant.rateLimitPerMinute} requests/minute exceeded for grant "${grant.name}".`, { type: 'grant', id: grant.id, name: grant.name });
   }
   const budget = grant.maxRequestsPerDay || grant.maxWritesPerHour ? input.budgetUsage?.(grant.id) : undefined;
   const budgetNotes: string[] = [];
   if (budget && grant.maxRequestsPerDay) {
     if (budget.requestsLast24h >= grant.maxRequestsPerDay) {
-      return deny(9, DECISION_CODES.BUDGET_EXCEEDED, `Grant "${grant.name}" allows ${grant.maxRequestsPerDay} requests per 24 hours, and ${budget.requestsLast24h} were authorized in the last 24 hours.`, { type: 'grant', id: grant.id, name: grant.name });
+      return deny(11, DECISION_CODES.BUDGET_EXCEEDED, `Grant "${grant.name}" allows ${grant.maxRequestsPerDay} requests per 24 hours, and ${budget.requestsLast24h} were authorized in the last 24 hours.`, { type: 'grant', id: grant.id, name: grant.name });
     }
     budgetNotes.push(`${budget.requestsLast24h + 1} of ${grant.maxRequestsPerDay} requests in 24 h`);
   }
   if (budget && grant.maxWritesPerHour && input.operation.mutating) {
     if (budget.writesLastHour >= grant.maxWritesPerHour) {
-      return deny(9, DECISION_CODES.BUDGET_EXCEEDED, `Grant "${grant.name}" allows ${grant.maxWritesPerHour} write operations per hour, and ${budget.writesLastHour} were authorized in the last hour.`, { type: 'grant', id: grant.id, name: grant.name });
+      return deny(11, DECISION_CODES.BUDGET_EXCEEDED, `Grant "${grant.name}" allows ${grant.maxWritesPerHour} write operations per hour, and ${budget.writesLastHour} were authorized in the last hour.`, { type: 'grant', id: grant.id, name: grant.name });
     }
     budgetNotes.push(`${budget.writesLastHour + 1} of ${grant.maxWritesPerHour} writes in 1 h`);
   }
-  pass(9, [`${used + 1} of ${grant.rateLimitPerMinute} requests in the current minute`, ...budgetNotes].join('; '));
+  pass(11, [`${used + 1} of ${grant.rateLimitPerMinute} requests in the current minute`, ...budgetNotes].join('; '));
 
-  // 10. Source IP
+  // 12. Source IP
   if (!ipAllowed(input.sourceIp, grant.allowedCidrs) || !ipAllowed(input.sourceIp, input.agent.allowedCidrs)) {
-    return deny(10, DECISION_CODES.IP_DENIED, `Source IP ${input.sourceIp} is not in the allowed CIDR ranges.`, { type: 'grant', id: grant.id, name: grant.name });
+    return deny(12, DECISION_CODES.IP_DENIED, `Source IP ${input.sourceIp} is not in the allowed CIDR ranges.`, { type: 'grant', id: grant.id, name: grant.name });
   }
-  pass(10, grant.allowedCidrs.length || input.agent.allowedCidrs.length ? `Source IP ${input.sourceIp} allowed` : 'No IP restriction configured');
+  pass(12, grant.allowedCidrs.length || input.agent.allowedCidrs.length ? `Source IP ${input.sourceIp} allowed` : 'No IP restriction configured');
 
-  // 11. Human approval (only for requests every other check allows)
+  // 13. Human approval (only for requests every other check allows)
   const approvalPolicy = enabled.find((p) => p.effect === 'REQUIRE_APPROVAL' && policyMatches(p, pctx));
   const approvalRef = approvalPolicy ? { id: approvalPolicy.id, name: approvalPolicy.name } : null;
   // A destructive operation runs only with a human's approval: if no approval policy applies
   // (it was disabled, or its conditions don't hold for this request), it never runs.
   if (input.operation.destructive && !approvalPolicy) {
-    return deny(11, DECISION_CODES.APPROVAL_POLICY_MISSING, `${input.operation.label} is destructive and runs only with human approval, but no enabled Require approval policy applies to this request.`, { type: 'grant', id: grant.id, name: grant.name });
+    return deny(13, DECISION_CODES.APPROVAL_POLICY_MISSING, `${input.operation.label} is destructive and runs only with human approval, but no enabled Require approval policy applies to this request.`, { type: 'grant', id: grant.id, name: grant.name });
   }
   if (approvalPolicy && !input.approval) {
-    const result = deny(11, DECISION_CODES.APPROVAL_REQUIRED, `Policy "${approvalPolicy.name}" requires a human to approve this request before it runs.`, { type: 'policy', id: approvalPolicy.id, name: approvalPolicy.name });
+    const result = deny(13, DECISION_CODES.APPROVAL_REQUIRED, `Policy "${approvalPolicy.name}" requires a human to approve this request before it runs.`, { type: 'policy', id: approvalPolicy.id, name: approvalPolicy.name });
     return { ...result, approvalPolicy: approvalRef };
   }
-  if (approvalPolicy) pass(11, `Approved by ${input.approval!.approvedBy} (approval ${input.approval!.id}) as policy "${approvalPolicy.name}" requires`);
-  else pass(11, input.approval ? `No approval policy applies any more; approval ${input.approval.id} is used anyway` : 'No approval policy matched');
+  if (approvalPolicy) pass(13, `Approved by ${input.approval!.approvedBy} (approval ${input.approval!.id}) as policy "${approvalPolicy.name}" requires`);
+  else pass(13, input.approval ? `No approval policy applies any more; approval ${input.approval.id} is used anyway` : 'No approval policy matched');
 
   const allowPolicies = enabled.filter((p) => p.effect === 'ALLOW' && policyMatches(p, pctx)).map((p) => ({ id: p.id, name: p.name }));
   return {
