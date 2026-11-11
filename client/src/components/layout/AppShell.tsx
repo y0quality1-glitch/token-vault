@@ -80,6 +80,7 @@ const NAV: NavGroup[] = [
       { label: 'Organization', to: '/settings/organization' },
       { label: 'Members & Roles', to: '/settings/members' },
       { label: 'API Clients', to: '/settings/api-clients' },
+      { label: 'User Identity', to: '/settings/user-identity' },
     ],
   },
 ];

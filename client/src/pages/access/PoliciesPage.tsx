@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Pencil, Plus, ScrollText, Trash2 } from 'lucide-react';
-import { ARGUMENT_OPERATORS, PERMISSIONS, describeArgument, scopeSelectors, type Agent, type ArgumentCondition, type ArgumentOperator, type Integration, type Policy, type PolicyConditions, type PolicyEffect } from '@token-vault/shared';
+import { ARGUMENT_OPERATORS, PERMISSIONS, USER_ARGUMENT_FIELDS, describeArgument, scopeSelectors, type Agent, type ArgumentCondition, type ArgumentOperator, type Integration, type Policy, type PolicyConditions, type PolicyEffect } from '@token-vault/shared';
 import { getOperation, getProvider, useProviders } from '@/lib/providers';
 import { OperationPicker, selectorLabel } from '@/components/policy/OperationPicker';
 import { SearchSelect } from '@/components/policy/SearchSelect';
@@ -18,7 +18,7 @@ import { PageHeader } from '@/components/ui/navigation';
 import { useToast } from '@/components/ui/toast';
 import { AGENT_TYPE_LABELS, splitList } from '@/lib/utils';
 
-const EVALUATION = ['Authenticate caller', 'Verify agent is active (and no emergency stop)', 'Explicit DENY policies (precedence over allow)', 'Grant exists and is active', 'Grant validity period', 'Integration is active', 'Operation in grant scopes', 'Resource restrictions', 'Rate limit and budgets', 'Source IP restriction', 'Human approval (Require approval policies)', 'Deny by default if any check fails'];
+const EVALUATION = ['Authenticate caller', 'Verify agent is active (and no emergency stop)', 'Explicit DENY policies (precedence over allow)', 'Grant exists and is active', 'Grant validity period', 'Integration is active', 'Operation in grant scopes', 'Resource restrictions', 'Acting user (the grant allows it, within the user token permissions)', 'Delegation limits (sub-agents: only what was delegated)', 'Rate limit and budgets', 'Source IP restriction', 'Human approval (Require approval policies)', 'Deny by default if any check fails'];
 
 const EFFECTS: Record<PolicyEffect, { label: string; tone: 'red' | 'green' | 'amber' }> = {
   DENY: { label: 'Deny', tone: 'red' },
@@ -400,11 +400,21 @@ function ArgumentRules({ rows, onChange, error }: { rows: ArgRow[]; onChange: (r
       <p className="text-xs text-slate-500">
         The policy applies only when every rule holds for what the request contains. Fields are <span className="font-mono">input.&lt;name&gt;</span> or <span className="font-mono">resource.&lt;name&gt;</span>; text comparisons ignore case.
       </p>
+      <p className="mt-1 text-xs text-slate-500">
+        To act on the user an agent works for, use <span className="font-mono">user.sub</span>, <span className="font-mono">user.email</span>, <span className="font-mono">user.groups</span> (any of the user's groups) or <span className="font-mono">user.issuer</span>. They are empty when the agent acts for itself, so <span className="font-mono">user.sub equals ""</span> means "no user".
+      </p>
+      <datalist id="argument-fields">
+        <option value="input." />
+        <option value="resource." />
+        {USER_ARGUMENT_FIELDS.map((f) => (
+          <option key={f} value={f} />
+        ))}
+      </datalist>
       {error && <p className="mt-2 text-xs text-red-600">{error}</p>}
       <div className="mt-3 space-y-2">
         {rows.map((r, i) => (
           <div key={i} className="grid gap-2 sm:grid-cols-[1fr_13rem_1fr_auto]">
-            <Input aria-label={`Rule ${i + 1} field`} className="font-mono text-xs" value={r.field} onChange={(e) => set(i, { field: e.target.value })} placeholder="input.title" />
+            <Input aria-label={`Rule ${i + 1} field`} list="argument-fields" className="font-mono text-xs" value={r.field} onChange={(e) => set(i, { field: e.target.value })} placeholder="input.title" />
             <Select aria-label={`Rule ${i + 1} operator`} value={r.op} onChange={(e) => set(i, { op: e.target.value as ArgumentOperator })}>
               {ARGUMENT_OPERATORS.map((o) => (
                 <option key={o.op} value={o.op}>

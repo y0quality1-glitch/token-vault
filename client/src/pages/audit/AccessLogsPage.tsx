@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Activity, CheckCircle2, CircleDashed, Download, Search, XCircle } from 'lucide-react';
-import { DECISION_LABELS, type AccessRequest, type Agent, type AuditEvent, type Integration } from '@token-vault/shared';
+import { Activity, CheckCircle2, CircleDashed, Download, Search, UserRound, XCircle } from 'lucide-react';
+import { DECISION_LABELS, actingUserLabel, type AccessRequest, type Agent, type AuditEvent, type Integration } from '@token-vault/shared';
 import { operationLabel, useProviders } from '@/lib/providers';
 import { useApi } from '@/hooks/useApi';
 import { qs } from '@/lib/api';
@@ -14,6 +14,7 @@ import { Drawer } from '@/components/ui/dialog';
 import { DataTable } from '@/components/ui/table';
 import { PageHeader } from '@/components/ui/navigation';
 import { JsonView, Mono } from '@/components/ui/secret';
+import { permissionsText } from '@/pages/settings/UserIdentityPage';
 import { cn, formatDateTime, formatDuration, fromLocalInput } from '@/lib/utils';
 
 export function AccessLogsPage() {
@@ -28,6 +29,7 @@ export function AccessLogsPage() {
     to: '',
     search: '',
     grantId: params.get('grantId') ?? '',
+    user: params.get('user') ?? '',
   });
   const query = qs({ ...filters, from: fromLocalInput(filters.from), to: fromLocalInput(filters.to) });
   const { data, error, loading, reload } = useApi<{ items: AccessRequest[]; total: number }>(`/access-requests${query}`);
@@ -99,11 +101,15 @@ export function AccessLogsPage() {
               </option>
             ))}
           </Select>
-          <Button variant="ghost" onClick={() => setFilters({ agentId: '', integrationId: '', decision: '', operation: '', from: '', to: '', search: '', grantId: '' })}>
+          <Button variant="ghost" onClick={() => setFilters({ agentId: '', integrationId: '', decision: '', operation: '', from: '', to: '', search: '', grantId: '', user: '' })}>
             Reset filters
           </Button>
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-3 text-sm">
+          <div className="relative">
+            <UserRound className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
+            <Input className="w-56 pl-8" placeholder="On behalf of user…" aria-label="On behalf of user" value={filters.user} onChange={set('user')} />
+          </div>
           <label className="flex items-center gap-2 text-slate-600">
             From <Input type="datetime-local" className="w-auto" value={filters.from} onChange={set('from')} />
           </label>
@@ -135,7 +141,21 @@ export function AccessLogsPage() {
             columns={[
               { key: 't', header: 'Timestamp', cell: (r) => <span className="whitespace-nowrap text-slate-500">{formatDateTime(r.createdAt)}</span> },
               { key: 'id', header: 'Request ID', cell: (r) => <Mono>{r.id}</Mono>, hideBelow: 'xl' },
-              { key: 'agent', header: 'Actor / Agent', cell: (r) => <span className="font-medium text-slate-800">{r.agentName}</span> },
+              {
+                key: 'agent',
+                header: 'Actor / Agent',
+                cell: (r) => (
+                  <div className="min-w-0">
+                    <span className="font-medium text-slate-800">{r.agentName}</span>
+                    {r.delegation && <span className="block text-xs text-slate-500">via sub-agent {r.delegation.label}</span>}
+                    {r.onBehalfOf && (
+                      <span className="flex items-center gap-1 text-xs text-slate-500" title={`Verified by ${r.onBehalfOf.issuer}`}>
+                        <UserRound className="h-3 w-3" /> for {actingUserLabel(r.onBehalfOf)}
+                      </span>
+                    )}
+                  </div>
+                ),
+              },
               { key: 'int', header: 'Integration', cell: (r) => r.integrationName, hideBelow: 'lg' },
               { key: 'op', header: 'Operation', cell: (r) => operationLabel(r.operation), hideBelow: 'md' },
               { key: 'd', header: 'Decision', cell: (r) => <DecisionBadge decision={r.decision} code={r.decisionCode} /> },
@@ -178,6 +198,9 @@ function AccessDetailDrawer({ id, onClose }: { id: string | null; onClose: () =>
             items={[
               { label: 'Event ID', value: r.auditEvents[0]?.id ?? '—', mono: true },
               { label: 'Request ID', value: r.id, mono: true },
+              ...(r.delegation ? [{ label: 'Via sub-agent', value: `${r.delegation.label} (delegation ${r.delegation.id}, level ${r.delegation.depth})` }] : []),
+              { label: 'On behalf of', value: r.onBehalfOf ? `${actingUserLabel(r.onBehalfOf)} · ${r.onBehalfOf.sub}` : 'The agent itself' },
+              ...(r.onBehalfOf ? [{ label: 'Verified by', value: r.onBehalfOf.issuer }, { label: 'User groups', value: r.onBehalfOf.groups.join(', ') || 'none' }, { label: "User's permissions", value: permissionsText(r.onBehalfOf.permissions) }] : []),
               { label: 'Agent ID', value: r.agentId ? <Link className="text-brand-700 hover:underline" to={`/agents/${r.agentId}`}>{r.agentId}</Link> : 'Unauthenticated', mono: true },
               { label: 'Grant ID', value: r.grantId ? <Link className="text-brand-700 hover:underline" to={`/access/grants/${r.grantId}`}>{r.grantId}</Link> : '—', mono: true },
               { label: 'Integration ID', value: r.integrationId ?? '—', mono: true },

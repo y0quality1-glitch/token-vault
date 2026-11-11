@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, ArrowRight, Bot, CheckCircle2, FlaskConical, Github, Lock } from 'lucide-react';
-import { PERMISSIONS, type Agent, type GrantDetail, type Integration } from '@token-vault/shared';
+import { PERMISSIONS, type Agent, type GrantDetail, type Integration, type OnBehalfOfMode } from '@token-vault/shared';
 import { getProvider, operationLabel, useProviders } from '@/lib/providers';
 import { useApi, useMutation } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
@@ -13,6 +13,7 @@ import { Checkbox, Field, Input, Switch } from '@/components/ui/form';
 import { Callout, EmptyState, FormError, PermissionDenied, Spinner } from '@/components/ui/feedback';
 import { PageHeader, Stepper } from '@/components/ui/navigation';
 import { useToast } from '@/components/ui/toast';
+import { ActingForFields, actingForText } from '@/components/grant/ActingFor';
 import { AGENT_TYPE_LABELS, budgetText, budgetValue, cn, formatDateTime, fromLocalInput, splitList, toLocalInput } from '@/lib/utils';
 
 const STEPS = ['Select agent', 'Select integration', 'Select permissions', 'Configure restrictions', 'Review and create'];
@@ -40,6 +41,8 @@ export function CreateGrantPage() {
     maxWritesPerHour: '',
     allowedCidrs: '',
     approvalRequired: false,
+    onBehalfOf: 'ALLOWED' as OnBehalfOfMode,
+    allowedUserGroups: '',
   }));
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [created, setCreated] = useState<GrantDetail | null>(null);
@@ -119,6 +122,8 @@ export function CreateGrantPage() {
       maxWritesPerHour: budgetValue(r.maxWritesPerHour) ?? null,
       allowedCidrs: splitList(r.allowedCidrs),
       approvalRequired: r.approvalRequired,
+      onBehalfOf: r.onBehalfOf,
+      allowedUserGroups: r.onBehalfOf === 'NOT_ALLOWED' ? [] : splitList(r.allowedUserGroups),
     });
     if (result) {
       setCreated(result);
@@ -284,6 +289,7 @@ export function CreateGrantPage() {
                 <Field label="Expiry date/time" required error={allErrors.expiresAt}>
                   <Input type="datetime-local" value={r.expiresAt} onChange={(e) => setR({ ...r, expiresAt: e.target.value })} invalid={!!allErrors.expiresAt} />
                 </Field>
+                <ActingForFields mode={r.onBehalfOf} groups={r.allowedUserGroups} errors={allErrors} onChange={(v) => setR({ ...r, ...(v.mode ? { onBehalfOf: v.mode } : {}), ...(v.groups !== undefined ? { allowedUserGroups: v.groups } : {}) })} />
                 <Field label="Allowed source IP / CIDR (optional)" error={allErrors['allowedCidrs.0']} hint="IPv4 CIDRs, comma separated. The playground calls from 127.0.0.1.">
                   <Input value={r.allowedCidrs} onChange={(e) => setR({ ...r, allowedCidrs: e.target.value })} placeholder="10.20.0.0/16" className="font-mono text-xs" />
                 </Field>
@@ -324,6 +330,7 @@ export function CreateGrantPage() {
                   { label: 'Validity period', value: `${formatDateTime(fromLocalInput(r.validFrom))} → ${formatDateTime(fromLocalInput(r.expiresAt))}` },
                   { label: 'Rate limit', value: `${r.rateLimitPerMinute} / minute` },
                   { label: 'Budgets', value: budgetText(budgetValue(r.maxRequestsPerDay) ?? null, budgetValue(r.maxWritesPerHour) ?? null) },
+                  { label: 'Acting for users', value: actingForText(r.onBehalfOf, splitList(r.allowedUserGroups)) },
                   { label: 'Source IP restriction', value: r.allowedCidrs || 'None' },
                   { label: 'Approval status', value: r.approvalRequired ? <StatusBadge status="PENDING_APPROVAL" /> : <StatusBadge status="ACTIVE" /> },
                 ]}
