@@ -15,16 +15,24 @@ HashiCorp Vault answers *"who can read this secret?"* Token Vault answers *"what
 | Audit | Append-only, hash-chained and signed per organization | Audit devices with HMAC'd fields |
 | Dynamic secrets, PKI, many login methods, HA and replication | Partial or missing | Mature and widely used |
 
-## Phase 1: Control what agents do (about 4–6 weeks)
+## Phase 1: Control what agents do (done)
 
-These features build directly on the policy engine and the access request flow.
+Built on branch `feat/approval-policies`. How to configure each feature is described in [AGENTS.md](AGENTS.md) and [USER_JOURNEY.md](USER_JOURNEY.md).
 
-| Feature | What it does | Why HashiCorp Vault can't | Builds on |
+| Feature | Status | What shipped | Why HashiCorp Vault can't |
 | --- | --- | --- | --- |
-| Human approval for risky operations | Operations marked high-risk (delete a repository, merge to `main`, send a payment) pause until a person approves in the console or Slack. The agent receives `APPROVAL_PENDING`, and its call resumes once approved. | Vault hands over the secret, so it never sees individual operations | Access requests, Security Administrator role |
-| Argument rules | Rules on what a request contains, not just the operation: branch must match `feature/*`, issue body under 10 KB, amount under $500, recipient on an allow-list | Vault policies apply to secret paths, not to API arguments | Policy engine, operation definitions in the provider CMS |
-| Agent budgets | Limits per grant, such as 50 calls a day, 5 writes an hour or $100 of spend. When one is reached, the agent gets an error like today's `RATE_LIMITED` | Vault has no concept of per-operation usage | Rate limiter |
-| Emergency stop | One switch suspends one agent, every agent using an integration, or the whole organization. The action is audited. | Revoking leases doesn't stop secrets already handed out | Grant check on every request |
+| Human approval for risky operations | Done, console only | A policy with the decision *Require approval* holds matching requests. The agent receives `APPROVAL_REQUIRED` (HTTP 202) and an approval ID. A person approves or rejects it under **Approvals**; the agent's owner can't approve. The approval covers that exact request, once, within 15 minutes. Destructive operations (delete a repository, write contents) can be granted only under such a policy, and the webhook runs them only with `WEBHOOK_ALLOW_DESTRUCTIVE=true`. SDK: `waitForApproval`, `executeApproved`; MCP: `token_vault_check_approval`. | Vault hands over the secret, so it never sees individual operations |
+| Argument rules | Done | Up to 10 conditions per policy on `input.*` and `resource.*`: equals, contains, matches pattern, is one of, is longer than, greater or less than, and their negations. They work with Deny, Require approval and Allow. | Vault policies apply to secret paths, not to API arguments |
+| Agent budgets | Done for calls; spend not yet | Per grant: requests per 24 hours and writes per hour, counted from the access log, so they hold across restarts and instances. Over budget returns `BUDGET_EXCEEDED` (HTTP 429), and the grant page shows usage. | Vault has no concept of per-operation usage |
+| Emergency stop | Done for the organization | One switch denies every agent request in the organization with `EMERGENCY_STOP` until someone resumes access. Stopping and resuming are audited, and a banner shows on every console page. A single agent or integration is stopped by disabling it. | Revoking leases doesn't stop secrets already handed out |
+
+Also shipped: operation selectors that cover operations published later (`github.*`, `risk:write`, `github:destructive`), and a policy editor organized as Who / Where / What with a one-sentence summary and searchable pickers for hundreds of applications.
+
+**Left over from Phase 1**
+
+- Approving and rejecting from Slack.
+- Budgets in money (for example $100 of spend), which needs a cost per operation in the provider definitions.
+- One policy naming several agents or integrations (today: one agent or agent type, one application or integration).
 
 ## Phase 2: Identity and data safety (about 6–8 weeks)
 
@@ -55,13 +63,9 @@ These don't set Token Vault apart from HashiCorp, but enterprise customers won't
 5. **A second real provider in live mode** (for example Slack, defined in the CMS), to show that providers can be added as data, without code changes.
 6. **Rotation of `AUDIT_SIGNING_KEY`.** Today the key can't be changed without breaking verification of existing audit records.
 
-## Recommended first step
+## Recommended next step
 
-Build **human approval for risky operations** first, then **argument rules**:
-
-- They are the clearest demonstration of something HashiCorp Vault can't do.
-- They reuse the access request and policy engine code, so they cost the least to build.
-- They answer the first question security teams ask about AI agents: "what if it does something destructive?"
+Start Phase 2 with **acting on behalf of a user**: most real agents act for a person, and the approval and audit records built in Phase 1 can then name that person. Finish the Slack approvals from Phase 1 alongside it, since it is the most requested way to approve.
 
 ## Possible later integrations with HashiCorp
 
