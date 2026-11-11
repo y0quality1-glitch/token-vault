@@ -34,7 +34,7 @@ GitHub is itself a definition: [`shared/src/providers/github.definition.ts`](../
     {
       "id": "notes.notes.create",
       "label": "Create note",
-      "risk": "write",                  // read | write | destructive (destructive: known to policies, never executed)
+      "risk": "write",                  // read | write | destructive (destructive: needs a Require approval policy, a human approval per request, and WEBHOOK_ALLOW_DESTRUCTIVE=true on the webhook)
       "providerPermissions": {},        // used by token-minting auth plugins (GitHub App)
       "input": { "text": { "type": "string", "required": true, "maxLength": 100 } },
       "request": { "method": "POST", "path": "/projects/{resource.project}/notes", "body": { "text": "{input.text}" } },

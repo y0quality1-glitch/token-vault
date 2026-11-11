@@ -1,5 +1,7 @@
 # Screen Map and Application Flow
 
+For a step-by-step setup guide by role, see [USER_JOURNEY.md](USER_JOURNEY.md).
+
 ## Information architecture
 
 ```text
@@ -19,6 +21,7 @@ Token Vault
 │   ├── Create Access Grant (5 steps)/access/grants/new        CreateGrantPage.tsx
 │   ├── Grant Details                /access/grants/:id        GrantDetailPage.tsx
 │   ├── Access Requests (JIT)        /access/requests          AccessRequestsPage.tsx
+│   ├── Approvals                    /access/approvals         ApprovalsPage.tsx
 │   ├── Access Reviews               /access/reviews           AccessReviewsPage.tsx
 │   └── Policies                     /access/policies          PoliciesPage.tsx
 ├── Access Playground (Demo)         /playground               pages/PlaygroundPage.tsx

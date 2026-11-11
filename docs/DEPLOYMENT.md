@@ -239,6 +239,7 @@ In a real split, the customer issues the webhook's certificate from their own CA
 - **Secrets** come from your secrets manager (`overlays/external-secrets`). Rotate them with the documented steps in the README (*Rotating keys*), which need no downtime.
 - **CMS:** set `CMS_ADMIN_DIRECT_PUBLISH=false` to require two people per publication. The Kubernetes base already does.
 - **Providers:** start with `UPSTREAM_MODE=mock`. Switch applications to live one at a time with `PROVIDER_MODES=github=live,…`.
+- **Destructive operations** (delete a repository, write a file) are refused by the webhook unless you set `WEBHOOK_ALLOW_DESTRUCTIVE=true`. Even then it runs them only for requests a human approved in Token Vault.
 - **Not production-ready yet:**
   - sign-in uses the seeded demo accounts, until SSO arrives (roadmap 1.4);
   - the vault key is an environment variable unless you configure a KMS (see above);

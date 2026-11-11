@@ -44,6 +44,7 @@ The one-line `claude mcp add …` command and the Claude Desktop JSON that the h
 | *one tool per catalog operation* | e.g. `slack_messages_post` → `slack.messages.post`, `google_events_list` → `google.events.list` (see below) |
 | `token_vault_request_access` | Asks a human for time-limited access (see below) |
 | `token_vault_check_access_request` | Status of a request: `PENDING`, `APPROVED`, `REJECTED` or `EXPIRED` |
+| `token_vault_check_approval` | For a request held for human approval: its status, and once `APPROVED`, runs the request exactly as approved (see below) |
 
 **Tools for every application in the catalog.** Besides the hand-written GitHub tools, the server offers one tool for each non-destructive operation of every application this agent has a grant on, as published in the provider CMS. No code changes are needed.
 
@@ -90,6 +91,56 @@ When a request is denied for a reason a human can fix (`GRANT_MISSING`, `SCOPE_D
 
 An agent with no grants at all has no integration to infer. Pass `integration` (the integration ID, which the user can provide) to `token_vault_request_access`.
 
+## Human approval of risky operations
+
+A policy with the decision **Require approval** (Access Management → Policies) holds back matching requests that every other check allows, for example every `github.issues.create` by a given agent, or any operation in production. Unlike a just-in-time request, the agent already has the grant; a human approves one specific request.
+
+1. The agent's call returns `APPROVAL_REQUIRED` (HTTP 202) with an `approval_id`. Nothing ran. The MCP tool result tells the model to inform the user and check back later, not to resend a changed request.
+2. The request appears in **Access Management → Approvals** with the exact operation, resource and input, shown as agent-written text. The sidebar shows a waiting count.
+3. A Security Administrator or Owner approves or rejects it. The agent's owner cannot approve it.
+4. The agent runs it with `token_vault_check_approval` (MCP), `tv.executeApproved(approvalId)` (SDK), or simply by sending the identical request again.
+
+**Guardrails**
+
+- The approval covers exactly one request: a different input, resource or operation needs its own approval, and the approval can be used once, within 15 minutes of being approved.
+- Every other check runs again when the approval is used: revoking the grant, a new deny policy, a disabled agent or the rate limit still win.
+- A rejected request is answered with `APPROVAL_REJECTED` for 24 hours instead of asking again.
+- An agent can have at most 10 approvals waiting; they lapse after 1 hour.
+- Each step is audited: `access.approval_required`, `approval.requested`, `approval.approved` or `approval.rejected`, and the executed request's access record carries the `approvalId`.
+
+## Argument rules, budgets and the emergency stop
+
+These limit what an agent can do with access it already has. None of them can be resolved by `token_vault_request_access`; the MCP server tells the model to report them.
+
+**Selecting operations.** A policy can name operations one by one, or use selectors that also cover operations the platform team publishes later: *Any operation*, *All read / write / destructive operations* (in every application), or *All GitHub operations* (one application). Through the API, `github:write` selects one risk in one application.
+
+**Destructive operations** (for example *Delete repository*, *Write repository contents*) are never run on an agent's word alone:
+
+1. They can be granted only where an enabled **Require approval** policy covers them for that agent, with no time window, source IP or argument rules (so no request can slip past it). Agents can't request them just in time.
+2. Every request waits for a human under **Approvals**. If the approval policy is later disabled, the grant stops working (`APPROVAL_POLICY_MISSING`) rather than running without approval.
+3. A Deny policy still wins. The Demo Organization's seeded *Block destructive GitHub operations* policy denies them until you disable it.
+4. The customer webhook runs them only if its operator set `WEBHOOK_ALLOW_DESTRUCTIVE=true`, and only for a request carrying an approval.
+5. The MCP server offers a destructive operation as a tool only to an agent that holds a grant for it, marked as destructive.
+
+**Argument rules** (Access Management → Policies → *Argument rules*). A policy can carry up to 10 conditions on what the request contains: `input.<name>` or `resource.<name>`, with *equals*, *contains*, *matches pattern* (regular expression), *is one of*, *is longer than*, *is greater than*, *is less than* and their negations. Text comparisons ignore case. The policy applies only when every rule holds, so the same rules work with each decision:
+
+| Example | Decision |
+| --- | --- |
+| `input.title` matches `pass(word)?\|secret` | Deny: `POLICY_DENIED` |
+| `input.amount` is greater than `500` | Require approval: `APPROVAL_REQUIRED` |
+| `resource.path` does not match `^docs/` | Deny writes outside `docs/` |
+
+A missing field counts as empty text. For *is greater than* and *is less than*, a value that is not a number counts as matching, so a deny or approval rule fails closed.
+
+**Budgets** (on a grant: *Budget: requests per 24 hours*, *Budget: writes per hour*). They are counted from the access log over rolling windows, so they hold across restarts and control-plane instances. Writes are every operation that is not a read. Requests held for approval or denied don't count. A request over budget is denied with `BUDGET_EXCEEDED` (HTTP 429). The grant page shows how much of each budget is used, and `token_vault_list_access` shows the budgets to the model.
+
+**Emergency stop** (Overview → *Emergency stop*). One switch denies every agent request in the organization with `EMERGENCY_STOP` (HTTP 403) until someone resumes access. Grants, keys and credentials are not changed, so resuming restores access exactly as it was. A red banner is shown on every console page while it is on.
+
+- Stopping needs `grant:revoke` (Owner, Vault Administrator, Security Administrator) and a reason, which is shown to agents.
+- Resuming needs `grant:approve` (Owner, Security Administrator).
+- Both are audited: `organization.emergency_stop` (critical) and `organization.emergency_stop_lifted`.
+- To stop a single agent or integration instead, disable that agent or integration.
+
 ## 2b. TypeScript SDK
 
 ```ts
@@ -122,6 +173,17 @@ try {
   Each error carries `code`, `requestId` and `httpStatus`.
 - `executeRaw()` returns the full decision for every outcome instead of throwing.
 - `requestAccess({ integrationId, operations, repositories, justification, durationMinutes, deniedRequestId })` and `getAccessRequest(id)` implement just-in-time access.
+- When a policy requires human approval, `execute()` throws `ApprovalRequiredError` (a subclass of `AccessDeniedError`) with `approvalId`. `waitForApproval(approvalId, { timeoutMs })` polls until a human decides, and `executeApproved(approvalId)` runs the request exactly as approved:
+
+  ```ts
+  try {
+    await tv.execute({ integrationId, operation: 'github.issues.create', resource, input });
+  } catch (e) {
+    if (!(e instanceof ApprovalRequiredError)) throw e;
+    const a = await tv.waitForApproval(e.approvalId);
+    if (a.status === 'APPROVED') await tv.executeApproved(e.approvalId);
+  }
+  ```
 - An idempotency key is generated for every request, so retrying a creating operation is safe.
 - The key is held in a private field: `console.log(tv)` and `JSON.stringify(tv)` show only `baseUrl` and the public `keyId`.
 

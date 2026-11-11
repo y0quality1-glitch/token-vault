@@ -98,7 +98,7 @@ Token Vault ships an **MCP server** (`mcp/`) and a **TypeScript SDK** (`sdk/`), 
 npm run mcp:config
 ```
 
-This prints ready-to-paste configuration for Claude Code and Claude Desktop. Revoke the grant and the agent's next tool call is denied. When an agent is denied, it can **request time-limited access**. A Security Administrator approves or rejects the request under **Access Management → Access Requests**, and an approval becomes an expiring grant. See [docs/AGENTS.md](docs/AGENTS.md).
+This prints ready-to-paste configuration for Claude Code and Claude Desktop. Revoke the grant and the agent's next tool call is denied. When an agent is denied, it can **request time-limited access**. A Security Administrator approves or rejects the request under **Access Management → Access Requests**, and an approval becomes an expiring grant. For risky operations, a **Require approval** policy holds a granted request until a human approves that exact request under **Access Management → Approvals**; the agent then runs it once. Policies can also check what a request contains (**argument rules**, e.g. deny issue titles that mention a password), grants can carry **budgets** (requests per 24 hours, writes per hour), and an **emergency stop** on the Overview denies every agent request in the organization until it is lifted. See [docs/AGENTS.md](docs/AGENTS.md).
 
 ### Deploying Token Vault
 
@@ -180,7 +180,7 @@ flowchart LR
 **Agent request flow** (spec Flow B):
 
 1. The agent calls `POST /agent/v1/execute` with `Authorization: Bearer tvak_<keyId>_<secret>`. Its identity is derived from that credential. No agent ID supplied by the caller is ever trusted.
-2. The control plane verifies the scrypt hash, then runs the deterministic engine in this order: agent active → **explicit DENY policies** → grant exists and is active → validity window → integration active → scope → resource → rate limit → source IP. Any failed check means deny.
+2. The control plane verifies the scrypt hash, then runs the deterministic engine in this order: no emergency stop and agent active → **explicit DENY policies** (including argument rules on the request's input and resource) → grant exists and is active → validity window → integration active → scope → resource → rate limit and budgets → source IP → **human approval** (only where a `REQUIRE_APPROVAL` policy matches: the request waits with `APPROVAL_REQUIRED` until a human approves that exact request). Any failed check means deny.
 3. On ALLOW, the broker sends the customer webhook a signed execution request containing `request_id`, `iat`, `exp` (+30 s), `nonce`, `aud` (the webhook instance ID) and the credential **reference**.
 4. The webhook verifies the HMAC, timestamp window, nonce (replay cache), audience, expiry and organization. It then decrypts the credential in memory, calls GitHub, and returns a **sanitized**, signed response.
 5. Every decision, allowed or denied, writes an access request record and an audit event.
@@ -330,6 +330,7 @@ token-vault/
 | `WEBHOOK_DATABASE_URL` | Customer-side PostgreSQL connection string (required). Deliberately a different variable from the control plane's `DATABASE_URL` |
 | `SEED_MODE` | `if-missing` (default): create the demo mock credentials where absent or unreadable. `reset`: wipe the credential store on start (used by the e2e suite) |
 | `UPSTREAM_MODE` | `mock` (default) or `live`: the default for every application. `GITHUB_MODE` is still read when `UPSTREAM_MODE` is not set |
+| `WEBHOOK_ALLOW_DESTRUCTIVE` | `true` lets this webhook run destructive operations (delete a repository, write a file), and then only for requests a human approved in Token Vault. Default `false`: the customer decides whether destructive actions can ever run |
 | `PROVIDER_MODES` | Per-application override, e.g. `github=live,slack=mock`: go live with one provider at a time. Anything malformed stops the webhook at start-up rather than silently staying simulated (or going live) |
 | `MOCK_OAUTH_TOKEN_TTL_S` | Lifetime of access tokens issued by the simulated OAuth server in mock mode (default 3600) |
 | `GITHUB_APP_PRIVATE_KEY` | Optional. GitHub App private key (PEM; `\n` escapes allowed) for integrations created with "Already configured on the webhook". Inject it as a secret; never commit it |
