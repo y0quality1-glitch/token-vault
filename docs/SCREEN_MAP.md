@@ -29,6 +29,7 @@ Token Vault
 │   ├── Webhook Setup (4-step wizard)/webhook/setup            pages/webhook/WebhookSetupPage.tsx
 │   └── Health & Connectivity        /webhook/health           WebhookHealthPage.tsx
 ├── Audit & Activity
+│   ├── Sessions                     /audit/sessions           pages/audit/SessionsPage.tsx
 │   ├── Access Logs (+ detail drawer)/audit/access-logs        pages/audit/AccessLogsPage.tsx
 │   └── Security Events              /audit/security-events    SecurityEventsPage.tsx
 ├── Settings

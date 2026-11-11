@@ -70,6 +70,7 @@ Each GitHub tool takes `repository` (`owner/name`) and an optional `integration`
 | `TOKEN_VAULT_TOOLS_REFRESH_S` | How often to re-read the catalog for new or changed application tools (default 60; `0` = only at start-up) |
 | `TOKEN_VAULT_USER_TOKEN_FILE` | Optional: act on behalf of a user. A file with the user's signed token, re-read on every call |
 | `TOKEN_VAULT_USER_TOKEN` | Optional: the user's signed token itself (it expires, so prefer the file) |
+| `TOKEN_VAULT_SESSION_ID` / `TOKEN_VAULT_SESSION_LABEL` | Optional: the session every tool call belongs to (Audit → Sessions). Default: a new session per server start |
 
 The server speaks MCP over stdio and writes diagnostics to stderr only. It never prints the key.
 
@@ -196,6 +197,24 @@ Most agents work for a person: a support assistant answers for the signed-in cus
 - SDK: `tv.forUser(token)` returns a client that sends the token on every request; pass a function to fetch a fresh token each time. Or pass `onBehalfOf` per request.
 - MCP: set `TOKEN_VAULT_USER_TOKEN_FILE` to a file holding the token (re-read on every call, so another process can refresh it), or `TOKEN_VAULT_USER_TOKEN`. `token_vault_list_access` says which grants need a user. User denials are reported to the model as not resolvable by an access request.
 - Access Playground: paste a token into *On behalf of a user*.
+
+## Sessions and tracing
+
+An access log says *what* an agent did. A session says *why*: the calls an agent made while working on one conversation, task or job, in order.
+
+**What the agent sends** (both optional):
+
+- `session_id` (and `session_label`) in the request body: the agent's own id for the conversation, task or job, 1–128 letters, digits, `.`, `_`, `:` or `-`. The label is a short description, shown as agent-written text.
+- The W3C `traceparent` header (`00-<trace-id>-<span-id>-<flags>`), as OpenTelemetry propagates it. An invalid header is ignored and a new trace starts, as the standard says.
+
+**What Token Vault does.** It records the session, the trace id, the caller's span and its own new span on the access record, denied requests included. It answers with `"trace": { session_id, trace_id, span_id, parent_span_id }`, and passes `traceparent` and `session_id` to the customer webhook (which logs `trace=<trace-id>`), so its logs join the same trace. Requests with a traceparent but no session id are grouped by trace id. Requests with neither are not grouped.
+
+**Where to see it.** **Audit & Activity → Sessions** lists sessions with their agent, request counts (allowed, denied, held for approval), integrations, users acted for and sub-agents, and is searchable by session id, label, trace id or agent. A session's page shows its timeline, oldest first, and the approvals asked for during it. Each access record links to its session, and each approval shows the session it came from and how many requests came before it.
+
+**Connecting.**
+
+- SDK: `tv.session('task-42', 'Triage new bugs').execute(…)`, or `sessionId` / `sessionLabel` in the options. Pass `traceparent` (a string, or a function returning the active one, e.g. from OpenTelemetry) to join your own traces.
+- MCP: each server process (one client session) is one session with one trace, and each tool call is a span. Set `TOKEN_VAULT_SESSION_ID` and `TOKEN_VAULT_SESSION_LABEL` to choose them.
 
 ## Response filtering
 

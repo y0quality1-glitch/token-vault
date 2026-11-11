@@ -188,6 +188,8 @@ Either way, the agent holds only its Token Vault key, never the provider credent
 
 In both cases you cannot approve requests from an agent you own.
 
+**Sessions.** If your agents send a session id or W3C trace context (the MCP server and the SDK's `session()` do), **Audit & Activity → Sessions** shows what each agent did in each conversation or task, in order, and every approval shows the session that led to it.
+
 ## 9. Review, rotate and audit
 
 | Task | Who | Where | How often |
