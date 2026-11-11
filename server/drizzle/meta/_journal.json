@@ -92,6 +92,13 @@
       "when": 1794392709065,
       "tag": "0012_response_filtering",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1794395913704,
+      "tag": "0013_session_tracing",
+      "breakpoints": true
     }
   ]
 }

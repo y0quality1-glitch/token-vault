@@ -28,6 +28,18 @@ export interface TokenVaultOptions {
    * registered in Token Vault, or a function returning a fresh one. See forUser().
    */
   userToken?: UserTokenSource;
+  /**
+   * The session (conversation, task, job) every request belongs to; requests with the same id
+   * are shown together under Audit → Sessions. See session().
+   */
+  sessionId?: string;
+  /** A short name for the session, e.g. the task the agent works on. */
+  sessionLabel?: string;
+  /**
+   * W3C trace context to send as the traceparent header, or a function returning the current
+   * one (e.g. from OpenTelemetry's active span), so Token Vault's records join your traces.
+   */
+  traceparent?: string | (() => string | undefined);
 }
 
 /** A user token, or a function that returns a fresh one (called before each request). */
@@ -48,6 +60,8 @@ export interface ExecuteOptions {
   approvalId?: string;
   /** Act on behalf of this user for this request (a signed user token). Overrides the client's userToken. */
   onBehalfOf?: string;
+  /** Session for this request (overrides the client's sessionId). */
+  sessionId?: string;
 }
 
 export interface DelegateOptions {
@@ -100,6 +114,8 @@ export interface ExecuteResult<T = unknown> {
   simulated: boolean;
   durationMs: number;
   idempotentReplay: boolean;
+  /** The session and trace Token Vault recorded the request under (null when none was sent). */
+  trace: ExecuteResponseBody['trace'] | null;
   /** Set when a Filter responses policy masked, removed or flagged something in `data`. */
   filtering: ExecuteResponseBody['filtering'] | null;
   response: ExecuteResponseBody;
@@ -122,6 +138,9 @@ export class TokenVault {
   readonly #fetch: typeof fetch;
   readonly #onKeyExpiry: ((expiresAt: string) => void) | undefined;
   readonly #userToken: UserTokenSource | undefined;
+  readonly #sessionId: string | undefined;
+  readonly #sessionLabel: string | undefined;
+  readonly #traceparent: string | (() => string | undefined) | undefined;
   readonly #options: TokenVaultOptions;
   #keyExpiresAt: string | null = null;
 
@@ -137,6 +156,9 @@ export class TokenVault {
     this.#fetch = options.fetch ?? fetch;
     this.#onKeyExpiry = options.onKeyExpiry;
     this.#userToken = options.userToken;
+    this.#sessionId = options.sessionId;
+    this.#sessionLabel = options.sessionLabel;
+    this.#traceparent = options.traceparent;
     this.#options = { ...options, apiKey };
   }
 
@@ -147,6 +169,14 @@ export class TokenVault {
    */
   forUser(userToken: UserTokenSource): TokenVault {
     return new TokenVault({ ...this.#options, userToken });
+  }
+
+  /**
+   * A client whose requests all belong to one session (a conversation, task or job), shown
+   * together under Audit → Sessions with an optional label.
+   */
+  session(sessionId: string, label?: string): TokenVault {
+    return new TokenVault({ ...this.#options, sessionId, sessionLabel: label });
   }
 
   /** True when this client is a sub-agent, authenticated with a delegation token (tvdt_…). */
@@ -197,6 +227,7 @@ export class TokenVault {
         simulated: body.execution.simulated,
         durationMs: body.execution.duration_ms,
         idempotentReplay: body.execution.idempotent_replay,
+        trace: body.trace ?? null,
         filtering: body.filtering ?? null,
         response: body,
       };
@@ -222,7 +253,11 @@ export class TokenVault {
     };
     const userToken = options.onBehalfOf ?? (typeof this.#userToken === 'function' ? await this.#userToken() : this.#userToken);
     if (userToken) payload.on_behalf_of = userToken;
-    const res = await this.#request('POST', '/agent/v1/execute', payload);
+    const sessionId = options.sessionId ?? this.#sessionId;
+    if (sessionId) payload.session_id = sessionId;
+    if (sessionId && this.#sessionLabel) payload.session_label = this.#sessionLabel;
+    const traceparent = typeof this.#traceparent === 'function' ? this.#traceparent() : this.#traceparent;
+    const res = await this.#request('POST', '/agent/v1/execute', payload, traceparent ? { traceparent } : undefined);
     const body = (await this.#json(res)) as ExecuteResponseBody | null;
     if (!body || typeof body.decision !== 'string') {
       throw new TokenVaultError(`Unexpected response from Token Vault (HTTP ${res.status})`, { code: 'UNEXPECTED_RESPONSE', httpStatus: res.status });
@@ -369,8 +404,8 @@ export class TokenVault {
     return body as Record<string, unknown>;
   }
 
-  async #request(method: 'GET' | 'POST', path: string, body?: unknown): Promise<Response> {
-    const headers: Record<string, string> = { authorization: `Bearer ${this.#apiKey}`, accept: 'application/json' };
+  async #request(method: 'GET' | 'POST', path: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<Response> {
+    const headers: Record<string, string> = { authorization: `Bearer ${this.#apiKey}`, accept: 'application/json', ...extraHeaders };
     if (body !== undefined) headers['content-type'] = 'application/json';
     if (this.#organization) headers['x-token-vault-org'] = this.#organization;
     let res: Response;

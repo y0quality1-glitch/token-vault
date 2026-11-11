@@ -1,8 +1,10 @@
+import { sql } from 'drizzle-orm';
 import { bigint, boolean, customType, index, integer, jsonb, pgTable, text, uniqueIndex } from 'drizzle-orm/pg-core';
 import type {
   ActingUser,
   DelegationRef,
   FilteringSummary,
+  TraceRef,
   ResponseFilter,
   OnBehalfOfMode,
   AgentStatus,
@@ -302,6 +304,8 @@ export const accessRequests = pgTable(
     delegation: jsonb('delegation').$type<DelegationRef | null>(),
     /** What response filtering did (counts only). Left out of the chained content when null. */
     filtering: jsonb('filtering').$type<FilteringSummary | null>(),
+    /** Agent session and W3C trace context (null: none sent). Left out of the chained content when null. */
+    trace: jsonb('trace').$type<TraceRef | null>(),
     // Tamper evidence (migration 0003): per-organization hash chain + HMAC with a key held outside the database.
     // NULL on rows written before chaining existed ("legacy").
     seq: bigint('seq', { mode: 'number' }),
@@ -315,6 +319,8 @@ export const accessRequests = pgTable(
     index('access_requests_grant_idx').on(t.grantId),
     index('access_requests_agent_idx').on(t.agentId),
     index('access_requests_correlation_idx').on(t.correlationId),
+    // Audit → Sessions: requests of one session.
+    index('access_requests_org_session_idx').on(t.organizationId, sql`(${t.trace}->>'sessionId')`),
   ],
 );
 

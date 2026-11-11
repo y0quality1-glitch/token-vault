@@ -5,7 +5,7 @@ import { transaction } from '../../db/client';
 import { conflict, forbidden, notFound } from '../../lib/errors';
 import { newId } from '../../lib/ids';
 import { parse } from '../../lib/validate';
-import { agentRepo, approvalRepo, integrationRepo, orgRepo } from '../../store/repos';
+import { agentRepo, approvalRepo, auditRepo, integrationRepo, orgRepo } from '../../store/repos';
 import type { OperationApprovalRecord } from '../../store/repos/operation-approvals';
 import type { AgentRecord, IntegrationRecord } from '../../store/types';
 import type { AdminContext } from '../../types/express';
@@ -166,6 +166,20 @@ export async function toViews(organizationId: string, records: OperationApproval
   const [agents, integrations] = await Promise.all([agentRepo.listAgents(organizationId), integrationRepo.integrationNames(organizationId)]);
   const agentById = new Map(agents.map((a) => [a.id, a]));
   const users = await orgRepo.userNames(records.map((r) => r.decidedBy ?? '').filter(Boolean));
+  // The session the held request was part of, so the approver can see what led to it.
+  const sessions = new Map(
+    await Promise.all(
+      records.map(async (r) => {
+        const held = await auditRepo.getAccessRequest(organizationId, r.requestedByRequestId);
+        const t = held?.trace;
+        if (!t) return [r.id, null] as const;
+        // The label may have been sent with any request of the session.
+        const [summary] = await auditRepo.listSessions(organizationId, { sessionId: t.sessionId, agentId: r.agentId, limit: 1 });
+        const session = { sessionId: t.sessionId, sessionLabel: t.sessionLabel ?? summary?.sessionLabel ?? null, earlierRequests: await auditRepo.sessionRequestsBefore(organizationId, t.sessionId, r.agentId, held!.createdAt) };
+        return [r.id, session] as const;
+      }),
+    ),
+  );
   return records.map((r) => ({
     id: r.id,
     organizationId: r.organizationId,
@@ -191,6 +205,7 @@ export async function toViews(organizationId: string, records: OperationApproval
     executedRequestId: r.executedRequestId,
     onBehalfOf: r.onBehalfOf ?? null,
     delegation: r.delegation ?? null,
+    session: sessions.get(r.id) ?? null,
   }));
 }
 

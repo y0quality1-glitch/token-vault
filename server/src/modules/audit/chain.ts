@@ -33,7 +33,7 @@ export function canonical(value: unknown): string {
  * Columns added after chaining began. They are left out of the hashed content when null,
  * so records written before the column existed (read back as null) keep their hash.
  */
-export const LATER_FIELDS = ['onBehalfOf', 'delegation', 'filtering'] as const;
+export const LATER_FIELDS = ['onBehalfOf', 'delegation', 'filtering', 'trace'] as const;
 
 /** The record's own content, without chain fields. */
 export function content<T extends Record<string, unknown>>(record: T): Record<string, unknown> {

@@ -25,6 +25,7 @@ agentRouter.post('/execute', async (req, res) => {
     sourceIp: normalizeIp(req.ip),
     source: req.headers['x-token-vault-client'] === 'playground' ? 'playground' : 'agent-api',
     body: req.body,
+    traceparent: typeof req.headers.traceparent === 'string' ? req.headers.traceparent : undefined,
     onPreviousKey: keyNotice(res),
   });
   res.status(result.status).json(result.body);
