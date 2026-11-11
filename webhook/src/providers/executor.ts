@@ -25,6 +25,8 @@ export interface ProviderCall {
   operation: string;
   resource: Record<string, string | undefined>;
   input: Record<string, unknown>;
+  /** Set by the route only when this webhook allows destructive operations and the request carries a human approval. */
+  allowDestructive?: boolean;
 }
 
 export interface ProviderResult {
@@ -156,15 +158,15 @@ async function run(
   };
 }
 
-export function getExecutableOperation(def: ProviderDefinition, operationId: string): OperationDefinition {
+export function getExecutableOperation(def: ProviderDefinition, operationId: string, allowDestructive = false): OperationDefinition {
   const op = def.operations.find((o) => o.id === operationId);
-  if (!op || op.risk === 'destructive') throw new ExecutionError('UNSUPPORTED_OPERATION', 'This webhook does not execute that operation');
+  if (!op || (op.risk === 'destructive' && !allowDestructive)) throw new ExecutionError('UNSUPPORTED_OPERATION', 'This webhook does not execute that operation');
   return op;
 }
 
 /** Executes one operation of a definition with an already-resolved credential. */
 export async function executeOperation(mode: 'mock' | 'live', def: ProviderDefinition, call: ProviderCall, auth: AuthInjection): Promise<ProviderResult> {
-  const op = getExecutableOperation(def, call.operation);
+  const op = getExecutableOperation(def, call.operation, call.allowDestructive);
   validateCall(def, op, call);
   return run(mode, def, op.request, op.response, call, auth, op.mock);
 }

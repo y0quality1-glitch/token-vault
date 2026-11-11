@@ -15,7 +15,8 @@ import { isCredentialRejection, reportCredentialRejected } from '../integrations
 import { parseAgentCredential, verifySecret } from '../../lib/crypto';
 import { correlationId as newCorrelationId, nonce, requestId as newRequestId } from '../../lib/ids';
 import { transaction } from '../../db/client';
-import { agentRepo, auditRepo, grantRepo, integrationRepo, orgRepo, policyRepo, webhookRepo } from '../../store/repos';
+import { agentRepo, approvalRepo, auditRepo, grantRepo, integrationRepo, orgRepo, policyRepo, webhookRepo } from '../../store/repos';
+import { APPROVAL_LIMITS, approvalSummary, createPending, lookupApproval, requestDigest } from '../approvals/approvals.service';
 import type { AgentRecord, GrantRecord, IntegrationRecord } from '../../store/types';
 import { effectiveGrantStatus } from '../../store/views';
 import { recordAccessRequest, recordEvent } from '../audit/audit.service';
@@ -39,6 +40,7 @@ const bodySchema = z.object({
     .default({}),
   input: z.record(z.unknown()).default({}),
   idempotency_key: z.string().min(1).max(128).optional(),
+  approval_id: z.string().min(1).max(64).optional(),
 });
 
 // ---------------------------------------------------------------- rate limit + idempotency (in-memory)
@@ -98,6 +100,7 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
     simulated?: boolean;
     credential?: CredentialUseInfo | null;
     idempotencyKey: string | null;
+    approval?: ExecuteResponseBody['approval'];
   }) => {
     const durationMs = Date.now() - started;
     const body: ExecuteResponseBody = {
@@ -119,7 +122,9 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
       },
       result: args.result,
       checks: args.checks,
+      ...(args.approval ? { approval: args.approval } : {}),
     };
+    const waiting = args.code === DECISION_CODES.APPROVAL_REQUIRED;
     // Every decision is audited (when the organization can be attributed).
     if (args.orgId) {
       const orgId = args.orgId;
@@ -155,11 +160,11 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
         await recordEvent({
           orgId,
           actor: args.agent ? { type: 'AGENT', id: args.agent.id, name: args.agent.name } : { type: 'AGENT', id: 'unknown', name: 'Unknown agent' },
-          eventType: args.decision === 'DENY' ? 'access.denied' : failed ? 'access.execution_failed' : 'access.allowed',
+          eventType: waiting ? 'access.approval_required' : args.decision === 'DENY' ? 'access.denied' : failed ? 'access.execution_failed' : 'access.allowed',
           target: args.integration ? { type: 'integration', id: args.integration.id, name: args.integration.displayName } : { type: 'integration', id: 'unknown', name: '—' },
           outcome: args.decision === 'DENY' ? 'DENIED' : failed ? 'FAILURE' : 'SUCCESS',
-          severity: args.decision === 'ALLOW' && !failed ? 'info' : ['AGENT_UNAUTHENTICATED', 'POLICY_DENIED', 'AGENT_DISABLED', 'GRANT_REVOKED'].includes(args.code) ? 'critical' : 'warning',
-          metadata: { requestId, operation: args.operation, ...args.resource, decisionCode: args.code, grantId: args.grant?.id ?? null, upstreamStatus: args.upstreamStatus, ...(args.credential ? { credential: args.credential } : {}) },
+          severity: (args.decision === 'ALLOW' && !failed) || waiting ? 'info' : ['AGENT_UNAUTHENTICATED', 'POLICY_DENIED', 'AGENT_DISABLED', 'GRANT_REVOKED', 'EMERGENCY_STOP'].includes(args.code) ? 'critical' : 'warning',
+          metadata: { requestId, operation: args.operation, ...args.resource, decisionCode: args.code, grantId: args.grant?.id ?? null, upstreamStatus: args.upstreamStatus, ...(args.credential ? { credential: args.credential } : {}), ...(args.approval ? { approvalId: args.approval.approval_id } : {}) },
           correlationId,
         }, tx);
       });
@@ -234,9 +239,18 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
     return respond({ ...base, status: 400, orgId, agent, integration, operation: operation.id, resource, decision: 'DENY', code: DECISION_CODES.UNKNOWN_OPERATION, reason: `Operation "${operation.id}" belongs to ${operation.provider}, but integration "${integration.displayName}" is ${integration.provider}.`, checks: [authCheck, ...skippedChecks(2)] });
   }
 
-  // ---- Steps 2-10: deterministic policy evaluation (current state, every request)
+  // ---- Human approval (REQUIRE_APPROVAL policies): find the approval for exactly this request.
+  const shape = { integrationId: integration.id, operation: operation.id, resource, input: req.input };
+  const digest = requestDigest(shape);
+  const approval = await lookupApproval(agent, digest, req.approval_id);
+  if (approval.kind === 'invalid') {
+    return respond({ ...base, status: 409, orgId, agent, integration, operation: operation.id, resource, decision: 'DENY', code: DECISION_CODES.APPROVAL_INVALID, reason: approval.reason, checks: [authCheck, ...skippedChecks(2)], idempotencyKey: req.idempotency_key ?? null, approval: approval.record ? approvalSummary(approval.record) : null });
+  }
+
+  // ---- Steps 2-11: deterministic policy evaluation (current state, every request)
   // Fresh reads on every request: revocation, expiry and policy edits apply immediately.
-  const [pairGrants, orgPolicies] = await Promise.all([grantRepo.grantsForPair(orgId, agent.id, integration.id), policyRepo.listPolicies(orgId)]);
+  const [pairGrants, orgPolicies, org] = await Promise.all([grantRepo.grantsForPair(orgId, agent.id, integration.id), policyRepo.listPolicies(orgId), orgRepo.getOrganization(orgId)]);
+  const usage = await budgetUsageFor(pairGrants);
   const evaluation = evaluate({
     agent,
     integration,
@@ -247,11 +261,29 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
     sourceIp: ctx.sourceIp,
     now: Date.now(),
     recentRequests: (id) => recentRequests(id),
+    approval: approval.kind === 'approved' ? { id: approval.record.id, approvedBy: approval.approvedBy } : null,
+    request: { resource, input: req.input },
+    organization: org,
+    budgetUsage: (id) => usage.get(id) ?? { requestsLast24h: 0, writesLastHour: 0 },
   });
   evaluation.checks[0] = authCheck;
 
+  // Every other check allows the request, but a human must approve it first.
+  if (evaluation.code === DECISION_CODES.APPROVAL_REQUIRED && evaluation.approvalPolicy) {
+    const held = { ...base, orgId, agent, integration, grant: evaluation.grant, operation: operation.id, resource, decision: 'DENY' as const, matchedRule: evaluation.matchedRule, checks: evaluation.checks, idempotencyKey: req.idempotency_key ?? null };
+    if (approval.kind === 'rejected') {
+      const note = approval.record.decisionNote ? ` Note: "${approval.record.decisionNote}"` : '';
+      return respond({ ...held, status: 403, code: DECISION_CODES.APPROVAL_REJECTED, reason: `A human rejected this request (approval ${approval.record.id}).${note}`, approval: approvalSummary(approval.record) });
+    }
+    const pending = approval.kind === 'pending' ? approval.record : await createPending({ agent, integration, policy: evaluation.approvalPolicy, request: shape, digest, requestId, correlationId });
+    if (!pending) {
+      return respond({ ...held, status: 429, code: DECISION_CODES.RATE_LIMITED, reason: `This agent already has ${APPROVAL_LIMITS.MAX_PENDING} requests waiting for approval; wait for decisions before sending more.` });
+    }
+    return respond({ ...held, status: 202, code: DECISION_CODES.APPROVAL_REQUIRED, reason: `${evaluation.reason} Approval ${pending.id} is waiting for a human (until ${pending.expiresAt}); once approved, send the same request again.`, approval: approvalSummary(pending) });
+  }
+
   if (evaluation.decision === 'DENY') {
-    const status = evaluation.code === DECISION_CODES.RATE_LIMITED ? 429 : 403;
+    const status = evaluation.code === DECISION_CODES.RATE_LIMITED || evaluation.code === DECISION_CODES.BUDGET_EXCEEDED ? 429 : 403;
     return respond({ ...base, status, orgId, agent, integration, grant: evaluation.grant, operation: operation.id, resource, decision: 'DENY', code: evaluation.code, reason: evaluation.reason, matchedRule: evaluation.matchedRule, checks: evaluation.checks, idempotencyKey: req.idempotency_key ?? null });
   }
 
@@ -267,7 +299,17 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
     }
   }
 
-  const allowArgs = { orgId, agent, integration, grant, operation: operation.id, resource, decision: 'ALLOW' as const, matchedRule: evaluation.matchedRule, checks: evaluation.checks, idempotencyKey: req.idempotency_key ?? null };
+  // An approval runs exactly one request: claim it before any credential is used.
+  let usedApproval: ExecuteResponseBody['approval'] = null;
+  if (approval.kind === 'approved') {
+    const consumed = await approvalRepo.consumeApproval(approval.record.id, requestId, new Date().toISOString());
+    if (!consumed) {
+      return respond({ ...base, status: 409, orgId, agent, integration, grant, operation: operation.id, resource, decision: 'DENY', code: DECISION_CODES.APPROVAL_INVALID, reason: `Approval ${approval.record.id} was used by another request at the same time. Each approval runs one request.`, matchedRule: evaluation.matchedRule, checks: evaluation.checks, idempotencyKey: req.idempotency_key ?? null });
+    }
+    usedApproval = approvalSummary(consumed);
+  }
+
+  const allowArgs = { orgId, agent, integration, grant, operation: operation.id, resource, decision: 'ALLOW' as const, matchedRule: evaluation.matchedRule, checks: evaluation.checks, idempotencyKey: req.idempotency_key ?? null, approval: usedApproval };
 
   // ---- Broker: signed, short-lived execution request to the customer webhook
   const webhook = await webhookRepo.getWebhook(orgId, integration.webhookId);
@@ -287,6 +329,8 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
     operation: operation.id,
     resource: req.resource,
     input: req.input,
+    // The webhook runs a destructive operation only for a request a human approved (and only if its operator allows them).
+    ...(usedApproval ? { approval_id: usedApproval.approval_id } : {}),
   };
 
   let wh;
@@ -306,7 +350,8 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
   const rejectedNote = rejected ? ` ${providerName} rejected the stored credential; the integration "${integration.displayName}" is now marked invalid until an administrator rotates or re-tests it.` : '';
 
   if (wh.status !== 200) {
-    return respond({ ...allowArgs, status: 502, code: DECISION_CODES.WEBHOOK_UNAVAILABLE, reason: `Authorized, but the webhook refused execution (${wh.body?.error?.code ?? wh.status}).${rejectedNote}`, executionStatus: 'FAILED', webhookStatus: wh.body?.error?.code ?? `HTTP_${wh.status}`, upstreamStatus: null, result: null });
+    const destructiveNote = operation.destructive && wh.body?.error?.code === 'UNSUPPORTED_OPERATION' ? ' The customer webhook does not run destructive operations; its operator can allow them with WEBHOOK_ALLOW_DESTRUCTIVE=true.' : '';
+    return respond({ ...allowArgs, status: 502, code: DECISION_CODES.WEBHOOK_UNAVAILABLE, reason: `Authorized, but the webhook refused execution (${wh.body?.error?.code ?? wh.status}).${destructiveNote}${rejectedNote}`, executionStatus: 'FAILED', webhookStatus: wh.body?.error?.code ?? `HTTP_${wh.status}`, upstreamStatus: null, result: null });
   }
 
   const upstream = Number(wh.body.upstream_status);
@@ -327,6 +372,25 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
     idempotency.set(idemKey(agent.id, req.idempotency_key), { at: Date.now(), status: out.status, body: out.body });
   }
   return out;
+}
+
+/** Budget usage of the grants that have budgets (two small grouped queries each; none without budgets). */
+export async function budgetUsageFor(grants: GrantRecord[]): Promise<Map<string, { requestsLast24h: number; writesLastHour: number }>> {
+  const now = Date.now();
+  const withBudgets = grants.filter((g) => g.storedStatus === 'ACTIVE' && (g.maxRequestsPerDay || g.maxWritesPerHour));
+  const entries = await Promise.all(
+    withBudgets.map(async (g) => {
+      const [day, hour] = await Promise.all([
+        g.maxRequestsPerDay ? auditRepo.authorizedByOperationSince(g.id, new Date(now - 24 * 3600e3).toISOString()) : Promise.resolve([]),
+        g.maxWritesPerHour ? auditRepo.authorizedByOperationSince(g.id, new Date(now - 3600e3).toISOString()) : Promise.resolve([]),
+      ]);
+      const requestsLast24h = day.reduce((s, r) => s + Number(r.n), 0);
+      // Anything that is not a read counts as a write (unknown operations included: fail closed).
+      const writesLastHour = hour.filter((r) => getOperation(r.operation)?.mutating ?? true).reduce((s, r) => s + Number(r.n), 0);
+      return [g.id, { requestsLast24h, writesLastHour }] as const;
+    }),
+  );
+  return new Map(entries);
 }
 
 /**
@@ -436,6 +500,8 @@ export async function getCapabilities(authorization: string | undefined, onPrevi
           operations: g.scopes,
           repositories: g.resourceConstraints.repositories,
           rate_limit_per_minute: g.rateLimitPerMinute,
+          max_requests_per_day: g.maxRequestsPerDay ?? null,
+          max_writes_per_hour: g.maxWritesPerHour ?? null,
           valid_from: g.validFrom,
           expires_at: g.expiresAt,
         };

@@ -13,7 +13,7 @@ import { Checkbox, Field, Input, Switch } from '@/components/ui/form';
 import { Callout, EmptyState, FormError, PermissionDenied, Spinner } from '@/components/ui/feedback';
 import { PageHeader, Stepper } from '@/components/ui/navigation';
 import { useToast } from '@/components/ui/toast';
-import { AGENT_TYPE_LABELS, cn, formatDateTime, fromLocalInput, splitList, toLocalInput } from '@/lib/utils';
+import { AGENT_TYPE_LABELS, budgetText, budgetValue, cn, formatDateTime, fromLocalInput, splitList, toLocalInput } from '@/lib/utils';
 
 const STEPS = ['Select agent', 'Select integration', 'Select permissions', 'Configure restrictions', 'Review and create'];
 
@@ -36,6 +36,8 @@ export function CreateGrantPage() {
     validFrom: toLocalInput(new Date()),
     expiresAt: toLocalInput(new Date(Date.now() + 7 * 86400e3)),
     rateLimitPerMinute: '10',
+    maxRequestsPerDay: '',
+    maxWritesPerHour: '',
     allowedCidrs: '',
     approvalRequired: false,
   }));
@@ -88,6 +90,8 @@ export function CreateGrantPage() {
       else if (to <= Date.now()) e.expiresAt = 'Expiry must be in the future';
       const rate = Number(r.rateLimitPerMinute);
       if (!Number.isInteger(rate) || rate < 1 || rate > 600) e.rateLimitPerMinute = 'Enter a whole number between 1 and 600';
+      if (budgetValue(r.maxRequestsPerDay) === undefined) e.maxRequestsPerDay = 'Leave empty, or enter a whole number of at least 1';
+      if (budgetValue(r.maxWritesPerHour) === undefined) e.maxWritesPerHour = 'Leave empty, or enter a whole number of at least 1';
       const pattern = provider ? new RegExp(provider.resource.pattern) : /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
       const bad = repos.find((x) => !pattern.test(x));
       if (bad) e.repositories = `"${bad}" is not a valid ${resourceLabel.toLowerCase()}${provider?.resource.example ? ` (e.g. ${provider.resource.example})` : ''}`;
@@ -111,6 +115,8 @@ export function CreateGrantPage() {
       validFrom: fromLocalInput(r.validFrom),
       expiresAt: fromLocalInput(r.expiresAt),
       rateLimitPerMinute: Number(r.rateLimitPerMinute),
+      maxRequestsPerDay: budgetValue(r.maxRequestsPerDay) ?? null,
+      maxWritesPerHour: budgetValue(r.maxWritesPerHour) ?? null,
       allowedCidrs: splitList(r.allowedCidrs),
       approvalRequired: r.approvalRequired,
     });
@@ -230,19 +236,23 @@ export function CreateGrantPage() {
                   </div>
                 ))}
               </div>
-              <div className="rounded-lg border border-dashed border-slate-200 p-3.5">
-                <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  <Lock className="h-3.5 w-3.5" /> Not available in this POC
-                </p>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {operations.filter((o) => !o.grantable && (!integration || o.provider === integration.provider)).map((o) => (
-                    <Badge key={o.id} tone="gray">
-                      {o.label}
-                    </Badge>
-                  ))}
+              {operations.some((o) => o.destructive && (!integration || o.provider === integration.provider)) && (
+                <div className="rounded-lg border border-red-200 bg-red-50/40 p-3.5">
+                  <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-red-800">
+                    <Lock className="h-3.5 w-3.5" /> Destructive: every request needs a human's approval
+                  </p>
+                  <p className="mt-1 text-xs text-slate-600">
+                    These can be granted only if an enabled <strong>Require approval</strong> policy covers them for this agent (without a time window, source IP or argument rules). Each request then waits under Approvals, and the customer webhook must allow destructive operations. A Deny policy still wins.
+                  </p>
+                  <div className="mt-3 grid gap-3 md:grid-cols-2">
+                    {operations.filter((o) => o.destructive && (!integration || o.provider === integration.provider)).map((o) => (
+                      <div key={o.id} className={cn('rounded-lg border bg-white p-3.5', scopes.includes(o.id) ? 'border-red-400' : 'border-slate-200')}>
+                        <Checkbox id={o.id} checked={scopes.includes(o.id)} onChange={(v) => setScopes((s) => (v ? [...s, o.id] : s.filter((x) => x !== o.id)))} label={o.label} description={<span className="font-mono">{o.id} · {o.description}</span>} />
+                      </div>
+                    ))}
+                  </div>
                 </div>
-                <p className="mt-2 text-xs text-slate-500">Destructive operations cannot be granted and are additionally blocked by an explicit deny policy.</p>
-              </div>
+              )}
             </>
           )}
 
@@ -261,6 +271,12 @@ export function CreateGrantPage() {
                 </Field>
                 <Field label="Maximum requests per minute" required error={allErrors.rateLimitPerMinute}>
                   <Input type="number" min={1} max={600} value={r.rateLimitPerMinute} onChange={(e) => setR({ ...r, rateLimitPerMinute: e.target.value })} invalid={!!allErrors.rateLimitPerMinute} />
+                </Field>
+                <Field label="Budget: requests per 24 hours (optional)" error={allErrors.maxRequestsPerDay} hint="Authorized requests in any rolling 24 hours. Empty: no limit.">
+                  <Input type="number" min={1} value={r.maxRequestsPerDay} onChange={(e) => setR({ ...r, maxRequestsPerDay: e.target.value })} invalid={!!allErrors.maxRequestsPerDay} placeholder="No limit" />
+                </Field>
+                <Field label="Budget: writes per hour (optional)" error={allErrors.maxWritesPerHour} hint="Operations that change data, in any rolling hour. Reads don't count. Empty: no limit.">
+                  <Input type="number" min={1} value={r.maxWritesPerHour} onChange={(e) => setR({ ...r, maxWritesPerHour: e.target.value })} invalid={!!allErrors.maxWritesPerHour} placeholder="No limit" />
                 </Field>
                 <Field label="Valid from" required error={allErrors.validFrom}>
                   <Input type="datetime-local" value={r.validFrom} onChange={(e) => setR({ ...r, validFrom: e.target.value })} invalid={!!allErrors.validFrom} />
@@ -307,6 +323,7 @@ export function CreateGrantPage() {
                   { label: 'Resource restrictions', value: repos.length ? repos.join(', ') : 'None' },
                   { label: 'Validity period', value: `${formatDateTime(fromLocalInput(r.validFrom))} → ${formatDateTime(fromLocalInput(r.expiresAt))}` },
                   { label: 'Rate limit', value: `${r.rateLimitPerMinute} / minute` },
+                  { label: 'Budgets', value: budgetText(budgetValue(r.maxRequestsPerDay) ?? null, budgetValue(r.maxWritesPerHour) ?? null) },
                   { label: 'Source IP restriction', value: r.allowedCidrs || 'None' },
                   { label: 'Approval status', value: r.approvalRequired ? <StatusBadge status="PENDING_APPROVAL" /> : <StatusBadge status="ACTIVE" /> },
                 ]}

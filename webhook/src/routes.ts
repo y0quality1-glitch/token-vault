@@ -119,7 +119,7 @@ async function runWithCredential(rec: store.CredentialRecord, secret: string, ca
   }
   const method = def.auth.find((a) => a.kind === 'plugin' && a.plugin === 'github_app');
   if (!method) throw new ExecutionError('UNSUPPORTED_OPERATION', `${def.name} does not support GitHub App credentials`);
-  const permissions = isTest ? app.TEST_PERMISSIONS : getExecutableOperation(def, call.operation).providerPermissions;
+  const permissions = isTest ? app.TEST_PERMISSIONS : getExecutableOperation(def, call.operation, call.allowDestructive).providerPermissions;
   const cred = JSON.parse(secret) as app.GitHubAppCredential;
   const key = app.resolvePrivateKey(cred, config.githubAppPrivateKey);
   const repository = call.resource[def.resource.name];
@@ -425,7 +425,10 @@ export function buildRouter() {
     if (!rec) return signedJson(req, res, 404, { error: { code: 'CREDENTIAL_NOT_FOUND', message: 'Credential reference cannot be resolved' } });
     if (rec.status !== 'ACTIVE') return signedJson(req, res, 409, { error: { code: 'CREDENTIAL_DISABLED', message: 'Credential is disabled' } });
     // The operation must belong to the credential's provider definition (a GitHub token is never used for another provider's call).
-    const known = () => registry.get(rec.provider)?.operations.some((o) => o.id === claims.operation && o.risk !== 'destructive');
+    // Destructive operations run only if this webhook's operator allows them (WEBHOOK_ALLOW_DESTRUCTIVE)
+    // and the signed request carries the human approval the control plane required for it.
+    const allowDestructive = config.allowDestructive && typeof claims.approval_id === 'string' && claims.approval_id.length > 0;
+    const known = () => registry.get(rec.provider)?.operations.some((o) => o.id === claims.operation && (o.risk !== 'destructive' || allowDestructive));
     // The control plane may have seen a newer catalog: refresh once before refusing.
     if (typeof claims.operation === 'string' && !known() && catalogSync) await catalogSync.refresh();
     if (typeof claims.operation !== 'string' || !known()) {
@@ -434,7 +437,7 @@ export function buildRouter() {
 
     try {
       const result = await store.withSecret(rec, (secret) =>
-        runWithCredential(rec, secret, { operation: claims.operation, resource: stringRecord(claims.resource), input: claims.input && typeof claims.input === 'object' ? claims.input : {} }),
+        runWithCredential(rec, secret, { operation: claims.operation, resource: stringRecord(claims.resource), input: claims.input && typeof claims.input === 'object' ? claims.input : {}, allowDestructive }),
       );
       console.log(`[vault] execute ${claims.request_id} op=${claims.operation} ref=${rec.credentialRef} upstream=${result.upstreamStatus}${result.credential ? ' (minted App token, revoked)' : ''}`);
       signedJson(req, res, 200, {

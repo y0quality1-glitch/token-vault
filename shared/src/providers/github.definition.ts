@@ -87,22 +87,29 @@ export const githubDefinition: ProviderDefinitionInput = {
       request: { method: 'POST', path: `${REPO}/issues`, body: { title: '{input.title}', body: '{input.body}' } },
       response: { fields: { number: 'number', title: 'title', state: 'state', html_url: 'html_url', created_at: 'created_at', node_id: 'node_id' } },
     },
-    // Known to the policy engine (so it can deny them explicitly) but never grantable or executed.
+    // Destructive: grantable only where a Require approval policy covers them, run only for a request
+    // a human approved, and only by a webhook started with WEBHOOK_ALLOW_DESTRUCTIVE=true.
     {
       id: 'github.repositories.delete',
       label: 'Delete repository',
-      description: 'DELETE /repos/{owner}/{repo} (destructive, never grantable)',
+      description: 'DELETE /repos/{owner}/{repo} (destructive: needs human approval)',
       risk: 'destructive',
+      providerPermissions: { administration: 'write' },
       request: { method: 'DELETE', path: REPO },
       response: { fields: { message: 'message' } },
     },
     {
       id: 'github.contents.write',
       label: 'Write repository contents',
-      description: 'PUT /repos/{owner}/{repo}/contents/{path} (destructive, never grantable)',
+      description: 'PUT /repos/{owner}/{repo}/contents/{path}: creates a file (destructive: needs human approval)',
       risk: 'destructive',
-      request: { method: 'PUT', path: `${REPO}/contents/{resource.path}` },
-      response: { fields: { message: 'message' } },
+      providerPermissions: { contents: 'write' },
+      input: {
+        message: { type: 'string', label: 'Commit message', maxLength: 500, required: true },
+        content: { type: 'string', label: 'File content, base64-encoded', maxLength: 100_000, required: true },
+      },
+      request: { method: 'PUT', path: `${REPO}/contents/{resource.path}`, body: { message: '{input.message}', content: '{input.content}' } },
+      response: { fields: { path: 'content.path', sha: 'content.sha', commit: 'commit.sha', html_url: 'content.html_url' } },
     },
   ],
 };

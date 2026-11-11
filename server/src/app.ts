@@ -12,6 +12,7 @@ import { auditRouter } from './modules/audit/audit.routes';
 import { dashboardRouter } from './modules/dashboard/dashboard.routes';
 import { demoRouter } from './modules/demo/demo.routes';
 import { grantRequestsRouter } from './modules/grant-requests/grant-requests.routes';
+import { approvalsRouter } from './modules/approvals/approvals.routes';
 import { accessReviewsRouter } from './modules/access-reviews/access-reviews.routes';
 import { agentRouter } from './modules/broker/agent.routes';
 import { providersRouter } from './modules/providers/providers.routes';
@@ -42,6 +43,7 @@ export function createApp() {
   orgScoped.use(agentsRouter);
   orgScoped.use(grantsRouter);
   orgScoped.use(grantRequestsRouter);
+  orgScoped.use(approvalsRouter);
   orgScoped.use(accessReviewsRouter);
   orgScoped.use(policiesRouter);
   orgScoped.use(auditRouter);

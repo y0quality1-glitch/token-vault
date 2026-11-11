@@ -42,6 +42,10 @@ export const organizations = pgTable('organizations', {
   environment: text('environment').$type<Environment>().notNull(),
   createdAt: ts('created_at').notNull(),
   updatedAt: ts('updated_at').notNull(),
+  /** Emergency stop: while set, every agent request in the organization is denied. */
+  emergencyStoppedAt: ts('emergency_stopped_at'),
+  emergencyStoppedBy: text('emergency_stopped_by'),
+  emergencyStopReason: text('emergency_stop_reason'),
 });
 
 export const users = pgTable('users', {
@@ -203,6 +207,9 @@ export const grants = pgTable(
     scopes: jsonb('scopes').$type<string[]>().notNull(),
     resourceConstraints: jsonb('resource_constraints').$type<{ repositories: string[] }>().notNull(),
     rateLimitPerMinute: integer('rate_limit_per_minute').notNull(),
+    /** Budgets (null: no limit), counted from the access log: requests per rolling 24 h, writes per rolling hour. */
+    maxRequestsPerDay: integer('max_requests_per_day'),
+    maxWritesPerHour: integer('max_writes_per_hour'),
     allowedCidrs: jsonb('allowed_cidrs').$type<string[]>().notNull().default([]),
     validFrom: ts('valid_from').notNull(),
     expiresAt: ts('expires_at').notNull(),
@@ -360,6 +367,51 @@ export const grantRequests = pgTable(
     grantId: text('grant_id'),
   },
   (t) => [index('grant_requests_org_status_idx').on(t.organizationId, t.status), index('grant_requests_agent_idx').on(t.agentId)],
+);
+
+/**
+ * Human approval of one exact request (REQUIRE_APPROVAL policies). The approval is bound to
+ * request_digest (integration, operation, resource, input), is single use, and must be used
+ * within a short window after approval. EXPIRED is computed at read time from expires_at.
+ */
+export const operationApprovals = pgTable(
+  'operation_approvals',
+  {
+    id: text('id').primaryKey(),
+    organizationId: text('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
+    agentId: text('agent_id')
+      .notNull()
+      .references(() => agents.id),
+    integrationId: text('integration_id')
+      .notNull()
+      .references(() => integrations.id),
+    /** The policy that required approval (name kept in case the policy is edited or deleted). */
+    policyId: text('policy_id').notNull(),
+    policyName: text('policy_name').notNull(),
+    operation: text('operation').notNull(),
+    resource: jsonb('resource').$type<Record<string, string>>().notNull(),
+    /** Exactly what the agent will send: the approver sees this. Untrusted text. */
+    input: jsonb('input').$type<Record<string, unknown>>().notNull(),
+    /** sha256 of the canonical request; a request with this approval must match it. */
+    requestDigest: text('request_digest').notNull(),
+    status: text('status').$type<'PENDING' | 'APPROVED' | 'REJECTED' | 'EXECUTED'>().notNull(),
+    /** The access request (audit record) that asked for approval. */
+    requestedByRequestId: text('requested_by_request_id').notNull(),
+    createdAt: ts('created_at').notNull(),
+    /** PENDING: lapses at this time. APPROVED: must be executed by this time. */
+    expiresAt: ts('expires_at').notNull(),
+    decidedBy: text('decided_by'),
+    decidedAt: ts('decided_at'),
+    decisionNote: text('decision_note'),
+    executedAt: ts('executed_at'),
+    executedRequestId: text('executed_request_id'),
+  },
+  (t) => [
+    index('operation_approvals_org_status_idx').on(t.organizationId, t.status),
+    index('operation_approvals_agent_digest_idx').on(t.agentId, t.requestDigest),
+  ],
 );
 
 /**

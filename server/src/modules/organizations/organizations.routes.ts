@@ -31,6 +31,47 @@ organizationsRouter.patch('/organizations/current', requirePermission(PERMISSION
   res.json(org);
 });
 
+// ---------------------------------------------------------------- emergency stop
+/**
+ * One switch that denies every agent request in the organization (EMERGENCY_STOP) until it
+ * is lifted. Grants, keys and credentials are left untouched, so lifting it restores access
+ * exactly as it was. Stopping needs grant:revoke; lifting (re-opening access) needs grant:approve.
+ */
+async function stopView(orgId: string) {
+  const org = (await orgRepo.getOrganization(orgId))!;
+  const byName = org.emergencyStoppedBy ? ((await orgRepo.userNames([org.emergencyStoppedBy])).get(org.emergencyStoppedBy) ?? 'Unknown user') : null;
+  return { stopped: !!org.emergencyStoppedAt, stoppedAt: org.emergencyStoppedAt ?? null, stoppedBy: org.emergencyStoppedBy ?? null, stoppedByName: byName, reason: org.emergencyStopReason ?? null };
+}
+
+organizationsRouter.get('/organizations/current/emergency-stop', async (req, res) => {
+  res.json(await stopView(orgCtx(req).org.id));
+});
+
+organizationsRouter.post('/organizations/current/emergency-stop', requirePermission(PERMISSIONS.GRANT_REVOKE), async (req, res) => {
+  const ctx = orgCtx(req);
+  const { reason } = parse(z.object({ reason: z.string().trim().min(3, 'Say why (at least 3 characters)').max(240) }), req.body ?? {});
+  await transaction(async (tx) => {
+    const org = (await orgRepo.getOrganization(ctx.org.id, tx))!;
+    if (org.emergencyStoppedAt) throw conflict('Agent access is already stopped');
+    const now = new Date().toISOString();
+    await orgRepo.updateOrganization(org.id, { emergencyStoppedAt: now, emergencyStoppedBy: ctx.user.id, emergencyStopReason: reason, updatedAt: now }, tx);
+    await recordEvent({ orgId: org.id, actor: userActor(ctx), eventType: 'organization.emergency_stop', target: { type: 'organization', id: org.id, name: org.name }, severity: 'critical', metadata: { reason } }, tx);
+  });
+  res.json(await stopView(ctx.org.id));
+});
+
+organizationsRouter.post('/organizations/current/emergency-stop/lift', requirePermission(PERMISSIONS.GRANT_APPROVE), async (req, res) => {
+  const ctx = orgCtx(req);
+  const { note } = parse(z.object({ note: z.string().trim().max(240).default('') }), req.body ?? {});
+  await transaction(async (tx) => {
+    const org = (await orgRepo.getOrganization(ctx.org.id, tx))!;
+    if (!org.emergencyStoppedAt) throw conflict('Agent access is not stopped');
+    await orgRepo.updateOrganization(org.id, { emergencyStoppedAt: null, emergencyStoppedBy: null, emergencyStopReason: null, updatedAt: new Date().toISOString() }, tx);
+    await recordEvent({ orgId: org.id, actor: userActor(ctx), eventType: 'organization.emergency_stop_lifted', target: { type: 'organization', id: org.id, name: org.name }, severity: 'warning', metadata: { stoppedAt: org.emergencyStoppedAt, reason: org.emergencyStopReason, note } }, tx);
+  });
+  res.json(await stopView(ctx.org.id));
+});
+
 organizationsRouter.get('/organizations/current/members', async (req, res) => {
   const { org } = orgCtx(req);
   res.json({ items: await orgRepo.listMembers(org.id) });

@@ -52,3 +52,15 @@ export function splitList(v: string): string[] {
     .map((s) => s.trim())
     .filter(Boolean);
 }
+
+/** A budget field: empty means no limit (null); a whole number of at least 1; anything else is invalid (undefined). */
+export function budgetValue(v: string): number | null | undefined {
+  if (!v.trim()) return null;
+  const n = Number(v);
+  return Number.isInteger(n) && n >= 1 ? n : undefined;
+}
+
+export function budgetText(perDay: number | null | undefined, writesPerHour: number | null | undefined): string {
+  const parts = [perDay ? `${perDay} requests / 24 h` : null, writesPerHour ? `${writesPerHour} writes / hour` : null].filter(Boolean);
+  return parts.length ? parts.join(' · ') : 'None';
+}

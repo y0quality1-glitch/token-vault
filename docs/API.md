@@ -47,7 +47,7 @@ Errors use one shape: `{ "error": { "code": "…", "message": "…", "details": 
 | POST | `/agents/:id/revoke-grants` | `grant:revoke` | |
 | GET | `/api-clients` | any role | key IDs and masked keys only |
 | GET | `/grants` | any role | `?status=&agentId=&integrationId=` |
-| POST | `/grants` | `grant:manage` | |
+| POST | `/grants` | `grant:manage` | optional budgets `maxRequestsPerDay` (rolling 24 h) and `maxWritesPerHour` (rolling hour); `null` = no limit |
 | GET | `/grants/:id` | any role | usage, history, versions, matching policies |
 | POST | `/grants/:id/revoke` | `grant:revoke` | `{reason}`; takes effect on the next authorization check |
 | POST | `/grants/:id/approve` | `grant:approve` | simulated approval |
@@ -55,12 +55,18 @@ Errors use one shape: `{ "error": { "code": "…", "message": "…", "details": 
 | POST | `/grants/:id/versions` | `grant:manage` | edit restrictions → new version; the old version becomes `SUPERSEDED` |
 | POST | `/grants/:id/expire-now` | `grant:manage` | demo (Scenario E) |
 | GET | `/policies` | any role | |
-| POST | `/policies` · PUT `/policies/:id` | `policy:manage` | |
+| POST | `/policies` · PUT `/policies/:id` | `policy:manage` | `effect`: `DENY`, `ALLOW` or `REQUIRE_APPROVAL`; `conditions.operations`: exact operation ids or selectors that also cover operations published later (`*`, `github.*` for every operation of an application, `risk:read` / `risk:write` / `risk:destructive`, `github:write` for one risk in one application); `conditions.arguments`: up to 10 `{field, op, value}` argument rules (`field` is `input.<name>` or `resource.<name>`; `op` is one of `equals, not_equals, contains, not_contains, matches, not_matches, in, not_in, longer_than, greater_than, less_than`) |
+| GET | `/organizations/current/emergency-stop` | any role | `{stopped, stoppedAt, stoppedBy, stoppedByName, reason}` |
+| POST | `/organizations/current/emergency-stop` | `grant:revoke` | `{reason}`: denies every agent request with `EMERGENCY_STOP` until lifted |
+| POST | `/organizations/current/emergency-stop/lift` | `grant:approve` | `{note?}` |
 | GET | `/access-requests` · `/access-requests/:id` | `audit:read` | filters: `agentId, integrationId, grantId, decision, operation, from, to, search` |
 | GET | `/audit-events` · `/audit-events/:id` | `audit:read` | filters: `eventType, outcome, actorType, search, category=security` |
 | GET | `/grant-requests` · `/grant-requests/:id` | any role | just-in-time access requests (`?status=PENDING`); includes the `pending` count |
 | POST | `/grant-requests/:id/approve` | `grant:approve` | `{durationMinutes, operations?, repositories?, rateLimitPerMinute?, note?}`; may narrow but not widen the request; the agent's owner cannot approve it; creates an expiring grant |
 | POST | `/grant-requests/:id/reject` | `grant:approve` | `{note?}` |
+| GET | `/approvals` · `/approvals/:id` | any role | requests held by `REQUIRE_APPROVAL` policies, with the exact operation, resource and input (`?status=PENDING`); includes the `pending` count |
+| POST | `/approvals/:id/approve` | `grant:approve` | `{note?}`; the agent's owner cannot approve it; the agent may then run that exact request once, within 15 minutes |
+| POST | `/approvals/:id/reject` | `grant:approve` | `{note?}`; the same request is answered with `APPROVAL_REJECTED` for 24 hours |
 | GET | `/audit-integrity` | `audit:read` | verifies both audit hash chains → `{ok, verifiedAt, chains: [{table, ok, chainedRecords, legacyRecords, headSeq, headHash, problems}]}` |
 | GET | `/access-reviews` | any role | active grants with review status, 30-day usage, due / unused / expiring counts (`?summary=1` for counts only) |
 | POST | `/access-reviews/certify` | `grant:revoke` | `{grantIds[], note?}`: records the review and restarts the 30-day interval. Revoke with `/grants/:id/revoke` |
@@ -100,7 +106,17 @@ Response (the same shape for allow and deny):
 }
 ```
 
-HTTP status codes: 200 allowed · 400 malformed or unknown operation · 401 unauthenticated · 403 denied · 404 unknown integration · 429 rate limited · 502 upstream error · 503 webhook unavailable.
+HTTP status codes: 200 allowed · 202 waiting for human approval · 400 malformed or unknown operation · 401 unauthenticated · 403 denied (including `APPROVAL_REJECTED` and `EMERGENCY_STOP`) · 404 unknown integration · 409 `APPROVAL_INVALID` · 429 rate limited or `BUDGET_EXCEEDED` · 502 upstream error · 503 webhook unavailable.
+
+**Human approval.** When a `REQUIRE_APPROVAL` policy matches a request that every other check allows, nothing runs. The response is HTTP 202 with `decision: "DENY"`, `decision_code: "APPROVAL_REQUIRED"` and:
+
+```json
+"approval": { "approval_id": "apv_…", "status": "PENDING", "expires_at": "…" }
+```
+
+Sending the same request again returns the same pending approval rather than a new one. Once a human approves it, send the identical request again (same integration, operation, resource and input), optionally with `"approval_id": "apv_…"`. All checks run again, so a revoked grant still wins, and the approval is then used up: the response carries `approval.status: "EXECUTED"`. A request with an `approval_id` that is unknown, for a different request, expired or already used is denied with `APPROVAL_INVALID`. An agent can have at most 10 approvals waiting; pending approvals lapse after 1 hour.
+
+`GET /agent/v1/approvals/:id` returns one of the agent's own approvals: `status` (`PENDING`, `APPROVED`, `REJECTED`, `EXPIRED` or `EXECUTED`), the exact `integration_id`, `operation`, `resource` and `input` that were approved, `decision_note` and `executed_request_id`.
 
 `GET /agent/v1/requests/:id` returns one of the calling agent's own requests.
 

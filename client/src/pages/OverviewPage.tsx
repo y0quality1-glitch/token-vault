@@ -11,6 +11,7 @@ import { DataTable } from '@/components/ui/table';
 import { EmptyState, ErrorState, PageSkeleton } from '@/components/ui/feedback';
 import { PageHeader } from '@/components/ui/navigation';
 import { cn, relativeTime } from '@/lib/utils';
+import { EmergencyStopCard } from '@/components/EmergencyStop';
 
 export function OverviewPage() {
   const { session, can } = useAuth();
@@ -224,6 +225,8 @@ export function OverviewPage() {
           </CardBody>
         </Card>
       </div>
+
+      <EmergencyStopCard />
     </div>
   );
 }

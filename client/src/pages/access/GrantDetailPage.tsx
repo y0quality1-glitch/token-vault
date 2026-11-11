@@ -129,6 +129,18 @@ export function GrantDetailPage() {
                 { label: 'Valid from', value: formatDateTime(g.validFrom) },
                 { label: 'Expires', value: `${formatDateTime(g.expiresAt)} (${relativeTime(g.expiresAt)})` },
                 { label: 'Rate limit', value: `${g.rateLimitPerMinute} requests / minute` },
+                {
+                  label: 'Budgets',
+                  value:
+                    g.maxRequestsPerDay || g.maxWritesPerHour ? (
+                      <div className="space-y-0.5">
+                        {g.maxRequestsPerDay ? <p>{g.budgetUsage?.requestsLast24h ?? 0} of {g.maxRequestsPerDay} requests used in the last 24 h</p> : null}
+                        {g.maxWritesPerHour ? <p>{g.budgetUsage?.writesLastHour ?? 0} of {g.maxWritesPerHour} writes used in the last hour</p> : null}
+                      </div>
+                    ) : (
+                      'None'
+                    ),
+                },
                 { label: 'Source IP restriction', value: g.allowedCidrs.length ? g.allowedCidrs.join(', ') : 'None' },
                 { label: 'Approval', value: g.approvalRequired ? (g.approvedAt ? `Approved ${formatDateTime(g.approvedAt)}` : 'Required (pending)') : 'Not required' },
                 { label: 'Created by', value: `${g.createdByName} · ${formatDateTime(g.createdAt)}` },
@@ -146,7 +158,7 @@ export function GrantDetailPage() {
                 g.matchingPolicies.map((p) => (
                   <Link key={p.id} to="/access/policies" className="flex items-center justify-between rounded-md border border-slate-100 px-3 py-2 text-sm hover:bg-slate-50">
                     <span className="text-slate-800">{p.name}</span>
-                    <Badge tone={p.effect === 'DENY' ? 'red' : 'green'}>{p.effect}</Badge>
+                    <Badge tone={p.effect === 'DENY' ? 'red' : p.effect === 'REQUIRE_APPROVAL' ? 'amber' : 'green'}>{p.effect === 'REQUIRE_APPROVAL' ? 'REQUIRE APPROVAL' : p.effect}</Badge>
                   </Link>
                 ))
               )}
@@ -259,12 +271,13 @@ function ExtendDialog({ open, grant, onClose, onSaved }: { open: boolean; grant:
 }
 
 function EditRestrictionsDialog({ open, grant, onClose, onSaved }: { open: boolean; grant: GrantDetail; onClose: () => void; onSaved: (g: GrantDetail) => void }) {
-  const { grantable: all } = useProviders();
+  // Destructive operations too: the server accepts them only where a Require approval policy covers them.
+  const { operations: all } = useProviders();
   // Only operations of the grant's own provider can be added.
   const provider = grant.scopes.map((x) => all.find((o) => o.id === x)?.provider).find(Boolean);
   const grantable = provider ? all.filter((o) => o.provider === provider) : all;
   const toast = useToast();
-  const [f, setF] = useState({ scopes: [] as string[], repositories: '', validFrom: '', expiresAt: '', rateLimitPerMinute: '', allowedCidrs: '' });
+  const [f, setF] = useState({ scopes: [] as string[], repositories: '', validFrom: '', expiresAt: '', rateLimitPerMinute: '', maxRequestsPerDay: '', maxWritesPerHour: '', allowedCidrs: '' });
   const save = useMutation((body: unknown) => api.post<GrantDetail>(`/grants/${grant.id}/versions`, body));
   useEffect(() => {
     if (open)
@@ -274,6 +287,8 @@ function EditRestrictionsDialog({ open, grant, onClose, onSaved }: { open: boole
         validFrom: toLocalInput(grant.validFrom),
         expiresAt: toLocalInput(grant.expiresAt),
         rateLimitPerMinute: String(grant.rateLimitPerMinute),
+        maxRequestsPerDay: grant.maxRequestsPerDay ? String(grant.maxRequestsPerDay) : '',
+        maxWritesPerHour: grant.maxWritesPerHour ? String(grant.maxWritesPerHour) : '',
         allowedCidrs: grant.allowedCidrs.join(', '),
       });
   }, [open, grant]);
@@ -299,6 +314,9 @@ function EditRestrictionsDialog({ open, grant, onClose, onSaved }: { open: boole
                 validFrom: fromLocalInput(f.validFrom),
                 expiresAt: fromLocalInput(f.expiresAt),
                 rateLimitPerMinute: Number(f.rateLimitPerMinute),
+                // Empty: no limit. Anything else goes to the server, which validates it.
+                maxRequestsPerDay: f.maxRequestsPerDay.trim() ? Number(f.maxRequestsPerDay) : null,
+                maxWritesPerHour: f.maxWritesPerHour.trim() ? Number(f.maxWritesPerHour) : null,
                 allowedCidrs: splitList(f.allowedCidrs),
               });
               if (r) {
@@ -320,7 +338,7 @@ function EditRestrictionsDialog({ open, grant, onClose, onSaved }: { open: boole
           {fe.scopes && <p className="mb-2 text-xs text-red-600">{fe.scopes}</p>}
           <div className="grid gap-2 sm:grid-cols-2">
             {grantable.map((o) => (
-              <Checkbox key={o.id} checked={f.scopes.includes(o.id)} onChange={(v) => setF({ ...f, scopes: v ? [...f.scopes, o.id] : f.scopes.filter((x) => x !== o.id) })} label={o.label} />
+              <Checkbox key={o.id} checked={f.scopes.includes(o.id)} onChange={(v) => setF({ ...f, scopes: v ? [...f.scopes, o.id] : f.scopes.filter((x) => x !== o.id) })} label={o.label} description={o.destructive ? 'Destructive: needs a Require approval policy' : undefined} />
             ))}
           </div>
         </div>
@@ -330,6 +348,12 @@ function EditRestrictionsDialog({ open, grant, onClose, onSaved }: { open: boole
           </Field>
           <Field label="Max requests / minute" error={fe.rateLimitPerMinute}>
             <Input type="number" value={f.rateLimitPerMinute} onChange={(e) => setF({ ...f, rateLimitPerMinute: e.target.value })} />
+          </Field>
+          <Field label="Budget: requests per 24 hours" error={fe.maxRequestsPerDay} hint="Empty: no limit">
+            <Input type="number" min={1} value={f.maxRequestsPerDay} onChange={(e) => setF({ ...f, maxRequestsPerDay: e.target.value })} placeholder="No limit" />
+          </Field>
+          <Field label="Budget: writes per hour" error={fe.maxWritesPerHour} hint="Reads don't count. Empty: no limit">
+            <Input type="number" min={1} value={f.maxWritesPerHour} onChange={(e) => setF({ ...f, maxWritesPerHour: e.target.value })} placeholder="No limit" />
           </Field>
           <Field label="Valid from" error={fe.validFrom}>
             <Input type="datetime-local" value={f.validFrom} onChange={(e) => setF({ ...f, validFrom: e.target.value })} />

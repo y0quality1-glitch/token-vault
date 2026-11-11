@@ -2,6 +2,7 @@ import { Router, type Response } from 'express';
 import { normalizeIp } from '../../lib/net';
 import { authenticate, executeAgentRequest, getAgentOperations, getCapabilities, getOwnRequest } from './broker.service';
 import { createFromAgent, getForAgent } from '../grant-requests/grant-requests.service';
+import { getForAgent as getApprovalForAgent } from '../approvals/approvals.service';
 
 /**
  * Agent-facing API. Authenticated ONLY by the agent API credential
@@ -55,6 +56,15 @@ agentRouter.post('/access-requests', async (req, res) => {
   if (!agent) return void res.status(401).json(unauthenticated);
   const r = await createFromAgent(agent, req.body);
   res.status(r.status).json(r.body);
+});
+
+/** An approval one of this agent's requests is waiting for (REQUIRE_APPROVAL policies). */
+agentRouter.get('/approvals/:id', async (req, res) => {
+  const agent = await authenticate(req.headers.authorization, keyNotice(res));
+  if (!agent) return void res.status(401).json(unauthenticated);
+  const r = await getApprovalForAgent(agent, String(req.params.id));
+  if (!r) return void res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Approval not found' } });
+  res.json(r);
 });
 
 agentRouter.get('/access-requests/:id', async (req, res) => {

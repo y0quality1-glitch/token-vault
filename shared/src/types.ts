@@ -14,6 +14,10 @@ export interface Organization {
   environment: Environment;
   createdAt: ISODate;
   updatedAt: ISODate;
+  /** Emergency stop: while set, every agent request in the organization is denied (EMERGENCY_STOP). */
+  emergencyStoppedAt?: ISODate | null;
+  emergencyStoppedBy?: string | null;
+  emergencyStopReason?: string | null;
 }
 
 export interface User {
@@ -189,6 +193,10 @@ export interface Grant {
   scopes: string[];
   resourceConstraints: { repositories: string[] };
   rateLimitPerMinute: number;
+  /** Budget: authorized requests in any rolling 24 hours (null: no limit). */
+  maxRequestsPerDay?: number | null;
+  /** Budget: authorized write operations (anything but reads) in any rolling hour (null: no limit). */
+  maxWritesPerHour?: number | null;
   allowedCidrs: string[];
   validFrom: ISODate;
   expiresAt: ISODate;
@@ -218,10 +226,13 @@ export interface GrantDetail extends Grant {
   recentRequests: AccessRequest[];
   versions: { id: string; version: number; status: GrantStatus; createdAt: ISODate }[];
   matchingPolicies: { id: string; name: string; effect: PolicyEffect }[];
+  /** Budget consumption, when the grant has budgets. */
+  budgetUsage?: { requestsLast24h: number; writesLastHour: number } | null;
 }
 
 // ---------------------------------------------------------------- Policies
-export type PolicyEffect = 'ALLOW' | 'DENY';
+/** REQUIRE_APPROVAL: a request that every other check allows still waits until a human approves that exact request. */
+export type PolicyEffect = 'ALLOW' | 'DENY' | 'REQUIRE_APPROVAL';
 
 export interface PolicyConditions {
   agentSelector: { type: 'any' | 'agent' | 'agentType'; value?: string };
@@ -233,6 +244,22 @@ export interface PolicyConditions {
   timeWindow?: { startHour: number; endHour: number } | null;
   /** Policy applies only to requests from these IPv4 CIDRs. */
   sourceCidrs?: string[];
+  /** Argument rules: the policy applies only when every one of these holds for the request. */
+  arguments?: ArgumentCondition[];
+}
+
+/**
+ * A condition on what the request contains. `field` is `input.<name>` or `resource.<name>`.
+ * A missing field is the empty string. Numeric operators treat a value that is not a number
+ * as matching, so a deny or approval rule fails closed.
+ */
+export type ArgumentOperator = 'equals' | 'not_equals' | 'contains' | 'not_contains' | 'matches' | 'not_matches' | 'in' | 'not_in' | 'longer_than' | 'greater_than' | 'less_than';
+
+export interface ArgumentCondition {
+  field: string;
+  op: ArgumentOperator;
+  /** A string, a number (longer_than, greater_than, less_than), or a list (in, not_in). */
+  value: string | number | string[];
 }
 
 export interface Policy {
@@ -350,6 +377,8 @@ export interface ExecuteRequestBody {
   resource?: { repository?: string; path?: string; [field: string]: string | undefined };
   input?: Record<string, unknown>;
   idempotency_key?: string;
+  /** An APPROVED operation approval for exactly this request (same integration, operation, resource and input). */
+  approval_id?: string;
 }
 
 export interface ExecuteResponseBody {
@@ -372,6 +401,8 @@ export interface ExecuteResponseBody {
   };
   result: unknown;
   checks: DecisionCheck[];
+  /** Set when a REQUIRE_APPROVAL policy applies: the approval this request waits for, or the one it used. */
+  approval?: { approval_id: string; status: OperationApprovalStatus; expires_at: ISODate } | null;
 }
 
 export interface ApiErrorBody {
@@ -397,6 +428,9 @@ export interface AgentCapabilitiesBody {
     operations: string[];
     repositories: string[];
     rate_limit_per_minute: number;
+    /** Budgets (null: no limit): authorized requests per rolling 24 hours, write operations per rolling hour. */
+    max_requests_per_day: number | null;
+    max_writes_per_hour: number | null;
     valid_from: ISODate;
     expires_at: ISODate;
   }[];
@@ -481,6 +515,56 @@ export interface AgentAccessRequestBody {
   decision_note: string | null;
   grant_id: string | null;
   grant_expires_at: ISODate | null;
+}
+
+// ---------------------------------------------------------------- Operation approvals (REQUIRE_APPROVAL policies)
+/**
+ * PENDING: waiting for a human. APPROVED: the agent may run this exact request once, until
+ * expiresAt. EXECUTED: it was run. REJECTED, EXPIRED: it can no longer run.
+ */
+export type OperationApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'EXPIRED' | 'EXECUTED';
+
+export interface OperationApproval {
+  id: string;
+  organizationId: string;
+  agentId: string;
+  agentName: string;
+  agentOwnerUserId: string;
+  integrationId: string;
+  integrationName: string;
+  policyId: string;
+  policyName: string;
+  operation: string;
+  resource: Record<string, string>;
+  /** Exactly what the agent will send if approved. Written by the agent: untrusted. */
+  input: Record<string, unknown>;
+  status: OperationApprovalStatus;
+  /** The access request (audit record) that asked for approval. */
+  requestedByRequestId: string;
+  createdAt: ISODate;
+  /** PENDING: lapses at this time. APPROVED: must be run by this time. */
+  expiresAt: ISODate;
+  decidedBy: string | null;
+  decidedByName: string | null;
+  decidedAt: ISODate | null;
+  decisionNote: string | null;
+  executedAt: ISODate | null;
+  executedRequestId: string | null;
+}
+
+/** Agent API view of an approval its request is waiting for. */
+export interface AgentApprovalBody {
+  approval_id: string;
+  status: OperationApprovalStatus;
+  integration_id: string;
+  operation: string;
+  resource: Record<string, string>;
+  input: Record<string, unknown>;
+  created_at: ISODate;
+  expires_at: ISODate;
+  decided_at: ISODate | null;
+  decision_note: string | null;
+  executed_request_id: string | null;
 }
 
 // ---------------------------------------------------------------- Audit integrity
