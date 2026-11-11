@@ -29,6 +29,7 @@ import { SecurityEventsPage } from '@/pages/audit/SecurityEventsPage';
 import { OrganizationSettingsPage } from '@/pages/settings/OrganizationSettingsPage';
 import { MembersPage } from '@/pages/settings/MembersPage';
 import { UserIdentityPage } from '@/pages/settings/UserIdentityPage';
+import { SessionDetailPage, SessionsPage } from '@/pages/audit/SessionsPage';
 import { ApiClientsPage } from '@/pages/settings/ApiClientsPage';
 import { OAuthCallbackPage } from '@/pages/integrations/OAuthCallbackPage';
 
@@ -75,6 +76,22 @@ export function App() {
           element={
             <RequirePermission permission={PERMISSIONS.AUDIT_READ}>
               <AccessLogsPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="audit/sessions"
+          element={
+            <RequirePermission permission={PERMISSIONS.AUDIT_READ}>
+              <SessionsPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="audit/sessions/:sessionId"
+          element={
+            <RequirePermission permission={PERMISSIONS.AUDIT_READ}>
+              <SessionDetailPage />
             </RequirePermission>
           }
         />

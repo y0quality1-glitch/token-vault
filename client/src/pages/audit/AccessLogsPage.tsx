@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Activity, CheckCircle2, CircleDashed, Download, Search, UserRound, XCircle } from 'lucide-react';
-import { DECISION_LABELS, actingUserLabel, type AccessRequest, type Agent, type AuditEvent, type Integration } from '@token-vault/shared';
+import { DECISION_LABELS, actingUserLabel, sessionDisplayName, type AccessRequest, type Agent, type AuditEvent, type Integration } from '@token-vault/shared';
 import { operationLabel, useProviders } from '@/lib/providers';
 import { useApi } from '@/hooks/useApi';
 import { qs } from '@/lib/api';
@@ -30,6 +30,7 @@ export function AccessLogsPage() {
     search: '',
     grantId: params.get('grantId') ?? '',
     user: params.get('user') ?? '',
+    sessionId: params.get('sessionId') ?? '',
   });
   const query = qs({ ...filters, from: fromLocalInput(filters.from), to: fromLocalInput(filters.to) });
   const { data, error, loading, reload } = useApi<{ items: AccessRequest[]; total: number }>(`/access-requests${query}`);
@@ -101,7 +102,7 @@ export function AccessLogsPage() {
               </option>
             ))}
           </Select>
-          <Button variant="ghost" onClick={() => setFilters({ agentId: '', integrationId: '', decision: '', operation: '', from: '', to: '', search: '', grantId: '', user: '' })}>
+          <Button variant="ghost" onClick={() => setFilters({ agentId: '', integrationId: '', decision: '', operation: '', from: '', to: '', search: '', grantId: '', user: '', sessionId: '' })}>
             Reset filters
           </Button>
         </div>
@@ -116,6 +117,14 @@ export function AccessLogsPage() {
           <label className="flex items-center gap-2 text-slate-600">
             To <Input type="datetime-local" className="w-auto" value={filters.to} onChange={set('to')} />
           </label>
+          {filters.sessionId && (
+            <Badge tone="blue">
+              Session {filters.sessionId}
+              <button className="ml-1" onClick={() => setFilters((f) => ({ ...f, sessionId: '' }))} aria-label="Clear session filter">
+                ×
+              </button>
+            </Badge>
+          )}
           {filters.grantId && (
             <Badge tone="blue">
               Grant {filters.grantId}
@@ -148,6 +157,7 @@ export function AccessLogsPage() {
                   <div className="min-w-0">
                     <span className="font-medium text-slate-800">{r.agentName}</span>
                     {r.delegation && <span className="block text-xs text-slate-500">via sub-agent {r.delegation.label}</span>}
+                    {r.trace && <span className="block truncate text-xs text-slate-500">in {r.trace.sessionLabel ?? r.trace.sessionId}</span>}
                     {r.onBehalfOf && (
                       <span className="flex items-center gap-1 text-xs text-slate-500" title={`Verified by ${r.onBehalfOf.issuer}`}>
                         <UserRound className="h-3 w-3" /> for {actingUserLabel(r.onBehalfOf)}
@@ -209,6 +219,12 @@ function AccessDetailDrawer({ id, onClose }: { id: string | null; onClose: () =>
             items={[
               { label: 'Event ID', value: r.auditEvents[0]?.id ?? '—', mono: true },
               { label: 'Request ID', value: r.id, mono: true },
+              ...(r.trace
+                ? [
+                    { label: 'Session', value: <Link className="text-brand-700 hover:underline" to={`/audit/sessions/${encodeURIComponent(r.trace.sessionId)}${r.agentId ? `?agentId=${encodeURIComponent(r.agentId)}` : ''}`}>{sessionDisplayName(r.trace)}</Link> },
+                    { label: 'Trace', value: `${r.trace.traceId} · span ${r.trace.spanId}${r.trace.parentSpanId ? ` (parent ${r.trace.parentSpanId})` : ''}`, mono: true },
+                  ]
+                : []),
               ...(r.delegation ? [{ label: 'Via sub-agent', value: `${r.delegation.label} (delegation ${r.delegation.id}, level ${r.delegation.depth})` }] : []),
               { label: 'On behalf of', value: r.onBehalfOf ? `${actingUserLabel(r.onBehalfOf)} · ${r.onBehalfOf.sub}` : 'The agent itself' },
               ...(r.onBehalfOf ? [{ label: 'Verified by', value: r.onBehalfOf.issuer }, { label: 'User groups', value: r.onBehalfOf.groups.join(', ') || 'none' }, { label: "User's permissions", value: permissionsText(r.onBehalfOf.permissions) }] : []),
