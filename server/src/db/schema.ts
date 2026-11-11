@@ -2,6 +2,8 @@ import { bigint, boolean, customType, index, integer, jsonb, pgTable, text, uniq
 import type {
   ActingUser,
   DelegationRef,
+  FilteringSummary,
+  ResponseFilter,
   OnBehalfOfMode,
   AgentStatus,
   AgentType,
@@ -251,6 +253,8 @@ export const policies = pgTable(
     description: text('description').notNull().default(''),
     effect: text('effect').$type<PolicyEffect>().notNull(),
     conditions: jsonb('conditions').$type<PolicyConditions>().notNull(),
+    /** FILTER policies only: what to mask, remove or check in results. */
+    responseFilter: jsonb('response_filter').$type<ResponseFilter | null>(),
     priority: integer('priority').notNull(),
     enabled: boolean('enabled').notNull(),
     createdAt: ts('created_at').notNull(),
@@ -296,6 +300,8 @@ export const accessRequests = pgTable(
     onBehalfOf: jsonb('on_behalf_of').$type<ActingUser | null>(),
     /** The sub-agent delegation the request came through (null: the agent itself). Left out of the chained content when null. */
     delegation: jsonb('delegation').$type<DelegationRef | null>(),
+    /** What response filtering did (counts only). Left out of the chained content when null. */
+    filtering: jsonb('filtering').$type<FilteringSummary | null>(),
     // Tamper evidence (migration 0003): per-organization hash chain + HMAC with a key held outside the database.
     // NULL on rows written before chaining existed ("legacy").
     seq: bigint('seq', { mode: 'number' }),

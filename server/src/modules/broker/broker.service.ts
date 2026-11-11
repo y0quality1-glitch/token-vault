@@ -4,6 +4,10 @@ import {
   type AccessRequest,
   type ActingUser,
   type DelegationRef,
+  type FilteringSummary,
+  applyResponseFilter,
+  filterFingerprint,
+  mergeFilters,
   type DecisionCheck,
   type AgentCapabilitiesBody,
   type AgentOperationsBody,
@@ -92,6 +96,8 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
   /** Set when a sub-agent sent the request with a delegation token. */
   let viaDelegation: DelegationRef | null = null;
   let delegationNote: { used: number; max: number | null } | null = null;
+  /** Set when a Filter responses policy shaped the result. */
+  let filtering: FilteringSummary | null = null;
 
   const respond = async (args: {
     status: number;
@@ -138,6 +144,7 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
       ...(args.approval ? { approval: args.approval } : {}),
       ...(actingUser ? { acting_for: { sub: actingUser.sub, email: actingUser.email ?? null, name: actingUser.name ?? null, issuer: actingUser.issuer } } : {}),
       ...(viaDelegation ? { delegation: { delegation_id: viaDelegation.id, label: viaDelegation.label, used: (delegationNote?.used ?? 0) + (args.decision === 'ALLOW' ? 1 : 0), max_requests: delegationNote?.max ?? null } } : {}),
+      ...(filtering ? { filtering: { policies: filtering.policyNames, masked: filtering.masked, removed_fields: filtering.removedFields, prompt_injection: filtering.injection, withheld: filtering.withheld } } : {}),
     };
     const waiting = args.code === DECISION_CODES.APPROVAL_REQUIRED;
     // Every decision is audited (when the organization can be attributed).
@@ -173,6 +180,7 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
           createdAt: new Date().toISOString(),
           onBehalfOf: actingUser,
           delegation: viaDelegation,
+          filtering,
         }, tx);
         await recordEvent({
           orgId,
@@ -181,7 +189,7 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
           target: args.integration ? { type: 'integration', id: args.integration.id, name: args.integration.displayName } : { type: 'integration', id: 'unknown', name: '—' },
           outcome: args.decision === 'DENY' ? 'DENIED' : failed ? 'FAILURE' : 'SUCCESS',
           severity: (args.decision === 'ALLOW' && !failed) || waiting ? 'info' : ['AGENT_UNAUTHENTICATED', 'POLICY_DENIED', 'AGENT_DISABLED', 'GRANT_REVOKED', 'EMERGENCY_STOP'].includes(args.code) ? 'critical' : 'warning',
-          metadata: { requestId, operation: args.operation, ...args.resource, decisionCode: args.code, grantId: args.grant?.id ?? null, upstreamStatus: args.upstreamStatus, ...(args.credential ? { credential: args.credential } : {}), ...(args.approval ? { approvalId: args.approval.approval_id } : {}), ...(actingUser ? { onBehalfOf: actingUser.sub, userIssuer: actingUser.issuer } : {}), ...(viaDelegation ? { delegationId: viaDelegation.id } : {}) },
+          metadata: { requestId, operation: args.operation, ...args.resource, decisionCode: args.code, grantId: args.grant?.id ?? null, upstreamStatus: args.upstreamStatus, ...(args.credential ? { credential: args.credential } : {}), ...(args.approval ? { approvalId: args.approval.approval_id } : {}), ...(actingUser ? { onBehalfOf: actingUser.sub, userIssuer: actingUser.issuer } : {}), ...(viaDelegation ? { delegationId: viaDelegation.id } : {}), ...(filtering ? { filtered: { masked: filtering.masked, removedFields: filtering.removedFields, promptInjection: filtering.injection.detected, withheld: filtering.withheld } } : {}) },
           correlationId,
         }, tx);
       });
@@ -376,6 +384,9 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
   if (!webhook || !webhook.instanceId) {
     return respond({ ...allowArgs, status: 503, code: DECISION_CODES.WEBHOOK_UNAVAILABLE, reason: 'Authorized, but no verified customer webhook is configured for this integration. No credential was used.', executionStatus: 'FAILED', webhookStatus: 'NOT_CONFIGURED', upstreamStatus: null, result: null });
   }
+  // Filter responses policies: the webhook filters the result before it leaves the customer side.
+  const filterPolicies = evaluation.filterPolicies ?? [];
+  const responseFilter = mergeFilters(filterPolicies.map((p) => p.filter));
   const iat = Date.now();
   const claims = {
     request_id: requestId,
@@ -394,6 +405,7 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
     // Who the agent acts for, so the customer side can attribute the upstream call.
     ...(actingUser ? { acting_user: { sub: actingUser.sub, email: actingUser.email ?? null, issuer: actingUser.issuer } } : {}),
     ...(viaDelegation ? { delegation_id: viaDelegation.id } : {}),
+    ...(responseFilter ? { response_filter: responseFilter, response_filter_id: filterFingerprint(responseFilter) } : {}),
   };
 
   let wh;
@@ -419,15 +431,49 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
 
   const upstream = Number(wh.body.upstream_status);
   const ok = upstream >= 200 && upstream < 300;
+
+  // Use the webhook's filtering when it applied exactly the requested filter; otherwise filter
+  // here, so the agent never receives an unfiltered result (e.g. from an older webhook).
+  let result: unknown = wh.body.result ?? null;
+  if (responseFilter) {
+    const fp = filterFingerprint(responseFilter);
+    const byWebhook = wh.body.filter_applied === fp && wh.body.filter_report && typeof wh.body.filter_report === 'object';
+    const applied = byWebhook ? { value: result, report: wh.body.filter_report } : applyResponseFilter(result, responseFilter);
+    result = applied.value;
+    filtering = {
+      policyIds: filterPolicies.map((p) => p.id),
+      policyNames: filterPolicies.map((p) => p.name),
+      masked: Object.entries((applied.report.masked ?? {}) as Record<string, number>).map(([kind, count]) => ({ kind, count: Number(count) })),
+      removedFields: Number(applied.report.removedFields ?? 0),
+      injection: { detected: !!applied.report.injection?.detected, signals: (applied.report.injection?.signals ?? []).slice(0, 10) },
+      withheld: !!applied.report.withheld,
+      appliedBy: byWebhook ? 'webhook' : 'control-plane',
+    };
+    if (filtering.withheld) {
+      return respond({
+        ...allowArgs,
+        status: 200,
+        code: DECISION_CODES.RESPONSE_WITHHELD,
+        reason: `${providerName} returned HTTP ${upstream}, but the result was withheld by ${filterPolicies.length > 1 ? `the Filter responses policies ${filterPolicies.map((p) => `"${p.name}"`).join(', ')}` : `the Filter responses policy "${filterPolicies[0]!.name}"`}: ${applied.report.withheldReason ?? 'it could not be passed on safely.'}${rejectedNote}`,
+        executionStatus: ok ? 'SUCCEEDED' : 'FAILED',
+        webhookStatus: 'OK',
+        upstreamStatus: upstream,
+        result: null,
+        simulated: wh.body.simulated !== false,
+        credential: wh.body.credential ?? null,
+      });
+    }
+  }
+
   const out = await respond({
     ...allowArgs,
     status: ok ? 200 : 502,
     code: ok ? DECISION_CODES.ALLOWED : DECISION_CODES.UPSTREAM_ERROR,
-    reason: ok ? evaluation.reason : `Authorized, but ${providerName} returned HTTP ${upstream}${wh.body.result?.message ? ` (${wh.body.result.message})` : ''}.${rejectedNote}`,
+    reason: ok ? evaluation.reason : `Authorized, but ${providerName} returned HTTP ${upstream}${(result as { message?: string } | null)?.message ? ` (${(result as { message: string }).message})` : ''}.${rejectedNote}`,
     executionStatus: ok ? 'SUCCEEDED' : 'FAILED',
     webhookStatus: 'OK',
     upstreamStatus: upstream,
-    result: wh.body.result ?? null,
+    result,
     simulated: wh.body.simulated !== false,
     credential: wh.body.credential ?? null,
   });

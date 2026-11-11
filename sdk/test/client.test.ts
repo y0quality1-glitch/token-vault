@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { inspect } from 'node:util';
 import type { ExecuteResponseBody } from '@token-vault/shared';
-import { AccessDeniedError, ApprovalRequiredError, AuthenticationError, ExecutionFailedError, TokenVault, TokenVaultError } from '../src';
+import { AccessDeniedError, ApprovalRequiredError, AuthenticationError, ExecutionFailedError, ResponseWithheldError, TokenVault, TokenVaultError } from '../src';
 
 const KEY = 'tvak_0123456789ab_abcdefghijklmnopqrstuvwxyz012345';
 
@@ -138,6 +138,17 @@ describe('TokenVault SDK', () => {
 
     const refused = client({ error: { code: 'VALIDATION_ERROR', message: 'Request validation failed', details: { fields: { operations: 'github.contents.read is not granted' } } } }, 400);
     await expect(refused.tv.delegate({ grantId: 'grt_1', label: 'x', operations: ['github.contents.read'] })).rejects.toThrow(/not granted/);
+  });
+
+  it('reports filtering on results, and throws ResponseWithheldError when a result was withheld', async () => {
+    const filtering = { policies: ['Mask contact data'], masked: [{ kind: 'email', count: 2 }], removed_fields: 0, prompt_injection: { detected: false, signals: [] }, withheld: false };
+    const ok = await client(body({ filtering })).tv.execute({ integrationId: 'int_1', operation: 'github.issues.list' });
+    expect(ok.filtering).toEqual(filtering);
+    const withheld = client(body({ decision_code: 'RESPONSE_WITHHELD', reason: 'withheld: looks like prompt injection', result: null, filtering: { ...filtering, withheld: true } }));
+    const err = await withheld.tv.execute({ integrationId: 'int_1', operation: 'github.issues.list' }).catch((e) => e);
+    expect(err).toBeInstanceOf(ResponseWithheldError);
+    expect(err).not.toBeInstanceOf(AccessDeniedError);
+    expect(err.code).toBe('RESPONSE_WITHHELD');
   });
 
   it('requests access and surfaces server validation errors', async () => {

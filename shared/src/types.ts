@@ -326,6 +326,19 @@ export interface DelegationView extends Delegation {
   used: number;
 }
 
+/** What an access record keeps about response filtering (counts and signals, never the values). */
+export interface FilteringSummary {
+  policyIds: string[];
+  policyNames: string[];
+  /** Values masked per kind (a list, so a kind such as "secret" is never mistaken for secret material by audit sanitizing). */
+  masked: { kind: string; count: number }[];
+  removedFields: number;
+  injection: { detected: boolean; signals: { path: string; signal: string }[] };
+  withheld: boolean;
+  /** Who applied the filter: the customer webhook, or the control plane when the webhook did not. */
+  appliedBy: 'webhook' | 'control-plane';
+}
+
 /** What an access record or approval keeps about the delegation a request came through. */
 export interface DelegationRef {
   id: string;
@@ -345,7 +358,7 @@ export interface GrantDetail extends Grant {
 
 // ---------------------------------------------------------------- Policies
 /** REQUIRE_APPROVAL: a request that every other check allows still waits until a human approves that exact request. */
-export type PolicyEffect = 'ALLOW' | 'DENY' | 'REQUIRE_APPROVAL';
+export type PolicyEffect = 'ALLOW' | 'DENY' | 'REQUIRE_APPROVAL' | 'FILTER';
 
 export interface PolicyConditions {
   agentSelector: { type: 'any' | 'agent' | 'agentType'; value?: string };
@@ -382,6 +395,8 @@ export interface Policy {
   description: string;
   effect: PolicyEffect;
   conditions: PolicyConditions;
+  /** FILTER policies: what to mask, remove or check in results before the agent gets them. */
+  responseFilter?: import('./response-filter').ResponseFilter | null;
   priority: number;
   enabled: boolean;
   createdAt: ISODate;
@@ -434,6 +449,8 @@ export interface AccessRequest {
   onBehalfOf?: ActingUser | null;
   /** The sub-agent delegation the request came through (absent: the agent itself). */
   delegation?: DelegationRef | null;
+  /** What response filtering did to the result (counts only, never values). Absent: no filter applied. */
+  filtering?: FilteringSummary | null;
   /** Tamper evidence: position in the organization's hash chain (null for pre-chain records). */
   seq?: number | null;
   prevHash?: string | null;
@@ -526,6 +543,17 @@ export interface ExecuteResponseBody {
   acting_for?: { sub: string; email: string | null; name: string | null; issuer: string } | null;
   /** The delegation the request came through, when a sub-agent sent it. */
   delegation?: { delegation_id: string; label: string; used: number; max_requests: number | null } | null;
+  /**
+   * Set when a Filter responses policy applied: what was masked, removed or flagged. When
+   * `withheld` is true the operation ran but `result` is null (decision code RESPONSE_WITHHELD).
+   */
+  filtering?: {
+    policies: string[];
+    masked: { kind: string; count: number }[];
+    removed_fields: number;
+    prompt_injection: { detected: boolean; signals: { path: string; signal: string }[] };
+    withheld: boolean;
+  } | null;
 }
 
 export interface ApiErrorBody {
