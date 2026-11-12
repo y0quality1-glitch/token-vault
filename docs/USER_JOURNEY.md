@@ -78,6 +78,7 @@ The webhook is the only component that ever decrypts a provider credential. It r
    - **Token / API key**: paste it once.
 3. Name the integration, pick its environment (development, staging, production) and, optionally, the **allowed resources** (for example, only `demo-org/demo-repo`). Nothing outside them can ever be granted.
 4. Optionally set a **rotation reminder** (30–365 days).
+5. Optionally change the **access mode** on the integration page. **Brokered** (the default) means your webhook makes every call and agents never see a credential. **Decision only** means Token Vault only decides and returns a signed decision token, and the agent calls the application with credentials of its own. **Short-lived credential** (GitHub App and OAuth only) means your webhook issues a narrow token the agent calls with; the webhook must allow it with `WEBHOOK_ALLOW_CREDENTIAL_ISSUE=true`. Filter responses policies only work in Brokered mode. See [AGENTS.md](AGENTS.md#access-modes-when-the-agent-makes-the-call-itself).
 
 The secret goes straight to your webhook, which encrypts it. The console only ever shows a masked identifier and a fingerprint.
 

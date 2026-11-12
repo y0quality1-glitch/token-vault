@@ -305,6 +305,8 @@ token-vault/
 | `CREDENTIAL_CHECK_INTERVAL_MS` | How often every stored credential is re-tested with its provider (default 21600000 = 6 h; `0` turns the schedule off). A credential the provider rejects (HTTP 401, a refused OAuth refresh, a rejected GitHub App key or installation) is marked **Invalid** and audited (`integration.credential_rejected`); one that works again is marked **Connected** (`integration.credential_recovered`). Outages (5xx, 429, timeouts) never change the status |
 | `CONSOLE_PUBLIC_URL` | Where the console is served (default `http://localhost:5173`); OAuth providers redirect to `<this>/oauth/callback` |
 | `API_PUBLIC_URL` | Where the control plane is reachable from the internet (default `http://localhost:4000`); Slack sends approval button clicks to `<this>/slack/interactions` |
+| `DECISION_SIGNING_KEY` | Optional: seed for the Ed25519 key that signs decision tokens (integrations in decision-only or short-lived credential mode). Derived from `AUDIT_SIGNING_KEY` when unset; the public key is always at `/.well-known/jwks.json` |
+| `DECISION_TOKEN_TTL_S` | How long a decision token is valid, 10–900 seconds (default 120) |
 | `SETTINGS_ENCRYPTION_KEY` | Optional: encrypts secrets Token Vault stores for itself (the Slack bot token and signing secret). Derived from `AUDIT_SIGNING_KEY` when unset |
 | `SLACK_API_URL` | Slack Web API base (default `https://slack.com/api`); tests point it at a stand-in |
 | `CMS_CATALOG_URL` | Provider CMS catalog (`http://localhost:4200/catalog/v1`). Optional: without it only the bundled definitions are used |
@@ -333,6 +335,7 @@ token-vault/
 | `WEBHOOK_DATABASE_URL` | Customer-side PostgreSQL connection string (required). Deliberately a different variable from the control plane's `DATABASE_URL` |
 | `SEED_MODE` | `if-missing` (default): create the demo mock credentials where absent or unreadable. `reset`: wipe the credential store on start (used by the e2e suite) |
 | `UPSTREAM_MODE` | `mock` (default) or `live`: the default for every application. `GITHUB_MODE` is still read when `UPSTREAM_MODE` is not set |
+| `WEBHOOK_ALLOW_CREDENTIAL_ISSUE` | `true` lets this webhook hand a short-lived credential to the caller for integrations in short-lived credential mode: a GitHub App token for one repository and the operation's permissions, or the current OAuth access token. Stored keys and tokens are never handed out. Default `false` |
 | `WEBHOOK_ALLOW_DESTRUCTIVE` | `true` lets this webhook run destructive operations (delete a repository, write a file), and then only for requests a human approved in Token Vault. Default `false`: the customer decides whether destructive actions can ever run |
 | `PROVIDER_MODES` | Per-application override, e.g. `github=live,slack=mock`: go live with one provider at a time. Anything malformed stops the webhook at start-up rather than silently staying simulated (or going live) |
 | `MOCK_OAUTH_TOKEN_TTL_S` | Lifetime of access tokens issued by the simulated OAuth server in mock mode (default 3600) |
