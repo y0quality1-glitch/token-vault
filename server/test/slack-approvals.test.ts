@@ -121,6 +121,21 @@ suite('Slack approvals', () => {
     expect(row!.signingSecretSealed).not.toContain(SIGNING_SECRET);
   });
 
+  it('connects a Slack workspace to one organization only, also at the database level', async () => {
+    const ctx = { user: (await owner())!, org: { id: m.seed.IDS.sandboxOrg } } as never;
+    await expect(m.slack.saveSettings(ctx, { botToken: BOT_TOKEN, signingSecret: SIGNING_SECRET, channelId: 'C0SANDBOX' })).rejects.toMatchObject({ status: 409 });
+    // Two saves racing past that check still can't both land: the unique index refuses the second.
+    const [demo] = await m.client.db.select().from(m.db.slackSettings);
+    const codes: string[] = [];
+    await m.client.db
+      .insert(m.db.slackSettings)
+      .values({ ...demo!, organizationId: m.seed.IDS.sandboxOrg })
+      .catch((e) => {
+        for (let x = e; x; x = x.cause) codes.push(x.code);
+      });
+    expect(codes).toContain('23505');
+  });
+
   it('posts a held request to the channel with the exact input and Approve / Reject buttons', async () => {
     const id = await holdRequest();
     const post = await until(() => calls.find((c) => c.method === 'chat.postMessage' && JSON.stringify(c.body).includes(id)));
@@ -149,6 +164,24 @@ suite('Slack approvals', () => {
     const texts = replies(id).map((c) => c.body.text);
     expect(texts[0]).toContain('not a member');
     expect(texts[1]).toContain("can't decide approvals");
+    expect((await m.repos.approvalRepo.getApproval(m.seed.IDS.demoOrg, id))!.status).toBe('PENDING');
+  });
+
+  it('answers 401, not an error, for a malformed signature header or a secret that cannot be decrypted', async () => {
+    const ts = String(Math.floor(Date.now() / 1000));
+    // As many characters as a real signature, but more bytes (non-ASCII): no exception.
+    expect(m.slack.verifySlackSignature(SIGNING_SECRET, 'payload=x', ts, `v0=${'é'.repeat(64)}`)).toBe(false);
+    expect(m.slack.verifySlackSignature(SIGNING_SECRET, 'payload=x', ts, 'v0=short')).toBe(false);
+
+    const id = await holdRequest();
+    const { slackSettings } = m.db;
+    const [row] = await m.client.db.select().from(slackSettings);
+    await m.client.db.update(slackSettings).set({ signingSecretSealed: 'v1:damaged' });
+    try {
+      expect(await click(id, 'U_SEC', 'tv_approve')).toEqual({ status: 401 });
+    } finally {
+      await m.client.db.update(slackSettings).set({ signingSecretSealed: row!.signingSecretSealed });
+    }
     expect((await m.repos.approvalRepo.getApproval(m.seed.IDS.demoOrg, id))!.status).toBe('PENDING');
   });
 

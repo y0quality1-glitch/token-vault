@@ -550,4 +550,4 @@ export const slackSettings = pgTable('slack_settings', {
   enabled: boolean('enabled').notNull().default(true),
   updatedAt: ts('updated_at').notNull(),
   updatedBy: text('updated_by').notNull(),
-});
+}, (t) => [uniqueIndex('slack_settings_team_uq').on(t.teamId)]);

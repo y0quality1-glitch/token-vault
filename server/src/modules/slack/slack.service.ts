@@ -40,6 +40,12 @@ async function settingsForTeam(teamId: string): Promise<SettingsRow | null> {
   return row ?? null;
 }
 
+/** Postgres unique_violation (23505), possibly wrapped by the driver or Drizzle. */
+function isUniqueViolation(e: unknown): boolean {
+  for (let x: any = e; x; x = x.cause) if (x.code === '23505') return true;
+  return false;
+}
+
 const hint = (token: string) => `${token.slice(0, 5)}…${token.slice(-4)}`;
 
 export async function getSettingsView(organizationId: string): Promise<SlackSettingsView> {
@@ -94,7 +100,13 @@ export async function saveSettings(ctx: AdminContext & { org: { id: string } }, 
     updatedAt: now,
     updatedBy: ctx.user.id,
   };
-  await db.insert(slackSettings).values(row).onConflictDoUpdate({ target: slackSettings.organizationId, set: row });
+  try {
+    await db.insert(slackSettings).values(row).onConflictDoUpdate({ target: slackSettings.organizationId, set: row });
+  } catch (e) {
+    // Another organization connected the same workspace between the check above and this write.
+    if (isUniqueViolation(e)) throw new HttpError(409, 'CONFLICT', 'This Slack workspace is already connected to another organization.');
+    throw e;
+  }
   await recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: existing ? 'slack.updated' : 'slack.connected', target: { type: 'organization', id: ctx.org.id, name: team!.teamName }, severity: 'warning', metadata: { teamId: team!.teamId, channelId: body.channelId, enabled: body.enabled, tokenChanged: !!body.botToken, signingSecretChanged: !!body.signingSecret } });
   return getSettingsView(ctx.org.id);
 }
@@ -203,7 +215,19 @@ export function verifySlackSignature(signingSecret: string, rawBody: string, tim
   if (!timestamp || !signature || !/^\d+$/.test(timestamp)) return false;
   if (Math.abs(now / 1000 - Number(timestamp)) > REPLAY_WINDOW_S) return false;
   const expected = `v0=${createHmac('sha256', signingSecret).update(`v0:${timestamp}:${rawBody}`).digest('hex')}`;
-  return expected.length === signature.length && timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
+  // Compare bytes, not characters: a non-ASCII header has more bytes than characters.
+  const a = Buffer.from(expected);
+  const b = Buffer.from(signature);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/** The stored signing secret, or null when it can't be decrypted (key changed, row damaged). */
+function signingSecretOf(s: SettingsRow): string | null {
+  try {
+    return open(s.signingSecretSealed, s.organizationId);
+  } catch {
+    return null;
+  }
 }
 
 interface BlockActionPayload {
@@ -229,7 +253,9 @@ export async function handleInteraction(rawBody: string, headers: { timestamp?: 
   }
   const settings = payload.team?.id ? await settingsForTeam(payload.team.id) : null;
   // The workspace is only a hint until the signature verifies with that workspace's secret.
-  if (!settings || !verifySlackSignature(open(settings.signingSecretSealed, settings.organizationId), rawBody, headers.timestamp, headers.signature)) return { status: 401 };
+  // A secret that can't be decrypted fails closed, like a wrong one.
+  const secret = settings ? signingSecretOf(settings) : null;
+  if (!settings || !secret || !verifySlackSignature(secret, rawBody, headers.timestamp, headers.signature)) return { status: 401 };
   const action = payload.actions?.[0];
   if (payload.type !== 'block_actions' || !action || (action.action_id !== 'tv_approve' && action.action_id !== 'tv_reject')) return { status: 200 };
   const reply = (body: Record<string, unknown>) => (payload.response_url ? respond(payload.response_url, body) : Promise.resolve());
