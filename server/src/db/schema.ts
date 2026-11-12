@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { bigint, boolean, customType, index, integer, jsonb, pgTable, text, uniqueIndex } from 'drizzle-orm/pg-core';
 import type {
+  AccessMode,
   ActingUser,
   DelegationRef,
   FilteringSummary,
@@ -154,6 +155,8 @@ export const integrations = pgTable(
     rotatedAt: ts('rotated_at'),
     /** Rotation reminder interval in days (null = none). Reminders only; nothing is blocked. */
     rotationIntervalDays: integer('rotation_interval_days'),
+    /** BROKERED (the webhook calls the application), DECISION_ONLY or SHORT_LIVED_CREDENTIAL (the caller does). */
+    accessMode: text('access_mode').$type<AccessMode>().notNull().default('BROKERED'),
     /** Soft delete: grants and audit records keep referring to the integration. */
     deletedAt: ts('deleted_at'),
   },

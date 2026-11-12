@@ -118,6 +118,12 @@ export interface ExecuteResult<T = unknown> {
   trace: ExecuteResponseBody['trace'] | null;
   /** Set when a Filter responses policy masked, removed or flagged something in `data`. */
   filtering: ExecuteResponseBody['filtering'] | null;
+  /**
+   * Set when the integration is not brokered (decision only, short-lived credential): Token Vault
+   * allowed the request but did not run it; `data` is null and you make the call yourself, with
+   * your own credentials or with `authorization.credential`. Null in brokered mode.
+   */
+  authorization: ExecuteResponseBody['authorization'] | null;
   response: ExecuteResponseBody;
 }
 
@@ -219,7 +225,7 @@ export class TokenVault {
     if (body.decision_code === 'RESPONSE_WITHHELD') {
       throw new ResponseWithheldError(body.reason, { code: body.decision_code, httpStatus, requestId: body.request_id, response: body });
     }
-    if (body.decision === 'ALLOW' && body.execution.status === 'SUCCEEDED') {
+    if (body.decision === 'ALLOW' && (body.execution.status === 'SUCCEEDED' || body.execution.status === 'HANDED_OFF')) {
       return {
         data: body.result as T,
         requestId: body.request_id,
@@ -229,6 +235,7 @@ export class TokenVault {
         idempotentReplay: body.execution.idempotent_replay,
         trace: body.trace ?? null,
         filtering: body.filtering ?? null,
+        authorization: body.authorization ?? null,
         response: body,
       };
     }

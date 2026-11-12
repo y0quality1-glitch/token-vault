@@ -47,6 +47,7 @@ const STATUS: Record<string, { label: string; tone: Tone }> = {
   DISABLED: { label: 'Disabled', tone: 'gray' },
   SUPERSEDED: { label: 'Superseded', tone: 'gray' },
   NOT_EXECUTED: { label: 'Not executed', tone: 'gray' },
+  HANDED_OFF: { label: 'Handed to caller', tone: 'blue' },
 };
 
 export function StatusBadge({ status, className }: { status: string; className?: string }) {

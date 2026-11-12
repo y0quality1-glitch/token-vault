@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { PERMISSIONS, ROTATION_INTERVAL_MAX_DAYS, ROTATION_INTERVAL_MIN_DAYS, rotationDueAt, type AuthMethodDefinition, type CatalogEntry, type IntegrationDetail, type ProviderDefinition } from '@token-vault/shared';
+import { ACCESS_MODES, PERMISSIONS, type AccessMode, ROTATION_INTERVAL_MAX_DAYS, ROTATION_INTERVAL_MIN_DAYS, rotationDueAt, type AuthMethodDefinition, type CatalogEntry, type IntegrationDetail, type ProviderDefinition } from '@token-vault/shared';
 import { and, eq, lt } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
 import { config } from '../../config';
@@ -123,6 +123,7 @@ async function finishIntegration(ctx: ReturnType<typeof orgCtx>, webhook: { id: 
         lastValidatedAt,
         rotatedAt: null,
         rotationIntervalDays: null,
+        accessMode: 'BROKERED',
         deletedAt: null,
       },
       tx,
@@ -365,6 +366,47 @@ integrationsRouter.patch('/integrations/:id', requirePermission(PERMISSIONS.INTE
   const updated = await transaction(async (tx) => {
     const u = await integrationRepo.updateIntegration(i.id, { ...body, updatedAt: new Date().toISOString() }, tx);
     await recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: 'integration.metadata_updated', target: { type: 'integration', id: u.id, name: u.displayName }, metadata: body }, tx);
+    return u;
+  });
+  res.json(await detail(updated));
+});
+
+/**
+ * Whether the webhook can issue a short-lived credential for this integration: only for
+ * credentials it can mint or refresh (GitHub App, OAuth), never a static key or token.
+ */
+export function canIssueCredential(i: Pick<IntegrationRecord, 'provider' | 'authType'>): boolean {
+  const method = registry.get(i.provider)?.auth.find((a) => a.id === i.authType);
+  return !!method && (method.kind === 'oauth2' || (method.kind === 'plugin' && method.plugin === 'github_app'));
+}
+
+/**
+ * Sets how allowed requests are carried out: by the webhook (BROKERED), or by the caller with a
+ * signed decision (DECISION_ONLY) or an issued short-lived credential (SHORT_LIVED_CREDENTIAL).
+ * Leaving brokered mode means the agent (or the caller's service) talks to the application
+ * directly, so it is audited as a warning.
+ */
+integrationsRouter.put('/integrations/:id/access-mode', requirePermission(PERMISSIONS.INTEGRATION_MANAGE), async (req, res) => {
+  const ctx = orgCtx(req);
+  const i = await getIntegration(ctx.org.id, String(req.params.id));
+  const { accessMode } = parse(z.object({ accessMode: z.enum(ACCESS_MODES as [AccessMode, ...AccessMode[]], { message: 'Choose Brokered, Decision only or Short-lived credential' }) }), req.body ?? {});
+  if (accessMode === 'SHORT_LIVED_CREDENTIAL' && !canIssueCredential(i)) {
+    throw badRequest('Request validation failed', { fields: { accessMode: 'Short-lived credentials need a GitHub App or OAuth connection; a stored key or token cannot be narrowed or made to expire.' } });
+  }
+  if (accessMode === i.accessMode) return void res.json(await detail(i));
+  const updated = await transaction(async (tx) => {
+    const u = await integrationRepo.updateIntegration(i.id, { accessMode, updatedAt: new Date().toISOString() }, tx);
+    await recordEvent(
+      {
+        orgId: ctx.org.id,
+        actor: userActor(ctx),
+        eventType: 'integration.access_mode_changed',
+        target: { type: 'integration', id: i.id, name: i.displayName },
+        severity: accessMode === 'BROKERED' ? 'info' : 'warning',
+        metadata: { accessMode, previousAccessMode: i.accessMode },
+      },
+      tx,
+    );
     return u;
   });
   res.json(await detail(updated));

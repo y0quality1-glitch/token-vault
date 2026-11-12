@@ -1,7 +1,9 @@
 import { z } from 'zod';
 import {
   DECISION_CODES,
+  type AccessMode,
   type AccessRequest,
+  type HandedOffCredential,
   type ActingUser,
   type DelegationRef,
   type FilteringSummary,
@@ -26,6 +28,7 @@ import { isCredentialRejection, reportCredentialRejected } from '../integrations
 import { parseAgentCredential, verifySecret } from '../../lib/crypto';
 import { correlationId as newCorrelationId, nonce, requestId as newRequestId } from '../../lib/ids';
 import { randomBytes } from 'node:crypto';
+import { inputDigest, signDecisionToken } from '../../lib/decision-token';
 import { transaction } from '../../db/client';
 import { agentRepo, approvalRepo, auditRepo, grantRepo, integrationRepo, orgRepo, policyRepo, userIssuerRepo, webhookRepo } from '../../store/repos';
 import { USER_TOKEN_LIMITS, verifyUserToken } from '../../lib/user-token';
@@ -131,6 +134,8 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
     credential?: CredentialUseInfo | null;
     idempotencyKey: string | null;
     approval?: ExecuteResponseBody['approval'];
+    /** Not brokered: the decision token (and issued credential) the caller uses. Never stored. */
+    authorization?: ExecuteResponseBody['authorization'];
   }) => {
     const durationMs = Date.now() - started;
     const body: ExecuteResponseBody = {
@@ -153,6 +158,7 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
       result: args.result,
       checks: args.checks,
       ...(args.approval ? { approval: args.approval } : {}),
+      ...(args.authorization ? { authorization: args.authorization } : {}),
       ...(actingUser ? { acting_for: { sub: actingUser.sub, email: actingUser.email ?? null, name: actingUser.name ?? null, issuer: actingUser.issuer } } : {}),
       ...(viaDelegation ? { delegation: { delegation_id: viaDelegation.id, label: viaDelegation.label, used: (delegationNote?.used ?? 0) + (args.decision === 'ALLOW' ? 1 : 0), max_requests: delegationNote?.max ?? null } } : {}),
       ...(trace ? { trace: { session_id: trace.sessionId, trace_id: trace.traceId, span_id: trace.spanId, parent_span_id: trace.parentSpanId } } : {}),
@@ -202,7 +208,7 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
           target: args.integration ? { type: 'integration', id: args.integration.id, name: args.integration.displayName } : { type: 'integration', id: 'unknown', name: '—' },
           outcome: args.decision === 'DENY' ? 'DENIED' : failed ? 'FAILURE' : 'SUCCESS',
           severity: (args.decision === 'ALLOW' && !failed) || waiting ? 'info' : ['AGENT_UNAUTHENTICATED', 'POLICY_DENIED', 'AGENT_DISABLED', 'GRANT_REVOKED', 'EMERGENCY_STOP'].includes(args.code) ? 'critical' : 'warning',
-          metadata: { requestId, operation: args.operation, ...args.resource, decisionCode: args.code, grantId: args.grant?.id ?? null, upstreamStatus: args.upstreamStatus, ...(args.credential ? { credential: args.credential } : {}), ...(args.approval ? { approvalId: args.approval.approval_id } : {}), ...(actingUser ? { onBehalfOf: actingUser.sub, userIssuer: actingUser.issuer } : {}), ...(viaDelegation ? { delegationId: viaDelegation.id } : {}), ...(filtering ? { filtered: { masked: filtering.masked, removedFields: filtering.removedFields, promptInjection: filtering.injection.detected, withheld: filtering.withheld } } : {}) },
+          metadata: { requestId, operation: args.operation, ...args.resource, decisionCode: args.code, grantId: args.grant?.id ?? null, upstreamStatus: args.upstreamStatus, ...(args.credential ? { credential: args.credential } : {}), ...(args.approval ? { approvalId: args.approval.approval_id } : {}), ...(args.authorization ? { accessMode: args.authorization.mode, handedOffUntil: args.authorization.expires_at } : {}), ...(actingUser ? { onBehalfOf: actingUser.sub, userIssuer: actingUser.issuer } : {}), ...(viaDelegation ? { delegationId: viaDelegation.id } : {}), ...(filtering ? { filtered: { masked: filtering.masked, removedFields: filtering.removedFields, promptInjection: filtering.injection.detected, withheld: filtering.withheld } } : {}) },
           correlationId,
         }, tx);
       });
@@ -386,6 +392,14 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
     return respond({ ...base, status, orgId, agent, integration, grant: evaluation.grant, operation: operation.id, resource, decision: 'DENY', code: evaluation.code, reason: evaluation.reason, matchedRule: evaluation.matchedRule, checks: evaluation.checks, idempotencyKey: req.idempotency_key ?? null });
   }
 
+  // Filter responses policies need the result to pass through Token Vault; when the caller makes
+  // the call itself there is nothing to filter, so the request is refused rather than unfiltered.
+  const filterPolicies = evaluation.filterPolicies ?? [];
+  if (integration.accessMode !== 'BROKERED' && filterPolicies.length) {
+    const names = filterPolicies.map((p) => `"${p.name}"`).join(', ');
+    return respond({ ...base, status: 403, orgId, agent, integration, grant: evaluation.grant, operation: operation.id, resource, decision: 'DENY', code: DECISION_CODES.FILTER_NEEDS_BROKERED, reason: `The Filter responses ${filterPolicies.length > 1 ? 'policies' : 'policy'} ${names} must filter this result, but integration "${integration.displayName}" is in ${integration.accessMode === 'DECISION_ONLY' ? 'decision-only' : 'short-lived credential'} mode, so the result never passes through Token Vault. Switch the integration to Brokered, or narrow the policy. Nothing was run.`, matchedRule: { type: 'policy', id: filterPolicies[0]!.id, name: filterPolicies[0]!.name }, checks: evaluation.checks, idempotencyKey: req.idempotency_key ?? null });
+  }
+
   const grant = evaluation.grant!;
   recordHit(grant.id);
   await grantRepo.recordGrantUse(grant.id);
@@ -411,13 +425,15 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
 
   const allowArgs = { orgId, agent, integration, grant, operation: operation.id, resource, decision: 'ALLOW' as const, matchedRule: evaluation.matchedRule, checks: evaluation.checks, idempotencyKey: req.idempotency_key ?? null, approval: usedApproval };
 
+  // ---- Not brokered: hand the decision (and, if configured, a short-lived credential) to the caller.
+  if (integration.accessMode !== 'BROKERED') return handOff(integration.accessMode);
+
   // ---- Broker: signed, short-lived execution request to the customer webhook
   const webhook = await webhookRepo.getWebhook(orgId, integration.webhookId);
   if (!webhook || !webhook.instanceId) {
     return respond({ ...allowArgs, status: 503, code: DECISION_CODES.WEBHOOK_UNAVAILABLE, reason: 'Authorized, but no verified customer webhook is configured for this integration. No credential was used.', executionStatus: 'FAILED', webhookStatus: 'NOT_CONFIGURED', upstreamStatus: null, result: null });
   }
   // Filter responses policies: the webhook filters the result before it leaves the customer side.
-  const filterPolicies = evaluation.filterPolicies ?? [];
   const responseFilter = mergeFilters(filterPolicies.map((p) => p.filter));
   const iat = Date.now();
   const claims = {
@@ -515,6 +531,75 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
     idempotency.set(idemKey(agent.id, req.idempotency_key), { at: Date.now(), status: out.status, body: out.body });
   }
   return out;
+
+  /** DECISION_ONLY and SHORT_LIVED_CREDENTIAL: Token Vault decided; the caller makes the call. Never cached for idempotent replay. */
+  async function handOff(mode: Exclude<AccessMode, 'BROKERED'>) {
+    const appName = registry.get(integration!.provider)?.name ?? integration!.provider;
+    const iat = Math.floor(Date.now() / 1000);
+    const exp = iat + config.decisionTokenTtlS;
+    const decisionToken = signDecisionToken({
+      iss: config.apiPublicUrl,
+      sub: agent!.id,
+      jti: requestId,
+      iat,
+      exp,
+      org_id: orgId,
+      integration_id: integration!.id,
+      provider: integration!.provider,
+      operation: operation!.id,
+      resource,
+      input_sha256: inputDigest(req.input),
+      mode,
+      ...(actingUser ? { on_behalf_of: { sub: actingUser.sub, issuer: actingUser.issuer } } : {}),
+      ...(viaDelegation ? { delegation_id: viaDelegation.id } : {}),
+      ...(usedApproval ? { approval_id: usedApproval.approval_id } : {}),
+    });
+    const expiresAt = new Date(exp * 1000).toISOString();
+
+    if (mode === 'DECISION_ONLY') {
+      return respond({ ...allowArgs, status: 200, code: DECISION_CODES.ALLOWED, reason: `${evaluation.reason} Decision only: Token Vault did not call ${appName}; make the call with your own credentials (the decision token is valid until ${expiresAt}).`, executionStatus: 'HANDED_OFF', webhookStatus: 'NOT_CALLED', upstreamStatus: null, result: null, simulated: false, authorization: { mode, decision_token: decisionToken, expires_at: expiresAt } });
+    }
+
+    // SHORT_LIVED_CREDENTIAL: the customer webhook mints or refreshes a token for exactly this request.
+    const hook = await webhookRepo.getWebhook(orgId, integration!.webhookId);
+    if (!hook || !hook.instanceId) {
+      return respond({ ...allowArgs, status: 503, code: DECISION_CODES.WEBHOOK_UNAVAILABLE, reason: 'Authorized, but no verified customer webhook is configured to issue a credential for this integration.', executionStatus: 'FAILED', webhookStatus: 'NOT_CONFIGURED', upstreamStatus: null, result: null });
+    }
+    const at = Date.now();
+    let issued;
+    try {
+      issued = await callWebhook(hook, 'POST', '/internal/v1/credentials/issue', {
+        request_id: requestId,
+        correlation_id: correlationId,
+        iat: at,
+        exp: at + config.executionTtlMs,
+        nonce: nonce(),
+        aud: hook.instanceId,
+        org_id: orgId,
+        credential_ref: integration!.credentialReference,
+        operation: operation!.id,
+        resource: req.resource,
+        ...(usedApproval ? { approval_id: usedApproval.approval_id } : {}),
+        ...(actingUser ? { acting_user: { sub: actingUser.sub, email: actingUser.email ?? null, issuer: actingUser.issuer } } : {}),
+        ...(trace ? { traceparent: formatTraceparent(trace.traceId, trace.spanId), session_id: trace.sessionId } : {}),
+      });
+    } catch (e) {
+      const err = e as WebhookUnavailableError;
+      return respond({ ...allowArgs, status: 503, code: DECISION_CODES.WEBHOOK_UNAVAILABLE, reason: `Authorized, but no credential could be issued: ${err.message}.`, executionStatus: 'FAILED', webhookStatus: err instanceof WebhookUnavailableError ? err.reason : 'UNREACHABLE', upstreamStatus: null, result: null });
+    }
+    if (issued.status !== 200 || typeof issued.body?.credential?.token !== 'string') {
+      const code = String(issued.body?.error?.code ?? `HTTP_${issued.status}`);
+      const hint = code === 'CREDENTIAL_ISSUE_DISABLED' ? ' The customer webhook does not hand out credentials; its operator can allow it with WEBHOOK_ALLOW_CREDENTIAL_ISSUE=true, or an administrator can switch the access mode of this integration.' : '';
+      return respond({ ...allowArgs, status: 502, code: DECISION_CODES.WEBHOOK_UNAVAILABLE, reason: `Authorized, but the webhook did not issue a credential (${code}).${hint}`, executionStatus: 'FAILED', webhookStatus: code, upstreamStatus: null, result: null });
+    }
+    const c = issued.body.credential as HandedOffCredential;
+    // The audit records what was issued, never the token itself.
+    const used: CredentialUseInfo =
+      c.type === 'github_app_installation_token'
+        ? { type: 'github_app_installation_token', repositories: c.repositories ?? [], permissions: c.permissions ?? {}, expires_at: c.expires_at ?? expiresAt, revoked: false }
+        : { type: 'oauth2_access_token', refreshed: issued.body.refreshed === true, expires_at: c.expires_at ?? null, scopes: c.scopes ?? [] };
+    return respond({ ...allowArgs, status: 200, code: DECISION_CODES.ALLOWED, reason: `${evaluation.reason} A short-lived credential was issued (valid until ${c.expires_at ?? 'the provider expires it'}); make the call with it. Token Vault did not call ${appName}.`, executionStatus: 'HANDED_OFF', webhookStatus: 'OK', upstreamStatus: null, result: null, simulated: issued.body.simulated !== false, credential: used, authorization: { mode, decision_token: decisionToken, expires_at: expiresAt, credential: c } });
+  }
 }
 
 /** Budget usage of the grants that have budgets (two small grouped queries each; none without budgets). */
