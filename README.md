@@ -304,6 +304,9 @@ token-vault/
 | `HEARTBEAT_INTERVAL_MS` | Signed health-check interval (default 30000) |
 | `CREDENTIAL_CHECK_INTERVAL_MS` | How often every stored credential is re-tested with its provider (default 21600000 = 6 h; `0` turns the schedule off). A credential the provider rejects (HTTP 401, a refused OAuth refresh, a rejected GitHub App key or installation) is marked **Invalid** and audited (`integration.credential_rejected`); one that works again is marked **Connected** (`integration.credential_recovered`). Outages (5xx, 429, timeouts) never change the status |
 | `CONSOLE_PUBLIC_URL` | Where the console is served (default `http://localhost:5173`); OAuth providers redirect to `<this>/oauth/callback` |
+| `API_PUBLIC_URL` | Where the control plane is reachable from the internet (default `http://localhost:4000`); Slack sends approval button clicks to `<this>/slack/interactions` |
+| `SETTINGS_ENCRYPTION_KEY` | Optional: encrypts secrets Token Vault stores for itself (the Slack bot token and signing secret). Derived from `AUDIT_SIGNING_KEY` when unset |
+| `SLACK_API_URL` | Slack Web API base (default `https://slack.com/api`); tests point it at a stand-in |
 | `CMS_CATALOG_URL` | Provider CMS catalog (`http://localhost:4200/catalog/v1`). Optional: without it only the bundled definitions are used |
 | `CMS_PUBLIC_KEY` / `CMS_PUBLIC_KEY_FILE` | Pinned Ed25519 public key(s) of the CMS (PEM; `\n` escapes allowed; several concatenated during a key rotation). Required with `CMS_CATALOG_URL`; written by `npm run setup` |
 | `CMS_POLL_INTERVAL_MS` | Catalog polling interval (default 30000) |

@@ -72,6 +72,9 @@ Errors use one shape: `{ "error": { "code": "…", "message": "…", "details": 
 | GET | `/sessions/:sessionId` | `audit:read` | `?agentId=`: the summary plus `timeline` (every request, oldest first) and `approvals` asked for during the session |
 | GET | `/delegations` | any role | `?agentId=` or `?grantId=`: sub-agent delegations with effective `status` (`ACTIVE`, `EXPIRED`, `REVOKED`, also when one up the chain was revoked), `statusReason` and `used` |
 | POST | `/delegations/:id/revoke` | `grant:revoke` | `{reason}`; stops it and everything delegated from it |
+| GET | `/slack-settings` | any role | the Slack connection (workspace, channel, token hint, `interactionsUrl`); secrets are never returned |
+| PUT | `/slack-settings` | `policy:manage` | `{botToken?, signingSecret?, channelId, enabled}`; a new token is checked with Slack (`auth.test`); both secrets are required the first time and stored encrypted |
+| POST | `/slack-settings/test` · DELETE `/slack-settings` | `policy:manage` | send a test message · disconnect |
 | GET | `/user-issuers` | any role | identity providers trusted to vouch for users (public keys only) |
 | POST | `/user-issuers` · PUT `/user-issuers/:id` | `policy:manage` | `{name, issuer, audience, publicKey, groupsClaim?, maxTokenLifetimeSeconds?, enabled?}`; `publicKey` is PEM or JWK (RSA 2048+, EC P-256/P-384, Ed25519), private keys are refused; `issuer` is unique per organization |
 | DELETE | `/user-issuers/:id` | `policy:manage` | tokens from it are refused from the next request |
@@ -161,6 +164,10 @@ The response then carries `"acting_for": { "sub", "email", "name", "issuer" }`. 
 `GET /agent/v1/operations` returns the shape of every operation of the applications the calling agent has a grant on (any status): the primary resource and extra resource fields (name, label, anchored pattern, example), and per operation its id, label, risk, whether the resource is required, and its inputs (type, required, maximum length). `version` changes whenever one of those definitions changes. Definitions are not secret; the MCP server uses this to offer typed tools. Authorization is still decided per request.
 
 `GET /agent/v1/capabilities` returns the calling agent's own grants: integration, operations, repositories, status and expiry. Revoked and expired grants are listed with their status, and superseded versions are omitted. Agent tooling uses it to pick an integration and to show the model what it may do. Authorization is still decided per request by `/execute`. See [AGENTS.md](AGENTS.md) for the SDK and MCP server.
+
+## Slack: `/slack/interactions`
+
+Slack's Interactivity Request URL (public, no session). Each request must carry a valid Slack signature (`X-Slack-Signature`, v0 HMAC-SHA256 over `v0:<timestamp>:<raw body>` with the stored signing secret) and a timestamp within five minutes; otherwise 401. Approve / Reject clicks are mapped to a Token Vault member by the Slack user's email and decided with the same rules as `POST /approvals/:id/approve` and `/reject`; the reply goes to Slack's `response_url`.
 
 ## Customer webhook: `/internal/v1` (port 4100)
 
