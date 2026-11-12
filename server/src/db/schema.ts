@@ -432,6 +432,8 @@ export const operationApprovals = pgTable(
     onBehalfOf: jsonb('on_behalf_of').$type<ActingUser | null>(),
     /** The sub-agent delegation that asked (null: the agent itself); part of the approved request. */
     delegation: jsonb('delegation').$type<DelegationRef | null>(),
+    /** Where the approval request was posted (Slack), so the message can be updated once decided. */
+    notifications: jsonb('notifications').$type<{ slack?: { channel: string; ts: string } } | null>(),
     executedAt: ts('executed_at'),
     executedRequestId: text('executed_request_id'),
   },
@@ -529,3 +531,23 @@ export const delegations = pgTable(
   },
   (t) => [index('delegations_org_idx').on(t.organizationId), index('delegations_agent_idx').on(t.agentId), index('delegations_grant_idx').on(t.grantId), index('delegations_parent_idx').on(t.parentDelegationId)],
 );
+
+/**
+ * Slack approvals, one workspace and channel per organization. The bot token and signing
+ * secret are Token Vault's own secrets, sealed with lib/secret-box (never returned by the API).
+ */
+export const slackSettings = pgTable('slack_settings', {
+  organizationId: text('organization_id')
+    .primaryKey()
+    .references(() => organizations.id, { onDelete: 'cascade' }),
+  teamId: text('team_id').notNull(),
+  teamName: text('team_name').notNull(),
+  botUserId: text('bot_user_id').notNull(),
+  channelId: text('channel_id').notNull(),
+  botTokenSealed: text('bot_token_sealed').notNull(),
+  botTokenHint: text('bot_token_hint').notNull(),
+  signingSecretSealed: text('signing_secret_sealed').notNull(),
+  enabled: boolean('enabled').notNull().default(true),
+  updatedAt: ts('updated_at').notNull(),
+  updatedBy: text('updated_by').notNull(),
+});

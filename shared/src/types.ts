@@ -768,6 +768,22 @@ export interface OperationApproval {
   session?: { sessionId: string; sessionLabel: string | null; earlierRequests: number } | null;
 }
 
+/** Settings → Notifications: where approval requests are posted in Slack. Secrets are never returned. */
+export interface SlackSettingsView {
+  configured: boolean;
+  enabled: boolean;
+  teamId: string | null;
+  teamName: string | null;
+  channelId: string | null;
+  botUserId: string | null;
+  /** Last characters of the bot token, e.g. "xoxb-…f3a9". */
+  botTokenHint: string | null;
+  /** Paste into the Slack app's Interactivity "Request URL". */
+  interactionsUrl: string;
+  updatedAt: ISODate | null;
+  updatedByName: string | null;
+}
+
 /** Agent API view of a delegation (never includes its token, except once on creation). */
 export interface AgentDelegationBody {
   delegation_id: string;

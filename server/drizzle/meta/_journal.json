@@ -99,6 +99,13 @@
       "when": 1794395913704,
       "tag": "0013_session_tracing",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1794397717540,
+      "tag": "0014_slack_approvals",
+      "breakpoints": true
     }
   ]
 }
