@@ -36,7 +36,8 @@ Token Vault
 │   ├── Organization                 /settings/organization    pages/settings/OrganizationSettingsPage.tsx
 │   ├── Members & Roles              /settings/members         MembersPage.tsx
 │   ├── API Clients                  /settings/api-clients     ApiClientsPage.tsx
-│   └── User Identity                /settings/user-identity   UserIdentityPage.tsx
+│   ├── User Identity                /settings/user-identity   UserIdentityPage.tsx
+│   └── Slack approvals              /settings/slack           SlackApprovalsPage.tsx
 └── Demo guide                       /guide                    pages/DemoGuidePage.tsx
 
 Public: Login /login · Organization selection /select-org

@@ -32,7 +32,7 @@ import { USER_TOKEN_LIMITS, verifyUserToken } from '../../lib/user-token';
 import { DELEGATION_TOKEN_PREFIX } from '../../lib/crypto';
 import { delegationRepo } from '../../store/repos';
 import { agentBody as delegationAgentBody, refOf, resolveDelegationToken, type DelegationContext } from '../delegations/delegations.service';
-import { APPROVAL_LIMITS, approvalSummary, createPending, lookupApproval, requestDigest } from '../approvals/approvals.service';
+import { APPROVAL_LIMITS, announceRequested, approvalSummary, createPending, lookupApproval, requestDigest } from '../approvals/approvals.service';
 import type { AgentRecord, GrantRecord, IntegrationRecord } from '../../store/types';
 import { effectiveGrantStatus } from '../../store/views';
 import { recordAccessRequest, recordEvent } from '../audit/audit.service';
@@ -371,11 +371,14 @@ export async function executeAgentRequest(ctx: ExecuteContext): Promise<{ status
       const note = approval.record.decisionNote ? ` Note: "${approval.record.decisionNote}"` : '';
       return respond({ ...held, status: 403, code: DECISION_CODES.APPROVAL_REJECTED, reason: `A human rejected this request (approval ${approval.record.id}).${note}`, approval: approvalSummary(approval.record) });
     }
-    const pending = approval.kind === 'pending' ? approval.record : await createPending({ agent, integration, policy: evaluation.approvalPolicy, request: shape, digest, requestId, correlationId });
-    if (!pending) {
+    const created = approval.kind === 'pending' ? { record: approval.record, created: false } : await createPending({ agent, integration, policy: evaluation.approvalPolicy, request: shape, digest, requestId, correlationId });
+    if (!created) {
       return respond({ ...held, status: 429, code: DECISION_CODES.RATE_LIMITED, reason: `This agent already has ${APPROVAL_LIMITS.MAX_PENDING} requests waiting for approval; wait for decisions before sending more.` });
     }
-    return respond({ ...held, status: 202, code: DECISION_CODES.APPROVAL_REQUIRED, reason: `${evaluation.reason} Approval ${pending.id} is waiting for a human (until ${pending.expiresAt}); once approved, send the same request again.`, approval: approvalSummary(pending) });
+    const pending = created.record;
+    const out = await respond({ ...held, status: 202, code: DECISION_CODES.APPROVAL_REQUIRED, reason: `${evaluation.reason} Approval ${pending.id} is waiting for a human (until ${pending.expiresAt}); once approved, send the same request again.`, approval: approvalSummary(pending) });
+    if (created.created) announceRequested(pending); // after the access record exists
+    return out;
   }
 
   if (evaluation.decision === 'DENY') {

@@ -30,6 +30,20 @@ export const APPROVAL_LIMITS = {
   REJECTION_MEMORY_MS: 24 * 3600e3,
 };
 
+/**
+ * Notification hooks (Slack approvals register here; approvals do not depend on Slack). Called
+ * after the change is committed; failures never affect the request or the decision.
+ */
+export type DecisionChannel = 'console' | 'slack';
+export const approvalHooks: {
+  requested: ((r: OperationApprovalRecord) => Promise<void>)[];
+  decided: ((r: OperationApprovalRecord, deciderName: string, via: DecisionChannel) => Promise<void>)[];
+} = { requested: [], decided: [] };
+
+function fire<A extends unknown[]>(hooks: ((...a: A) => Promise<void>)[], ...args: A) {
+  for (const h of hooks) void h(...args).catch((e) => console.error('[api] approval notification failed:', (e as Error).message));
+}
+
 export interface RequestShape {
   integrationId: string;
   operation: string;
@@ -108,11 +122,11 @@ export async function createPending(args: {
   digest: string;
   requestId: string;
   correlationId: string;
-}): Promise<OperationApprovalRecord | null> {
-  return transaction(async (tx) => {
+}): Promise<{ record: OperationApprovalRecord; created: boolean } | null> {
+  const result = await transaction(async (tx) => {
     const pending = (await approvalRepo.pendingForAgent(args.agent.id, tx)).filter((r) => effectiveStatus(r) === 'PENDING');
     const same = pending.find((r) => r.requestDigest === args.digest);
-    if (same) return same;
+    if (same) return { record: same, created: false };
     if (pending.length >= APPROVAL_LIMITS.MAX_PENDING) return null;
     const now = Date.now();
     const record = await approvalRepo.insertApproval(
@@ -138,6 +152,7 @@ export async function createPending(args: {
         executedRequestId: null,
         onBehalfOf: args.request.onBehalfOf ?? null,
         delegation: args.request.delegation ?? null,
+        notifications: null,
       },
       tx,
     );
@@ -152,8 +167,17 @@ export async function createPending(args: {
       },
       tx,
     );
-    return record;
+    return { record, created: true };
   });
+  return result;
+}
+
+/**
+ * Announces a new approval to the notification hooks (Slack). The broker calls it once the held
+ * request's access record is written, so the notification can show the session that led to it.
+ */
+export function announceRequested(r: OperationApprovalRecord) {
+  fire(approvalHooks.requested, r);
 }
 
 export function approvalSummary(r: OperationApprovalRecord) {
@@ -237,9 +261,9 @@ export async function getForAgent(agent: AgentRecord, id: string, delegationId: 
 
 const decisionSchema = z.object({ note: z.string().trim().max(240).default('') });
 
-async function decide(ctx: AdminContext & { org: { id: string } }, id: string, raw: unknown, outcome: 'APPROVED' | 'REJECTED'): Promise<OperationApprovalRecord> {
+async function decide(ctx: DeciderContext, id: string, raw: unknown, outcome: 'APPROVED' | 'REJECTED', via: DecisionChannel = 'console'): Promise<OperationApprovalRecord> {
   const { note } = parse(decisionSchema, raw ?? {});
-  return transaction(async (tx) => {
+  const decided = await transaction(async (tx) => {
     const r = await approvalRepo.getApproval(ctx.org.id, id, tx);
     if (!r) throw notFound('Approval');
     const status = effectiveStatus(r);
@@ -271,13 +295,18 @@ async function decide(ctx: AdminContext & { org: { id: string } }, id: string, r
         eventType: outcome === 'APPROVED' ? 'approval.approved' : 'approval.rejected',
         target: { type: 'agent', id: r.agentId, name: agent?.name ?? r.agentId },
         severity: outcome === 'APPROVED' ? 'info' : 'warning',
-        metadata: { approvalId: r.id, requestId: r.requestedByRequestId, policyName: r.policyName, operation: r.operation, ...r.resource, note, ...(outcome === 'APPROVED' ? { usableUntil: decided.expiresAt } : {}) },
+        metadata: { approvalId: r.id, requestId: r.requestedByRequestId, policyName: r.policyName, operation: r.operation, ...r.resource, note, via, ...(outcome === 'APPROVED' ? { usableUntil: decided.expiresAt } : {}) },
       },
       tx,
     );
     return decided;
   });
+  fire(approvalHooks.decided, decided, ctx.user.fullName, via);
+  return decided;
 }
 
-export const approve = (ctx: AdminContext & { org: { id: string } }, id: string, raw: unknown) => decide(ctx, id, raw, 'APPROVED');
-export const reject = (ctx: AdminContext & { org: { id: string } }, id: string, raw: unknown) => decide(ctx, id, raw, 'REJECTED');
+/** Who decides: a console user, or a Slack user mapped to one (with their organization). */
+export type DeciderContext = Pick<AdminContext, 'user'> & { org: { id: string } };
+
+export const approve = (ctx: DeciderContext, id: string, raw: unknown, via: DecisionChannel = 'console') => decide(ctx, id, raw, 'APPROVED', via);
+export const reject = (ctx: DeciderContext, id: string, raw: unknown, via: DecisionChannel = 'console') => decide(ctx, id, raw, 'REJECTED', via);

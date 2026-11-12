@@ -30,6 +30,7 @@ import { OrganizationSettingsPage } from '@/pages/settings/OrganizationSettingsP
 import { MembersPage } from '@/pages/settings/MembersPage';
 import { UserIdentityPage } from '@/pages/settings/UserIdentityPage';
 import { SessionDetailPage, SessionsPage } from '@/pages/audit/SessionsPage';
+import { SlackApprovalsPage } from '@/pages/settings/SlackApprovalsPage';
 import { ApiClientsPage } from '@/pages/settings/ApiClientsPage';
 import { OAuthCallbackPage } from '@/pages/integrations/OAuthCallbackPage';
 
@@ -108,6 +109,7 @@ export function App() {
         <Route path="settings/members" element={<MembersPage />} />
         <Route path="settings/api-clients" element={<ApiClientsPage />} />
         <Route path="settings/user-identity" element={<UserIdentityPage />} />
+        <Route path="settings/slack" element={<SlackApprovalsPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>

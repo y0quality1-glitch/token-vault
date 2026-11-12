@@ -111,6 +111,7 @@ A policy with the decision **Require approval** (Access Management → Policies)
 - Every other check runs again when the approval is used: revoking the grant, a new deny policy, a disabled agent or the rate limit still win.
 - A rejected request is answered with `APPROVAL_REJECTED` for 24 hours instead of asking again.
 - An agent can have at most 10 approvals waiting; they lapse after 1 hour.
+- With Slack connected (Settings → Slack approvals), each request is also posted to a Slack channel with **Approve** and **Reject** buttons (see [USER_JOURNEY.md](USER_JOURNEY.md#8-handle-approvals-and-access-requests)). Nothing changes for the agent.
 - Each step is audited: `access.approval_required`, `approval.requested`, `approval.approved` or `approval.rejected`, and the executed request's access record carries the `approvalId`.
 
 ## Argument rules, budgets and the emergency stop

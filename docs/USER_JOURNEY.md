@@ -188,6 +188,13 @@ Either way, the agent holds only its Token Vault key, never the provider credent
 
 In both cases you cannot approve requests from an agent you own.
 
+**Approving from Slack (optional).** In **Settings → Slack approvals**, connect a Slack app (bot scopes `chat:write`, `users:read`, `users:read.email`; Interactivity Request URL shown on the page) and choose a channel. Every request a Require approval policy holds is then posted there with the exact input and **Approve** / **Reject** buttons. The message is updated once someone decides, in Slack or in the console.
+
+- A click counts only if Slack's signature on it verifies, and the Slack user's email belongs to a member of your organization who may approve (Owner or Security Administrator). Otherwise, only the person who clicked gets a reply saying why.
+- The console's rules apply: the agent's owner can't approve, a request is decided once, a disabled agent can't be approved.
+- The audit records each decision with `via: slack`. The bot token and signing secret are stored encrypted and never shown again.
+- The control plane must be reachable from Slack at `API_PUBLIC_URL`.
+
 **Sessions.** If your agents send a session id or W3C trace context (the MCP server and the SDK's `session()` do), **Audit & Activity → Sessions** shows what each agent did in each conversation or task, in order, and every approval shows the session that led to it.
 
 ## 9. Review, rotate and audit
