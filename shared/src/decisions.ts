@@ -45,6 +45,8 @@ export const DECISION_CODES = {
   DELEGATION_DENIED: 'DELEGATION_DENIED',
   /** The operation ran, but a Filter responses policy withheld its result (likely prompt injection, or too large to filter). */
   RESPONSE_WITHHELD: 'RESPONSE_WITHHELD',
+  /** A Filter responses policy applies, but the integration is not brokered: Token Vault never sees the result to filter it. */
+  FILTER_NEEDS_BROKERED: 'FILTER_NEEDS_BROKERED',
   WEBHOOK_UNAVAILABLE: 'WEBHOOK_UNAVAILABLE',
   UPSTREAM_ERROR: 'UPSTREAM_ERROR',
 } as const;
@@ -83,6 +85,7 @@ export const DECISION_LABELS: Record<string, string> = {
   DELEGATION_EXPIRED: 'Delegation expired',
   DELEGATION_DENIED: 'Outside delegation',
   RESPONSE_WITHHELD: 'Result withheld by filter',
+  FILTER_NEEDS_BROKERED: 'Filter needs brokered mode',
   WEBHOOK_UNAVAILABLE: 'Webhook unavailable',
   UPSTREAM_ERROR: 'Upstream provider error',
 };

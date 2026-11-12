@@ -21,6 +21,7 @@ import { slackInteractionsRouter, slackSettingsRouter } from './modules/slack/sl
 import { accessReviewsRouter } from './modules/access-reviews/access-reviews.routes';
 import { agentRouter } from './modules/broker/agent.routes';
 import { providersRouter } from './modules/providers/providers.routes';
+import { decisionJwks } from './lib/decision-token';
 
 export function createApp() {
   const app = express();
@@ -32,6 +33,11 @@ export function createApp() {
 
   app.get('/healthz', (_req, res) => {
     res.json({ status: 'ok', service: 'token-vault-control-plane' });
+  });
+
+  // Public keys for decision tokens (integrations in decision-only or short-lived credential mode).
+  app.get('/.well-known/jwks.json', (_req, res) => {
+    res.set('cache-control', 'public, max-age=300').json(decisionJwks());
   });
 
   // ---- Admin console API (session cookie + RBAC)
