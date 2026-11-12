@@ -82,6 +82,7 @@ const NAV: NavGroup[] = [
       { label: 'Members & Roles', to: '/settings/members' },
       { label: 'API Clients', to: '/settings/api-clients' },
       { label: 'User Identity', to: '/settings/user-identity' },
+      { label: 'Slack approvals', to: '/settings/slack' },
     ],
   },
 ];
