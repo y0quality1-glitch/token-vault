@@ -44,9 +44,9 @@ test.describe.serial('credential health: revoked credentials are detected', () =
 
   async function publish(status: number) {
     version++;
-    if (version > 1) expect((await cms.post('/api/v1/applications/pingdesk/versions', { data: {} })).status()).toBe(201);
-    expect((await (await cms.put(`/api/v1/applications/pingdesk/versions/${version}`, { data: { definition: definition(status) } })).json()).issues).toEqual([]);
-    expect((await (await cms.post(`/api/v1/applications/pingdesk/versions/${version}/publish`, { data: { acknowledgeHostChange: true } })).json()).status).toBe('PUBLISHED');
+    if (version > 1) expect((await cms.post('/api/v1/application/newversion', { data: { key: 'pingdesk' } })).status()).toBe(201);
+    expect((await (await cms.post('/api/v1/version/save', { data: { key: 'pingdesk', version, definition: definition(status) } })).json()).details.issues).toEqual([]);
+    expect((await (await cms.post('/api/v1/version/publish', { data: { key: 'pingdesk', version, acknowledgeHostChange: true } })).json()).details.status).toBe('PUBLISHED');
   }
   const integration = async () => (await (await admin.get(`/api/v1/integrations/${integrationId}`)).json()) as { credentialStatus: string };
   const execute = async () => {
@@ -70,7 +70,7 @@ test.describe.serial('credential health: revoked credentials are detected', () =
   });
 
   test('a working credential is connected and used', async () => {
-    expect((await cms.post('/api/v1/applications', { data: { key: 'pingdesk', name: 'Ping Desk' } })).status()).toBe(201);
+    expect((await cms.post('/api/v1/application/save', { data: { key: 'pingdesk', name: 'Ping Desk' } })).status()).toBe(201);
     await publish(200);
     await expect.poll(async () => ((await (await admin.get('/api/v1/providers')).json()).providers as { key: string }[]).some((p) => p.key === 'pingdesk'), { timeout: 15_000 }).toBe(true);
     const created = await admin.post('/api/v1/integrations', { data: { provider: 'pingdesk', authType: 'API_KEY', displayName: 'Ping Desk Prod', webhookId: 'wh_local0000000001', secret: KEY, allowedResources: ['homepage'], environment: 'development' } });

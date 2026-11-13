@@ -5,7 +5,7 @@
 #                        AUDIT_SIGNING_KEY, CMS_PUBLIC_KEY
 #   token-vault/webhook  WEBHOOK_DATABASE_URL, WEBHOOK_SIGNING_SECRET, WEBHOOK_PREVIOUS_SIGNING_SECRETS,
 #                        VAULT_ENCRYPTION_KEY, VAULT_PREVIOUS_ENCRYPTION_KEYS, CMS_PUBLIC_KEY
-#   token-vault/cms-api  CMS_DATABASE_URL, CMS_SIGNING_PRIVATE_KEY
+#   token-vault/cms-api  CMS_DATABASE_URL, CMS_SIGNING_PRIVATE_KEY, CMS_JWT_SECRET
 # (`node deploy/compose/generate-env.mjs` creates suitable values.) In a real split, the webhook's
 # entry lives in the customer's own secrets manager, with its own store.
 apiVersion: kustomize.config.k8s.io/v1beta1

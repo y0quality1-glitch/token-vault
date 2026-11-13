@@ -57,11 +57,11 @@ test.describe.serial('MCP tools generated from the catalog', () => {
   const toolNames = async () => (await client.listTools()).tools.map((t) => t.name);
 
   async function publish(operations: object[], version: number) {
-    if (version > 1) expect((await cms.post('/api/v1/applications/statuspage/versions', { data: {} })).status()).toBe(201);
-    const saved = await (await cms.put(`/api/v1/applications/statuspage/versions/${version}`, { data: { definition: definition(operations) } })).json();
+    if (version > 1) expect((await cms.post('/api/v1/application/newversion', { data: { key: 'statuspage' } })).status()).toBe(201);
+    const saved = (await (await cms.post('/api/v1/version/save', { data: { key: 'statuspage', version, definition: definition(operations) } })).json()).details;
     expect(saved.issues).toEqual([]);
-    const r = await cms.post(`/api/v1/applications/statuspage/versions/${version}/publish`, { data: { acknowledgeHostChange: true } });
-    expect((await r.json()).status).toBe('PUBLISHED');
+    const r = await cms.post('/api/v1/version/publish', { data: { key: 'statuspage', version, acknowledgeHostChange: true } });
+    expect((await r.json()).details.status).toBe('PUBLISHED');
   }
 
   test.beforeAll(async ({ playwright }) => {
@@ -77,7 +77,7 @@ test.describe.serial('MCP tools generated from the catalog', () => {
   });
 
   test('a CMS application, connected and granted, becomes a typed MCP tool', async () => {
-    expect((await cms.post('/api/v1/applications', { data: { key: 'statuspage', name: 'Status Page' } })).status()).toBe(201);
+    expect((await cms.post('/api/v1/application/save', { data: { key: 'statuspage', name: 'Status Page' } })).status()).toBe(201);
     await publish([list], 1);
     await expect.poll(async () => ((await (await admin.get('/api/v1/providers')).json()).providers as { key: string }[]).some((p) => p.key === 'statuspage'), { timeout: 15_000 }).toBe(true);
 

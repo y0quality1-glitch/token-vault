@@ -116,7 +116,7 @@ try {
   await step('sign in to the CMS; its catalog is served', async () => {
     const login = await cms('POST', '/api/v1/auth/login', { email: 'admin@cms.test', password: PASSWORD });
     expect(login.status === 200, `CMS login answered ${login.status}`);
-    const apps = (await cms('GET', '/api/v1/applications')).json?.items ?? [];
+    const apps = (await cms('POST', '/api/v1/application/getall', { pageSize: 200 })).json?.details ?? [];
     expect(apps.length > 0, 'the CMS lists no applications');
     const catalog = await cms('GET', '/catalog/v1/definitions');
     expect(catalog.status === 200 && catalog.json?.definitions?.length > 0, `catalog answered ${catalog.status}`);

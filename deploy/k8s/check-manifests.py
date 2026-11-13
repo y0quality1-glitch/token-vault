@@ -61,7 +61,7 @@ for d in docs:
                         problems.append(f"{name}: {direction} peer {labels} in {target_ns} matches no pods")
 
 # Secrets: references exist, and each holds only its own keys
-OWN_KEYS = {"VAULT_ENCRYPTION_KEY": "token-vault-customer", "VAULT_PREVIOUS_ENCRYPTION_KEYS": "token-vault-customer", "CMS_SIGNING_PRIVATE_KEY": "token-vault/token-vault-cms-api"}
+OWN_KEYS = {"VAULT_ENCRYPTION_KEY": "token-vault-customer", "VAULT_PREVIOUS_ENCRYPTION_KEYS": "token-vault-customer", "CMS_SIGNING_PRIVATE_KEY": "token-vault/token-vault-cms-api", "CMS_JWT_SECRET": "token-vault/token-vault-cms-api"}
 for ns, _labels, w in pods:
     for c in w["spec"]["template"]["spec"]["containers"]:
         for ref in c.get("envFrom", []):
