@@ -1,3 +1,4 @@
+import { hkdfSync } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { loadWebhookTls, type WebhookTls } from './lib/webhook-tls';
@@ -34,9 +35,35 @@ if (auditSigningKey.length < 32) {
   process.exit(1);
 }
 
+// Signs admin session tokens (JWT, HS256). Required in production; elsewhere derived from
+// AUDIT_SIGNING_KEY with its own label when unset, so a fresh checkout works.
+const isProduction = (process.env.NODE_ENV ?? '').toLowerCase() === 'production';
+const sessionSecretEnv = process.env.SESSION_JWT_SECRET ?? '';
+if (sessionSecretEnv && sessionSecretEnv.length < 32) {
+  console.error('[api] SESSION_JWT_SECRET must be at least 32 characters.');
+  process.exit(1);
+}
+if (!sessionSecretEnv && isProduction) {
+  console.error('[api] SESSION_JWT_SECRET is required in production (32+ random characters).');
+  process.exit(1);
+}
+const sessionJwtSecret = sessionSecretEnv || Buffer.from(hkdfSync('sha256', auditSigningKey, 'token-vault', 'token-vault/session-jwt/v1', 32)).toString('base64url');
+
 const databaseUrl = process.env.DATABASE_URL ?? '';
 if (!/^postgres(ql)?:\/\//.test(databaseUrl)) {
   console.error('[api] DATABASE_URL is missing. Start Postgres (npm run db:up) and run "npm run setup", or export DATABASE_URL=postgres://…');
+  process.exit(1);
+}
+
+// Optional read replica and TLS (certificate validation) for the control-plane database.
+const databaseReadUrl = process.env.DATABASE_READ_URL ?? '';
+if (databaseReadUrl && !/^postgres(ql)?:\/\//.test(databaseReadUrl)) {
+  console.error('[api] DATABASE_READ_URL must be a postgres:// URL (a read replica), or unset.');
+  process.exit(1);
+}
+const databaseSsl = (process.env.DATABASE_SSL ?? 'off').toLowerCase();
+if (!['off', 'require'].includes(databaseSsl)) {
+  console.error('[api] DATABASE_SSL must be "off" (default) or "require" (TLS with certificate validation).');
   process.exit(1);
 }
 
@@ -63,6 +90,8 @@ if (cmsCatalogUrl && !cmsPublicKey) {
 export const config = {
   port: Number(process.env.PORT ?? 4000),
   databaseUrl,
+  databaseReadUrl: databaseReadUrl || null,
+  databaseSsl: databaseSsl === 'require',
   auditSigningKey,
   dbPoolMax: Number(process.env.DB_POOL_MAX ?? 10),
   /** if-empty: seed demo data only into an empty database. reset: wipe and reseed on start (tests). */
@@ -78,6 +107,9 @@ export const config = {
   /** How often every stored credential is re-tested with its provider (default 6 h; 0 = never). */
   credentialCheckIntervalMs: Number(process.env.CREDENTIAL_CHECK_INTERVAL_MS ?? 6 * 3600_000),
   sessionTtlMs: 8 * 60 * 60 * 1000,
+  /** HS256 key for session tokens (JWT); see SESSION_JWT_SECRET. */
+  sessionJwtSecret,
+  isProduction,
   sessionCookie: 'tv_session',
   cookieSecure: process.env.NODE_ENV === 'production',
   executionTtlMs: 30_000,
