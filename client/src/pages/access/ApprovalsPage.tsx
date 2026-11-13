@@ -3,7 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { Check, Clock, Hand, ShieldAlert, X } from 'lucide-react';
 import { PERMISSIONS, actingUserLabel, type OperationApproval, type OperationApprovalStatus } from '@token-vault/shared';
 import { getOperation, operationLabel } from '@/lib/providers';
-import { useApi, useMutation } from '@/hooks/useApi';
+import { useMutation, usePost } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -40,7 +40,7 @@ const resourceText = (r: Record<string, string>) => Object.values(r).filter(Bool
 
 export function ApprovalsPage() {
   const [params, setParams] = useSearchParams();
-  const { data, error, loading, reload } = useApi<{ items: OperationApproval[]; pending: number }>('/approvals');
+  const { data, error, loading, reload } = usePost<{ items: OperationApproval[]; pending: number }>('/approval/getall');
   const [filter, setFilter] = useState<Filter>('PENDING');
   const selectedId = params.get('approval');
   const items = data?.items ?? [];
@@ -224,7 +224,7 @@ function ApprovalDrawer({ approval: r, onClose, onDecided }: { approval: Operati
 function DecisionDialog({ open, outcome, approval: r, onClose, onDone }: { open: boolean; outcome: 'approve' | 'reject'; approval: OperationApproval; onClose: () => void; onDone: () => Promise<void> }) {
   const toast = useToast();
   const [note, setNote] = useState('');
-  const save = useMutation((n: string) => api.post<OperationApproval>(`/approvals/${r.id}/${outcome}`, { note: n }));
+  const save = useMutation((n: string) => api.post<OperationApproval>(`/approval/${outcome}`, { id: r.id, note: n }));
   useEffect(() => {
     if (open) {
       setNote('');

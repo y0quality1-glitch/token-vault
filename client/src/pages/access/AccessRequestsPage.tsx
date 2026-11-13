@@ -3,7 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { Check, Clock, Inbox, Quote, X } from 'lucide-react';
 import { PERMISSIONS, type GrantRequest, type GrantRequestStatus } from '@token-vault/shared';
 import { operationLabel } from '@/lib/providers';
-import { useApi, useMutation } from '@/hooks/useApi';
+import { useMutation, usePost } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -39,7 +39,7 @@ const minutes = (m: number) => (m >= 60 ? `${m / 60} h` : `${m} min`);
 
 export function AccessRequestsPage() {
   const [params, setParams] = useSearchParams();
-  const { data, error, loading, reload } = useApi<{ items: GrantRequest[]; pending: number }>('/grant-requests');
+  const { data, error, loading, reload } = usePost<{ items: GrantRequest[]; pending: number }>('/grantRequest/getall');
   const [filter, setFilter] = useState<Filter>('PENDING');
   const selectedId = params.get('request');
   const items = data?.items ?? [];
@@ -184,7 +184,7 @@ function ApproveDialog({ open, request: r, onClose, onDone }: { open: boolean; r
   const [restrict, setRestrict] = useState('');
   const [rate, setRate] = useState('10');
   const [note, setNote] = useState('');
-  const save = useMutation((body: unknown) => api.post<GrantRequest>(`/grant-requests/${r.id}/approve`, body));
+  const save = useMutation((body: unknown) => api.post<GrantRequest>('/grantRequest/approve', { id: r.id, ...(body as object) }));
   useEffect(() => {
     if (open) {
       setDuration(r.requestedDurationMinutes);
@@ -286,7 +286,7 @@ function ApproveDialog({ open, request: r, onClose, onDone }: { open: boolean; r
 function RejectDialog({ open, request: r, onClose, onDone }: { open: boolean; request: GrantRequest; onClose: () => void; onDone: () => Promise<void> }) {
   const toast = useToast();
   const [note, setNote] = useState('');
-  const save = useMutation((n: string) => api.post<GrantRequest>(`/grant-requests/${r.id}/reject`, { note: n }));
+  const save = useMutation((n: string) => api.post<GrantRequest>('/grantRequest/reject', { id: r.id, note: n }));
   useEffect(() => {
     if (open) setNote('');
   }, [open]);

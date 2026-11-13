@@ -1,7 +1,7 @@
 import { expect, test, type APIRequestContext } from '@playwright/test';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { resolve } from 'node:path';
-import { DEMO_PASSWORD } from './helpers';
+import { DEMO_PASSWORD, details } from './helpers';
 
 /**
  * The Kubernetes example (examples/kubernetes): a Node service that gets its configuration as
@@ -37,7 +37,7 @@ test.describe.serial('Kubernetes example: orders-api', () => {
   test.beforeAll(async ({ playwright }) => {
     admin = await playwright.request.newContext({ baseURL: API });
     expect((await admin.post('/api/v1/auth/login', { data: { email: 'owner@demo.test', password: DEMO_PASSWORD } })).ok()).toBe(true);
-    await admin.post('/api/v1/auth/select-organization', { data: { organizationId: 'org_demo0000000001' } });
+    await admin.post('/api/v1/auth/selectOrganization', { data: { organizationId: 'org_demo0000000001' } });
 
     // Slack must be available in the catalog: publish its open version, or switch it on.
     const cms = await playwright.request.newContext({ baseURL: CMS_API });
@@ -51,7 +51,7 @@ test.describe.serial('Kubernetes example: orders-api', () => {
       expect((await cms.post('/api/v1/applications/slack/availability', { data: { availability: 'available' } })).ok()).toBe(true);
     }
     await cms.dispose();
-    await expect.poll(async () => ((await (await admin.get('/api/v1/providers')).json()).providers as { key: string; catalog: { availability: string } }[]).find((p) => p.key === 'slack')?.catalog.availability, { timeout: 20_000 }).toBe('available');
+    await expect.poll(async () => ((await details(await admin.post('/api/v1/provider/getall'))).providers as { key: string; catalog: { availability: string } }[]).find((p) => p.key === 'slack')?.catalog.availability, { timeout: 20_000 }).toBe('available');
   });
   test.afterAll(async () => {
     if (app && app.proc.exitCode === null) {
@@ -62,19 +62,19 @@ test.describe.serial('Kubernetes example: orders-api', () => {
   });
 
   test('boots from its environment, like a pod with envFrom, and reports ready', async () => {
-    let integration = await admin.post('/api/v1/integrations', { data: { provider: 'slack', authType: 'BOT_TOKEN', displayName: 'Orders Slack', webhookId: 'wh_local0000000001', secret: BOT_TOKEN, allowedResources: ['C0123456789'], environment: 'development' } });
+    let integration = await admin.post('/api/v1/integration/save', { data: { provider: 'slack', authType: 'BOT_TOKEN', displayName: 'Orders Slack', webhookId: 'wh_local0000000001', secret: BOT_TOKEN, allowedResources: ['C0123456789'], environment: 'development' } });
     // The webhook may need a moment to see the newly available version.
     for (let i = 0; i < 10 && integration.status() !== 201; i++) {
       await new Promise((r) => setTimeout(r, 1000));
-      integration = await admin.post('/api/v1/integrations', { data: { provider: 'slack', authType: 'BOT_TOKEN', displayName: 'Orders Slack', webhookId: 'wh_local0000000001', secret: BOT_TOKEN, allowedResources: ['C0123456789'], environment: 'development' } });
+      integration = await admin.post('/api/v1/integration/save', { data: { provider: 'slack', authType: 'BOT_TOKEN', displayName: 'Orders Slack', webhookId: 'wh_local0000000001', secret: BOT_TOKEN, allowedResources: ['C0123456789'], environment: 'development' } });
     }
     expect(integration.status(), await integration.text()).toBe(201);
-    const integrationId = (await integration.json()).id;
-    const agent = await (await admin.post('/api/v1/agents', { data: { name: 'orders-api (k8s)', environment: 'development', ownerTeam: 'Commerce', agentType: 'SERVICE' } })).json();
+    const integrationId = (await details(integration)).id;
+    const agent = await details(await admin.post('/api/v1/agent/save', { data: { name: 'orders-api (k8s)', environment: 'development', ownerTeam: 'Commerce', agentType: 'SERVICE' } }));
     const now = Date.now();
-    const grant = await admin.post('/api/v1/grants', { data: { name: 'Order notifications', agentId: agent.agent.id, integrationId, environment: 'development', scopes: ['slack.messages.post'], repositories: ['C0123456789'], validFrom: new Date(now - 60_000).toISOString(), expiresAt: new Date(now + 86_400_000).toISOString(), rateLimitPerMinute: 30 } });
+    const grant = await admin.post('/api/v1/grant/save', { data: { name: 'Order notifications', agentId: agent.agent.id, integrationId, environment: 'development', scopes: ['slack.messages.post'], repositories: ['C0123456789'], validFrom: new Date(now - 60_000).toISOString(), expiresAt: new Date(now + 86_400_000).toISOString(), rateLimitPerMinute: 30 } });
     expect(grant.ok(), await grant.text()).toBe(true);
-    grantId = (await grant.json()).id;
+    grantId = (await details(grant)).id;
 
     // Exactly what the ExternalSecret (or the local secretGenerator) puts into the pod.
     env = { PORT: String(PORT), TOKEN_VAULT_URL: API, TOKEN_VAULT_API_KEY: agent.credential.apiKey, DATABASE_URL: 'postgres://orders:orders@db.example:5432/orders', SLACK_INTEGRATION_ID: integrationId, SLACK_CHANNEL: 'C0123456789' };
@@ -97,7 +97,7 @@ test.describe.serial('Kubernetes example: orders-api', () => {
   });
 
   test('a revoked grant stops it on the next request, without crashing the service', async () => {
-    expect((await admin.post(`/api/v1/grants/${grantId}/revoke`, { data: { reason: 'e2e: example revoked' } })).ok()).toBe(true);
+    expect((await admin.post('/api/v1/grant/revoke', { data: { id: grantId, reason: 'e2e: example revoked' } })).ok()).toBe(true);
     const r = await fetch(`${APP}/orders/A101/paid`, { method: 'POST', body: '{}' });
     expect(r.status).toBe(202);
     expect(await r.json()).toMatchObject({ notified: false, reason: 'GRANT_REVOKED' });

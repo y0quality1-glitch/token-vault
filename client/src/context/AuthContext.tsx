@@ -51,7 +51,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setSession(null);
       },
       selectOrganization: async (organizationId) => {
-        const s = await api.post<SessionInfo>('/auth/select-organization', { organizationId });
+        const s = await api.post<SessionInfo>('/auth/selectOrganization', { organizationId });
         setSession(s);
         return s;
       },

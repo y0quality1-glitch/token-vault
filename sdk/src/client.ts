@@ -127,6 +127,20 @@ export interface ExecuteResult<T = unknown> {
   response: ExecuteResponseBody;
 }
 
+/**
+ * Every agent API route answers with this envelope; `details` holds the route's payload (for
+ * /request/execute the full decision, also for denials). Failures that are not a decision carry
+ * a stable `code` and a human message in `error`.
+ */
+interface Envelope {
+  status: '10000' | '10001';
+  msg: string;
+  error: string | null;
+  code?: string;
+  details: unknown;
+  totalRecords: number;
+}
+
 const KEY_PATTERN = /^tv(ak|dt)_[0-9a-f]{12}_[A-Za-z0-9_-]{20,64}$/;
 
 /**
@@ -264,8 +278,8 @@ export class TokenVault {
     if (sessionId) payload.session_id = sessionId;
     if (sessionId && this.#sessionLabel) payload.session_label = this.#sessionLabel;
     const traceparent = typeof this.#traceparent === 'function' ? this.#traceparent() : this.#traceparent;
-    const res = await this.#request('POST', '/agent/v1/execute', payload, traceparent ? { traceparent } : undefined);
-    const body = (await this.#json(res)) as ExecuteResponseBody | null;
+    const res = await this.#request('POST', '/agent/v1/request/execute', payload, traceparent ? { traceparent } : undefined);
+    const body = (await this.#envelope(res))?.details as ExecuteResponseBody | null | undefined;
     if (!body || typeof body.decision !== 'string') {
       throw new TokenVaultError(`Unexpected response from Token Vault (HTTP ${res.status})`, { code: 'UNEXPECTED_RESPONSE', httpStatus: res.status });
     }
@@ -274,8 +288,8 @@ export class TokenVault {
 
   /** What this agent may currently do: its grants, operations and repository restrictions. */
   async capabilities(): Promise<AgentCapabilitiesBody> {
-    const res = await this.#request('GET', '/agent/v1/capabilities');
-    const body = await this.#json(res);
+    const res = await this.#request('POST', '/agent/v1/capability/getdata', {});
+    const body = (await this.#envelope(res))?.details;
     if (res.status === 401) throw new AuthenticationError('Agent credential is invalid, rotated or unknown', { code: 'AGENT_UNAUTHENTICATED', httpStatus: 401 });
     if (!res.ok) throw new TokenVaultError(`Capabilities request failed (HTTP ${res.status})`, { code: 'UNEXPECTED_RESPONSE', httpStatus: res.status });
     return body as AgentCapabilitiesBody;
@@ -286,8 +300,8 @@ export class TokenVault {
    * fields, inputs, risk), from the signed provider definitions Token Vault uses.
    */
   async operations(): Promise<AgentOperationsBody> {
-    const res = await this.#request('GET', '/agent/v1/operations');
-    const body = await this.#json(res);
+    const res = await this.#request('POST', '/agent/v1/operation/getall', {});
+    const body = (await this.#envelope(res))?.details;
     if (res.status === 401) throw new AuthenticationError('Agent credential is invalid, rotated or unknown', { code: 'AGENT_UNAUTHENTICATED', httpStatus: 401 });
     if (!res.ok) throw new TokenVaultError(`Operations request failed (HTTP ${res.status})`, { code: 'UNEXPECTED_RESPONSE', httpStatus: res.status });
     return body as AgentOperationsBody;
@@ -298,7 +312,7 @@ export class TokenVault {
    * an identical pending request is returned instead of creating a duplicate.
    */
   async requestAccess(options: RequestAccessOptions): Promise<AccessRequestResult> {
-    const res = await this.#request('POST', '/agent/v1/access-requests', {
+    const res = await this.#request('POST', '/agent/v1/accessRequest/save', {
       integration_id: options.integrationId,
       operations: options.operations,
       repositories: options.repositories ?? [],
@@ -306,9 +320,10 @@ export class TokenVault {
       duration_minutes: options.durationMinutes ?? 60,
       ...(options.deniedRequestId ? { denied_request_id: options.deniedRequestId } : {}),
     });
-    const body = (await this.#json(res)) as (AccessRequestResult & { error?: { code: string; message: string } }) | null;
+    const env = await this.#envelope(res);
+    const body = env?.details as AccessRequestResult | null | undefined;
     if (res.status === 401) throw new AuthenticationError('Agent credential is invalid, rotated or unknown', { code: 'AGENT_UNAUTHENTICATED', httpStatus: 401 });
-    if (!res.ok || !body) throw new TokenVaultError(body?.error?.message ?? `Access request failed (HTTP ${res.status})`, { code: body?.error?.code ?? 'UNEXPECTED_RESPONSE', httpStatus: res.status });
+    if (!res.ok || !body) throw new TokenVaultError(env?.error || `Access request failed (HTTP ${res.status})`, { code: env?.code ?? 'UNEXPECTED_RESPONSE', httpStatus: res.status });
     return body;
   }
 
@@ -320,7 +335,7 @@ export class TokenVault {
    */
   async delegate(options: DelegateOptions): Promise<DelegationResult> {
     const userToken = options.onBehalfOf ?? (this.isDelegated ? undefined : typeof this.#userToken === 'function' ? await this.#userToken() : this.#userToken);
-    const res = await this.#request('POST', '/agent/v1/delegations', {
+    const res = await this.#request('POST', '/agent/v1/delegation/save', {
       ...(options.grantId ? { grant_id: options.grantId } : {}),
       label: options.label,
       operations: options.operations,
@@ -334,31 +349,31 @@ export class TokenVault {
 
   /** Delegations this agent made (a sub-agent: those it made further), with their status and use. */
   async listDelegations(): Promise<AgentDelegationBody[]> {
-    const res = await this.#request('GET', '/agent/v1/delegations');
+    const res = await this.#request('POST', '/agent/v1/delegation/getall', {});
     return (await this.#delegationResult<{ items: AgentDelegationBody[] }>(res, 'Listing delegations failed')).items;
   }
 
   /** Revokes a delegation; everything delegated from it stops too. */
   async revokeDelegation(id: string, reason = ''): Promise<AgentDelegationBody> {
-    const res = await this.#request('POST', `/agent/v1/delegations/${encodeURIComponent(id)}/revoke`, { reason });
+    const res = await this.#request('POST', '/agent/v1/delegation/revoke', { id, reason });
     return this.#delegationResult<AgentDelegationBody>(res, 'Revoking the delegation failed');
   }
 
   async #delegationResult<T>(res: Response, what: string): Promise<T> {
-    const body = (await this.#json(res)) as (T & { error?: { code: string; message: string; details?: { fields?: Record<string, string> } } }) | null;
+    const env = await this.#envelope(res);
     if (res.status === 401) throw new AuthenticationError('Credential is invalid, revoked, expired or unknown', { code: 'AGENT_UNAUTHENTICATED', httpStatus: 401 });
-    if (!res.ok || !body) {
-      const fields = body?.error?.details?.fields;
+    if (!res.ok || !env?.details) {
+      const fields = (env?.details as { fields?: Record<string, string> } | null | undefined)?.fields;
       const detail = fields ? `: ${Object.values(fields).join('; ')}` : '';
-      throw new TokenVaultError(`${body?.error?.message ?? `${what} (HTTP ${res.status})`}${detail}`, { code: body?.error?.code ?? 'UNEXPECTED_RESPONSE', httpStatus: res.status });
+      throw new TokenVaultError(`${env?.error || `${what} (HTTP ${res.status})`}${detail}`, { code: env?.code ?? 'UNEXPECTED_RESPONSE', httpStatus: res.status });
     }
-    return body;
+    return env.details as T;
   }
 
   /** Status of one of this agent's own access requests (PENDING, APPROVED, REJECTED, EXPIRED). */
   async getAccessRequest(id: string): Promise<AgentAccessRequestBody> {
-    const res = await this.#request('GET', `/agent/v1/access-requests/${encodeURIComponent(id)}`);
-    const body = await this.#json(res);
+    const res = await this.#request('GET', `/agent/v1/accessRequest/getbyid/${encodeURIComponent(id)}`);
+    const body = (await this.#envelope(res))?.details;
     if (res.status === 401) throw new AuthenticationError('Agent credential is invalid, rotated or unknown', { code: 'AGENT_UNAUTHENTICATED', httpStatus: 401 });
     if (res.status === 404) throw new TokenVaultError(`Access request ${id} not found`, { code: 'NOT_FOUND', httpStatus: 404 });
     if (!res.ok) throw new TokenVaultError(`Access request lookup failed (HTTP ${res.status})`, { code: 'UNEXPECTED_RESPONSE', httpStatus: res.status });
@@ -367,8 +382,8 @@ export class TokenVault {
 
   /** An approval one of this agent's requests waits for: PENDING, APPROVED, REJECTED, EXPIRED or EXECUTED. */
   async getApproval(id: string): Promise<AgentApprovalBody> {
-    const res = await this.#request('GET', `/agent/v1/approvals/${encodeURIComponent(id)}`);
-    const body = await this.#json(res);
+    const res = await this.#request('GET', `/agent/v1/approval/getbyid/${encodeURIComponent(id)}`);
+    const body = (await this.#envelope(res))?.details;
     if (res.status === 401) throw new AuthenticationError('Agent credential is invalid, rotated or unknown', { code: 'AGENT_UNAUTHENTICATED', httpStatus: 401 });
     if (res.status === 404) throw new TokenVaultError(`Approval ${id} not found`, { code: 'NOT_FOUND', httpStatus: 404 });
     if (!res.ok) throw new TokenVaultError(`Approval lookup failed (HTTP ${res.status})`, { code: 'UNEXPECTED_RESPONSE', httpStatus: res.status });
@@ -403,8 +418,8 @@ export class TokenVault {
 
   /** One of this agent's own past requests, by request ID. */
   async getRequest(requestId: string): Promise<Record<string, unknown>> {
-    const res = await this.#request('GET', `/agent/v1/requests/${encodeURIComponent(requestId)}`);
-    const body = await this.#json(res);
+    const res = await this.#request('GET', `/agent/v1/request/getbyid/${encodeURIComponent(requestId)}`);
+    const body = (await this.#envelope(res))?.details;
     if (res.status === 401) throw new AuthenticationError('Agent credential is invalid, rotated or unknown', { code: 'AGENT_UNAUTHENTICATED', httpStatus: 401 });
     if (res.status === 404) throw new TokenVaultError(`Request ${requestId} not found`, { code: 'NOT_FOUND', httpStatus: 404 });
     if (!res.ok) throw new TokenVaultError(`Request lookup failed (HTTP ${res.status})`, { code: 'UNEXPECTED_RESPONSE', httpStatus: res.status });
@@ -430,11 +445,16 @@ export class TokenVault {
     return res;
   }
 
-  async #json(res: Response): Promise<unknown> {
+  /** The response envelope, or null when the body is not one (not JSON, a proxy's error page, …). */
+  async #envelope(res: Response): Promise<Envelope | null> {
+    let body: unknown;
     try {
-      return await res.json();
+      body = await res.json();
     } catch {
       return null;
     }
+    if (!body || typeof body !== 'object' || !('details' in body)) return null;
+    const status = (body as { status?: unknown }).status;
+    return status === '10000' || status === '10001' ? (body as Envelope) : null;
   }
 }

@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
-import { DEMO_PASSWORD, login, trackPageErrors } from './helpers';
+import { DEMO_PASSWORD, details, login, trackPageErrors } from './helpers';
 
 /**
  * Credential health. A provider revoking a stored credential is simulated by publishing
@@ -48,19 +48,19 @@ test.describe.serial('credential health: revoked credentials are detected', () =
     expect((await (await cms.put(`/api/v1/applications/pingdesk/versions/${version}`, { data: { definition: definition(status) } })).json()).issues).toEqual([]);
     expect((await (await cms.post(`/api/v1/applications/pingdesk/versions/${version}/publish`, { data: { acknowledgeHostChange: true } })).json()).status).toBe('PUBLISHED');
   }
-  const integration = async () => (await (await admin.get(`/api/v1/integrations/${integrationId}`)).json()) as { credentialStatus: string };
+  const integration = async () => (await details(await admin.get(`/api/v1/integration/getbyid/${integrationId}`))) as { credentialStatus: string };
   const execute = async () => {
-    const r = await admin.post('/agent/v1/execute', { headers: { authorization: `Bearer ${agentKey}` }, data: { integration_id: integrationId, operation: 'pingdesk.checks.read', resource: { check: 'homepage' }, idempotency_key: `e2e-ping-${Date.now()}-${Math.random()}` } });
-    return { status: r.status(), body: await r.json() };
+    const r = await admin.post('/agent/v1/request/execute', { headers: { authorization: `Bearer ${agentKey}` }, data: { integration_id: integrationId, operation: 'pingdesk.checks.read', resource: { check: 'homepage' }, idempotency_key: `e2e-ping-${Date.now()}-${Math.random()}` } });
+    return { status: r.status(), body: await details(r) };
   };
-  const events = async (type: string) => ((await (await admin.get(`/api/v1/audit-events?eventType=${type}&targetId=${integrationId}`)).json()).items as { eventType: string; targetId: string; actorType: string; metadata: Record<string, unknown> }[]).filter((e) => e.eventType === type && e.targetId === integrationId);
+  const events = async (type: string) => ((await details(await admin.post('/api/v1/auditEvent/getall', { data: { eventType: type, targetId: integrationId } }))).items as { eventType: string; targetId: string; actorType: string; metadata: Record<string, unknown> }[]).filter((e) => e.eventType === type && e.targetId === integrationId);
 
   test.beforeAll(async ({ playwright, browser }) => {
     cms = await playwright.request.newContext({ baseURL: CMS_API });
     expect((await cms.post('/api/v1/auth/login', { data: { email: 'admin@cms.test', password: DEMO_PASSWORD } })).ok()).toBe(true);
     admin = await playwright.request.newContext({ baseURL: API });
     expect((await admin.post('/api/v1/auth/login', { data: { email: 'owner@demo.test', password: DEMO_PASSWORD } })).ok()).toBe(true);
-    await admin.post('/api/v1/auth/select-organization', { data: { organizationId: 'org_demo0000000001' } });
+    await admin.post('/api/v1/auth/selectOrganization', { data: { organizationId: 'org_demo0000000001' } });
     page = await browser.newPage();
     errors = trackPageErrors(page);
   });
@@ -72,16 +72,16 @@ test.describe.serial('credential health: revoked credentials are detected', () =
   test('a working credential is connected and used', async () => {
     expect((await cms.post('/api/v1/applications', { data: { key: 'pingdesk', name: 'Ping Desk' } })).status()).toBe(201);
     await publish(200);
-    await expect.poll(async () => ((await (await admin.get('/api/v1/providers')).json()).providers as { key: string }[]).some((p) => p.key === 'pingdesk'), { timeout: 15_000 }).toBe(true);
-    const created = await admin.post('/api/v1/integrations', { data: { provider: 'pingdesk', authType: 'API_KEY', displayName: 'Ping Desk Prod', webhookId: 'wh_local0000000001', secret: KEY, allowedResources: ['homepage'], environment: 'development' } });
+    await expect.poll(async () => ((await details(await admin.post('/api/v1/provider/getall'))).providers as { key: string }[]).some((p) => p.key === 'pingdesk'), { timeout: 15_000 }).toBe(true);
+    const created = await admin.post('/api/v1/integration/save', { data: { provider: 'pingdesk', authType: 'API_KEY', displayName: 'Ping Desk Prod', webhookId: 'wh_local0000000001', secret: KEY, allowedResources: ['homepage'], environment: 'development' } });
     expect(created.status(), await created.text()).toBe(201);
-    integrationId = (await created.json()).id;
+    integrationId = (await details(created)).id;
     expect(await integration()).toMatchObject({ credentialStatus: 'CONNECTED' });
 
-    const agent = await (await admin.post('/api/v1/agents', { data: { name: 'Uptime Agent', environment: 'development', ownerTeam: 'SRE', agentType: 'AI_AGENT' } })).json();
+    const agent = await details(await admin.post('/api/v1/agent/save', { data: { name: 'Uptime Agent', environment: 'development', ownerTeam: 'SRE', agentType: 'AI_AGENT' } }));
     agentKey = agent.credential.apiKey;
     const now = Date.now();
-    const grant = await admin.post('/api/v1/grants', { data: { name: 'Read checks', agentId: agent.agent.id, integrationId, environment: 'development', scopes: ['pingdesk.checks.read'], repositories: ['homepage'], validFrom: new Date(now - 60_000).toISOString(), expiresAt: new Date(now + 86_400_000).toISOString(), rateLimitPerMinute: 60 } });
+    const grant = await admin.post('/api/v1/grant/save', { data: { name: 'Read checks', agentId: agent.agent.id, integrationId, environment: 'development', scopes: ['pingdesk.checks.read'], repositories: ['homepage'], validFrom: new Date(now - 60_000).toISOString(), expiresAt: new Date(now + 86_400_000).toISOString(), rateLimitPerMinute: 60 } });
     expect(grant.ok(), await grant.text()).toBe(true);
     const ok = await execute();
     expect(ok.status, JSON.stringify(ok.body)).toBe(200);
@@ -116,7 +116,7 @@ test.describe.serial('credential health: revoked credentials are detected', () =
     await publish(200);
     await expect
       .poll(async () => {
-        await admin.post('/api/v1/integrations/check-credentials');
+        await admin.post('/api/v1/integration/checkCredentials');
         return (await integration()).credentialStatus;
       }, { timeout: 20_000 })
       .toBe('CONNECTED');

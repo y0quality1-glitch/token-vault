@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
-import { DEMO_PASSWORD, login, trackPageErrors } from './helpers';
+import { DEMO_PASSWORD, details, login, trackPageErrors } from './helpers';
 
 /**
  * Key rotation without downtime.
@@ -19,17 +19,17 @@ test.describe.serial('key rotation', () => {
   let newKey = '';
 
   const call = async (key: string, operation = 'github.repositories.read') => {
-    const r = await admin.post('/agent/v1/execute', {
+    const r = await admin.post('/agent/v1/request/execute', {
       headers: { authorization: `Bearer ${key}` },
       data: { integration_id: 'int_github_001', operation, resource: { repository: 'demo-org/demo-repo' }, idempotency_key: `e2e-rot-${Date.now()}-${Math.random()}` },
     });
-    return { status: r.status(), expires: r.headers()['token-vault-key-expires'] ?? null, body: await r.json() };
+    return { status: r.status(), expires: r.headers()['token-vault-key-expires'] ?? null, body: await details(r) };
   };
 
   test.beforeAll(async ({ playwright, browser }) => {
     admin = await playwright.request.newContext({ baseURL: API });
     expect((await admin.post('/api/v1/auth/login', { data: { email: 'owner@demo.test', password: DEMO_PASSWORD } })).ok()).toBe(true);
-    await admin.post('/api/v1/auth/select-organization', { data: { organizationId: 'org_demo0000000001' } });
+    await admin.post('/api/v1/auth/selectOrganization', { data: { organizationId: 'org_demo0000000001' } });
     page = await browser.newPage();
     errors = trackPageErrors(page);
   });
@@ -39,17 +39,17 @@ test.describe.serial('key rotation', () => {
   });
 
   test('rotating with a grace period keeps the old key working until it expires', async () => {
-    const created = await (await admin.post('/api/v1/agents', { data: { name: 'Rotation Service', environment: 'development', ownerTeam: 'Platform', agentType: 'SERVICE' } })).json();
+    const created = await details(await admin.post('/api/v1/agent/save', { data: { name: 'Rotation Service', environment: 'development', ownerTeam: 'Platform', agentType: 'SERVICE' } }));
     agentId = created.agent.id;
     oldKey = created.credential.apiKey;
     const now = Date.now();
-    const grant = await admin.post('/api/v1/grants', {
+    const grant = await admin.post('/api/v1/grant/save', {
       data: { name: 'Rotation read', agentId, integrationId: 'int_github_001', environment: 'development', scopes: ['github.repositories.read'], repositories: ['demo-org/demo-repo'], validFrom: new Date(now - 60_000).toISOString(), expiresAt: new Date(now + 86_400_000).toISOString(), rateLimitPerMinute: 60 },
     });
     expect(grant.ok(), await grant.text()).toBe(true);
     expect((await call(oldKey)).status).toBe(200);
 
-    const rotated = await (await admin.post(`/api/v1/agents/${agentId}/rotate-credential`, { data: { graceMinutes: 15 } })).json();
+    const rotated = await details(await admin.post('/api/v1/agent/rotateCredential', { data: { id: agentId, graceMinutes: 15 } }));
     newKey = rotated.credential.apiKey;
     expect(newKey).not.toBe(oldKey);
     const until = rotated.agent.previousCredentialExpiresAt as string;
@@ -65,11 +65,11 @@ test.describe.serial('key rotation', () => {
     expect(viaNew.expires).toBeNull();
 
     // The other agent endpoints accept it too, with the same notice.
-    const caps = await admin.get('/agent/v1/capabilities', { headers: { authorization: `Bearer ${oldKey}` } });
+    const caps = await admin.post('/agent/v1/capability/getdata', { headers: { authorization: `Bearer ${oldKey}` } });
     expect(caps.status()).toBe(200);
     expect(caps.headers()['token-vault-key-expires']).toBe(until);
 
-    const [event] = (await (await admin.get(`/api/v1/audit-events?eventType=agent.credential_rotated&targetId=${agentId}`)).json()).items;
+    const [event] = (await details(await admin.post('/api/v1/auditEvent/getall', { data: { eventType: 'agent.credential_rotated', targetId: agentId } }))).items;
     expect(event.metadata).toMatchObject({ graceMinutes: 15, previousKeyValidUntil: until });
   });
 
@@ -89,7 +89,7 @@ test.describe.serial('key rotation', () => {
     expect(refused.status).toBe(401);
     expect(refused.body.decision_code).toBe('AGENT_UNAUTHENTICATED');
     expect((await call(newKey)).status).toBe(200);
-    const [event] = (await (await admin.get(`/api/v1/audit-events?eventType=agent.previous_credential_revoked&targetId=${agentId}`)).json()).items;
+    const [event] = (await details(await admin.post('/api/v1/auditEvent/getall', { data: { eventType: 'agent.previous_credential_revoked', targetId: agentId } }))).items;
     expect(event).toBeTruthy();
   });
 
@@ -105,7 +105,7 @@ test.describe.serial('key rotation', () => {
   });
 
   test('the webhook reports which key encrypts the stored credentials', async () => {
-    const r = await (await admin.post('/api/v1/webhooks/wh_local0000000001/test')).json();
+    const r = await details(await admin.post('/api/v1/webhook/test', { data: { id: 'wh_local0000000001' } }));
     expect(r.result.ok).toBe(true);
     expect(r.result.detail).toMatch(/Credentials encrypted with key kid_[0-9a-f]{16}/);
     expect(r.result.detail).not.toContain('older key');

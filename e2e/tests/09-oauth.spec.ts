@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
-import { DEMO_PASSWORD, expectNoSecretsInBrowser, login } from './helpers';
+import { DEMO_PASSWORD, details, expectNoSecretsInBrowser, login } from './helpers';
 
 /**
  * OAuth 2.0 (simulated provider): an application whose definition uses the oauth2 auth kind
@@ -42,7 +42,7 @@ const calendarx = {
 async function session(playwright: { request: { newContext: (o: object) => Promise<APIRequestContext> } }, base: string, email: string, orgId?: string) {
   const ctx = await playwright.request.newContext({ baseURL: base });
   expect((await ctx.post('/api/v1/auth/login', { data: { email, password: DEMO_PASSWORD } })).ok()).toBe(true);
-  if (orgId) await ctx.post('/api/v1/auth/select-organization', { data: { organizationId: orgId } });
+  if (orgId) await ctx.post('/api/v1/auth/selectOrganization', { data: { organizationId: orgId } });
   return ctx;
 }
 
@@ -68,7 +68,7 @@ test.describe.serial('OAuth 2.0 connection (simulated provider)', () => {
     const publisher = await session(playwright, CMS_API, 'publisher@cms.test');
     expect((await (await publisher.post('/api/v1/applications/calendarx/versions/1/approve', { data: { acknowledgeHostChange: true } })).json()).status).toBe('PUBLISHED');
     await Promise.all([editor.dispose(), publisher.dispose()]);
-    await expect.poll(async () => ((await (await owner.get('/api/v1/providers')).json()).providers as { key: string }[]).some((p) => p.key === 'calendarx'), { timeout: 15_000 }).toBe(true);
+    await expect.poll(async () => ((await details(await owner.post('/api/v1/provider/getall'))).providers as { key: string }[]).some((p) => p.key === 'calendarx'), { timeout: 15_000 }).toBe(true);
   });
 
   test('an admin connects it through the provider sign-in; secrets and tokens stay in the webhook', async () => {
@@ -88,7 +88,7 @@ test.describe.serial('OAuth 2.0 connection (simulated provider)', () => {
     await expect(page.getByRole('button', { name: /Rotate \/ replace/ })).toHaveCount(0); // OAuth is renewed by reconnecting
     await expectNoSecretsInBrowser(page, [CLIENT_SECRET]);
 
-    const list = await (await owner.get('/api/v1/integrations')).json();
+    const list = await details(await owner.post('/api/v1/integration/getall'));
     const created = list.items.find((i: { displayName: string }) => i.displayName === 'Team Calendar');
     expect(created).toMatchObject({ provider: 'calendarx', authType: 'OAUTH', credentialStatus: 'CONNECTED', maskedIdentifier: 'OAuth client cal-cl…-001' });
     expect(JSON.stringify(created)).not.toContain(CLIENT_SECRET);
@@ -96,15 +96,15 @@ test.describe.serial('OAuth 2.0 connection (simulated provider)', () => {
   });
 
   test('an agent calls it; the webhook refreshes the short-lived access token each time', async () => {
-    const agent = await (await owner.post('/api/v1/agents', { data: { name: 'Calendar Agent', environment: 'development', ownerTeam: 'Ops', agentType: 'AI_AGENT' } })).json();
+    const agent = await details(await owner.post('/api/v1/agent/save', { data: { name: 'Calendar Agent', environment: 'development', ownerTeam: 'Ops', agentType: 'AI_AGENT' } }));
     const now = Date.now();
-    const grant = await owner.post('/api/v1/grants', {
+    const grant = await owner.post('/api/v1/grant/save', {
       data: { name: 'Calendar read', agentId: agent.agent.id, integrationId, environment: 'development', scopes: ['calendarx.events.list'], repositories: ['team'], validFrom: new Date(now - 60_000).toISOString(), expiresAt: new Date(now + 86_400_000).toISOString(), rateLimitPerMinute: 30 },
     });
     expect(grant.ok(), await grant.text()).toBe(true);
     const call = async (n: number) => {
-      const r = await owner.post('/agent/v1/execute', { headers: { authorization: `Bearer ${agent.credential.apiKey}` }, data: { integration_id: integrationId, operation: 'calendarx.events.list', resource: { calendar: 'team' }, idempotency_key: `e2e-oauth-${n}-${Date.now()}` } });
-      return { status: r.status(), body: await r.json() };
+      const r = await owner.post('/agent/v1/request/execute', { headers: { authorization: `Bearer ${agent.credential.apiKey}` }, data: { integration_id: integrationId, operation: 'calendarx.events.list', resource: { calendar: 'team' }, idempotency_key: `e2e-oauth-${n}-${Date.now()}` } });
+      return { status: r.status(), body: await details(r) };
     };
     for (const n of [1, 2]) {
       const r = await call(n);
@@ -116,22 +116,22 @@ test.describe.serial('OAuth 2.0 connection (simulated provider)', () => {
   });
 
   test('a callback is accepted only for a state the same admin started', async ({ playwright }) => {
-    const forged = await owner.post('/api/v1/integrations/oauth/complete', { data: { code: 'mock_code_x', state: 'forged-state' } });
-    expect((await forged.json()).error.code).toBe('OAUTH_STATE_INVALID');
+    const forged = await owner.post('/api/v1/integration/oauthComplete', { data: { code: 'mock_code_x', state: 'forged-state' } });
+    expect((await forged.json()).code).toBe('OAUTH_STATE_INVALID');
 
     // The owner starts a connection; another administrator cannot finish it with the owner's state.
-    const start = await owner.post('/api/v1/integrations/oauth/start', {
+    const start = await owner.post('/api/v1/integration/oauthStart', {
       data: { provider: 'calendarx', authType: 'OAUTH', webhookId: 'wh_local0000000001', displayName: 'Second Calendar', environment: 'development', clientId: 'cal-client-001', clientSecret: CLIENT_SECRET, allowedResources: [] },
     });
     expect(start.status(), await start.text()).toBe(201);
-    const redirect = new URL((await start.json()).authorizeUrl);
+    const redirect = new URL((await details(start)).authorizeUrl);
     const code = redirect.searchParams.get('code')!;
     const state = redirect.searchParams.get('state')!;
     const other = await session(playwright, API, 'vault.admin@demo.test', 'org_demo0000000001');
-    expect((await (await other.post('/api/v1/integrations/oauth/complete', { data: { code, state } })).json()).error.code).toBe('OAUTH_STATE_INVALID');
+    expect((await (await other.post('/api/v1/integration/oauthComplete', { data: { code, state } })).json()).code).toBe('OAUTH_STATE_INVALID');
     await other.dispose();
     // The other admin's attempt did not consume it: the owner can still finish, exactly once.
-    expect((await owner.post('/api/v1/integrations/oauth/complete', { data: { code, state } })).status()).toBe(201);
-    expect((await (await owner.post('/api/v1/integrations/oauth/complete', { data: { code, state } })).json()).error.code).toBe('OAUTH_STATE_INVALID');
+    expect((await owner.post('/api/v1/integration/oauthComplete', { data: { code, state } })).status()).toBe(201);
+    expect((await (await owner.post('/api/v1/integration/oauthComplete', { data: { code, state } })).json()).code).toBe('OAUTH_STATE_INVALID');
   });
 });

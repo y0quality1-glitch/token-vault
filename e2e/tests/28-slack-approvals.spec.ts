@@ -1,7 +1,7 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 import { createHmac } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
-import { DEMO_PASSWORD, login } from './helpers';
+import { DEMO_PASSWORD, details, login } from './helpers';
 
 /**
  * Slack approvals, end to end, with a stand-in Slack on port 4900 (SLACK_API_URL in the
@@ -26,7 +26,7 @@ test.describe.serial('Slack approvals (Demo Organization)', () => {
   let approvalId = '';
 
   const createIssue = () =>
-    agentApi.post('/agent/v1/execute', { data: { integration_id: 'int_github_001', operation: 'github.issues.create', resource: { repository: 'demo-org/demo-repo' }, input: { title: `Ship release ${run}`, body: '' } } }).then(async (r) => ({ status: r.status(), body: await r.json() }));
+    agentApi.post('/agent/v1/request/execute', { data: { integration_id: 'int_github_001', operation: 'github.issues.create', resource: { repository: 'demo-org/demo-repo' }, input: { title: `Ship release ${run}`, body: '' } } }).then(async (r) => ({ status: r.status(), body: await details(r) }));
 
   test.beforeAll(async ({ playwright, browser }) => {
     slack = createServer((req, res) => {
@@ -47,13 +47,13 @@ test.describe.serial('Slack approvals (Demo Organization)', () => {
 
     admin = await playwright.request.newContext({ baseURL: API });
     await admin.post('/api/v1/auth/login', { data: { email: 'owner@demo.test', password: DEMO_PASSWORD } });
-    await admin.post('/api/v1/auth/select-organization', { data: { organizationId: 'org_demo0000000001' } });
-    const agent = await (await admin.post('/api/v1/agents', { data: { name: agentName, environment: 'development', ownerTeam: 'Release', agentType: 'AI_AGENT' } })).json();
-    const grant = await admin.post('/api/v1/grants', {
+    await admin.post('/api/v1/auth/selectOrganization', { data: { organizationId: 'org_demo0000000001' } });
+    const agent = await details(await admin.post('/api/v1/agent/save', { data: { name: agentName, environment: 'development', ownerTeam: 'Release', agentType: 'AI_AGENT' } }));
+    const grant = await admin.post('/api/v1/grant/save', {
       data: { name: `${agentName} issues`, agentId: agent.agent.id, integrationId: 'int_github_001', environment: 'development', scopes: ['github.issues.create'], repositories: ['demo-org/demo-repo'], validFrom: new Date(Date.now() - 60_000).toISOString(), expiresAt: new Date(Date.now() + 86_400_000).toISOString(), rateLimitPerMinute: 60 },
     });
     expect(grant.ok(), await grant.text()).toBe(true);
-    const policy = await admin.post('/api/v1/policies', {
+    const policy = await admin.post('/api/v1/policy/save', {
       data: { name: `Approve issues of ${agentName}`, description: '', effect: 'REQUIRE_APPROVAL', priority: 40, enabled: true, conditions: { agentSelector: { type: 'agent', value: agent.agent.id }, integrationSelector: { type: 'any' }, operations: ['github.issues.create'], environment: 'any' } },
     });
     expect(policy.ok(), await policy.text()).toBe(true);
@@ -62,7 +62,7 @@ test.describe.serial('Slack approvals (Demo Organization)', () => {
   });
 
   test.afterAll(async () => {
-    await admin?.delete('/api/v1/slack-settings').catch(() => undefined);
+    await admin?.post('/api/v1/slackSettings/disconnect').catch(() => undefined);
     await admin?.dispose();
     await agentApi?.dispose();
     await page?.close();

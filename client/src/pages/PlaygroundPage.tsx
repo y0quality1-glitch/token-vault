@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Ban, CheckCircle2, CircleDashed, Eraser, ExternalLink, FlaskConical, KeyRound, Loader2, Send, ShieldX, XCircle } from 'lucide-react';
 import { DECISION_LABELS, PERMISSIONS, roleHas, type Agent, type ExecuteResponseBody, type Integration, type Webhook } from '@token-vault/shared';
 import { getOperation, getProvider, useProviders } from '@/lib/providers';
-import { useApi } from '@/hooks/useApi';
+import { usePost } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
 import { usePlayground } from '@/context/PlaygroundContext';
 import { api, executeAsAgent } from '@/lib/api';
@@ -77,8 +77,8 @@ export function PlaygroundPage() {
   const navigate = useNavigate();
   const toast = useToast();
   const { credential, setCredential } = usePlayground();
-  const integrations = useApi<{ items: Integration[] }>('/integrations');
-  const webhooks = useApi<{ items: Webhook[] }>('/webhooks');
+  const integrations = usePost<{ items: Integration[] }>('/integration/getall');
+  const webhooks = usePost<{ items: Webhook[] }>('/webhook/getall');
 
   const [integrationId, setIntegrationId] = useState('');
   const [operation, setOperation] = useState('github.issues.create');
@@ -188,7 +188,7 @@ export function PlaygroundPage() {
   async function toggleOutage(enabled: boolean) {
     if (!webhook) return;
     try {
-      await api.post(`/webhooks/${webhook.id}/simulate-outage`, { enabled });
+      await api.post('/webhook/simulateOutage', { id: webhook.id, enabled });
       await webhooks.reload();
       toast.info(enabled ? 'Simulated webhook outage enabled' : 'Simulated outage cleared');
     } catch (e) {
@@ -510,7 +510,7 @@ function ResultPanel({ item, sending, canAudit }: { item: HistoryItem | null; se
 function CredentialDialog({ open, onClose, onIssued }: { open: boolean; onClose: () => void; onIssued: (c: { apiKey: string; agentId: string; agentName: string }) => void }) {
   const { session } = useAuth();
   const toast = useToast();
-  const agents = useApi<{ items: Agent[] }>(open ? '/agents' : null);
+  const agents = usePost<{ items: Agent[] }>(open ? '/agent/getall' : null);
   const [agentId, setAgentId] = useState('');
   const [pending, setPending] = useState(false);
   const manageable = (agents.data?.items ?? []).filter((a) => roleHas(session?.role, PERMISSIONS.AGENT_MANAGE_ANY) || a.ownerUserId === session?.user.id);
@@ -537,7 +537,7 @@ function CredentialDialog({ open, onClose, onIssued }: { open: boolean; onClose:
             onClick={async () => {
               setPending(true);
               try {
-                const r = await api.post<{ agent: Agent; credential: { apiKey: string } }>(`/agents/${agentId}/rotate-credential`);
+                const r = await api.post<{ agent: Agent; credential: { apiKey: string } }>('/agent/rotateCredential', { id: agentId });
                 onIssued({ apiKey: r.credential.apiKey, agentId: r.agent.id, agentName: r.agent.name });
                 toast.success('Credential loaded', `New credential for ${r.agent.name} is held in memory only.`);
               } catch (e) {

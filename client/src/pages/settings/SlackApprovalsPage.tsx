@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { MessageSquare, Send, Unplug } from 'lucide-react';
 import { PERMISSIONS, type SlackSettingsView } from '@token-vault/shared';
-import { useApi, useMutation } from '@/hooks/useApi';
+import { useMutation, usePost } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -23,15 +23,15 @@ export function SlackApprovalsPage() {
   const { can } = useAuth();
   const toast = useToast();
   const manage = can(PERMISSIONS.POLICY_MANAGE);
-  const { data, error, loading, reload, setData } = useApi<SlackSettingsView>('/slack-settings');
+  const { data, error, loading, reload, setData } = usePost<SlackSettingsView>('/slackSettings/getdata');
   const [f, setF] = useState({ botToken: '', signingSecret: '', channelId: '', enabled: true });
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
   useEffect(() => {
     if (data) setF((x) => ({ ...x, channelId: data.channelId ?? '', enabled: data.configured ? data.enabled : true }));
   }, [data]);
-  const save = useMutation((body: unknown) => api.put<SlackSettingsView>('/slack-settings', body));
-  const test = useMutation(() => api.post<{ sent: boolean }>('/slack-settings/test'));
-  const disconnect = useMutation(() => api.del('/slack-settings'));
+  const save = useMutation((body: unknown) => api.post<SlackSettingsView>('/slackSettings/save', body));
+  const test = useMutation(() => api.post<{ sent: boolean }>('/slackSettings/test'));
+  const disconnect = useMutation(() => api.post('/slackSettings/disconnect'));
   const fe = save.fieldErrors;
 
   if (error) return <ErrorState error={error} onRetry={reload} />;

@@ -31,11 +31,11 @@ export function OAuthCallbackPage() {
     (async () => {
       if (!state) return setError('The provider did not return a state. Start again from the integration catalog.');
       if (providerError || !code) {
-        await api.post('/integrations/oauth/cancel', { state }).catch(() => undefined);
+        await api.post('/integration/oauthCancel', { state }).catch(() => undefined);
         return setError(providerError === 'access_denied' ? 'Access was not granted at the provider.' : `The provider returned an error${providerError ? ` (${providerError})` : ''}.`);
       }
       try {
-        const integration = await api.post<IntegrationDetail>('/integrations/oauth/complete', { code, state });
+        const integration = await api.post<IntegrationDetail>('/integration/oauthComplete', { code, state });
         toast.success(`${integration.displayName} connected`, 'The OAuth tokens are encrypted inside your customer webhook.');
         navigate(`/integrations/${integration.id}`, { replace: true });
       } catch (e) {

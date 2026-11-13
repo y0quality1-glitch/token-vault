@@ -37,7 +37,7 @@ test.describe.serial('dynamic Integration Catalog', () => {
     errors = trackPageErrors(page);
     owner = await playwright.request.newContext({ baseURL: API });
     await owner.post('/api/v1/auth/login', { data: { email: 'owner@demo.test', password: DEMO_PASSWORD } });
-    await owner.post('/api/v1/auth/select-organization', { data: { organizationId: 'org_demo0000000001' } });
+    await owner.post('/api/v1/auth/selectOrganization', { data: { organizationId: 'org_demo0000000001' } });
   });
   test.afterAll(async () => {
     expect(errors, 'no uncaught page errors').toEqual([]);
@@ -71,11 +71,11 @@ test.describe.serial('dynamic Integration Catalog', () => {
   });
 
   test('a "coming soon" application cannot be connected', async () => {
-    const res = await owner.post('/api/v1/integrations', {
+    const res = await owner.post('/api/v1/integration/save', {
       data: { provider: 'slack', authType: 'BOT_TOKEN', webhookId: 'wh_local0000000001', displayName: 'Early Slack', environment: 'development', secret: 'placeholder-not-a-token', allowedResources: [] },
     });
     expect(res.status()).toBe(400);
-    expect((await res.json()).error.code).toBe('PROVIDER_NOT_AVAILABLE');
+    expect((await res.json()).code).toBe('PROVIDER_NOT_AVAILABLE');
     await page.goto('/integrations/connect/slack');
     await expect(page.getByText('Slack is coming soon')).toBeVisible();
     await page.goto('/integrations/catalog');

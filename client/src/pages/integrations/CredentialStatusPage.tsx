@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { KeyRound, RefreshCw } from 'lucide-react';
 import { PERMISSIONS, rotationState, type Integration } from '@token-vault/shared';
-import { useApi } from '@/hooks/useApi';
+import { usePost } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -18,13 +18,13 @@ import { formatDateTime, relativeTime } from '@/lib/utils';
 export function CredentialStatusPage() {
   const { can } = useAuth();
   const toast = useToast();
-  const { data, error, loading, reload } = useApi<{ items: Integration[] }>('/integrations');
+  const { data, error, loading, reload } = usePost<{ items: Integration[] }>('/integration/getall');
   const [testing, setTesting] = useState<string | null>(null);
 
   async function test(i: Integration) {
     setTesting(i.id);
     try {
-      const r = await api.post<{ valid: boolean; upstreamStatus: number | null; simulated: boolean }>(`/integrations/${i.id}/test`);
+      const r = await api.post<{ valid: boolean; upstreamStatus: number | null; simulated: boolean }>('/integration/test', { id: i.id });
       if (r.valid) toast.success(`${i.displayName}: credential valid`, `Upstream responded ${r.upstreamStatus}${r.simulated ? ' (simulated)' : ''}.`);
       else toast.error(`${i.displayName}: credential invalid`, `Upstream responded ${r.upstreamStatus ?? 'n/a'}.`);
       await reload();
@@ -39,7 +39,7 @@ export function CredentialStatusPage() {
   async function checkAll() {
     setCheckingAll(true);
     try {
-      const r = await api.post<{ valid: number; rejected: number; unknown: number; skipped: number }>('/integrations/check-credentials');
+      const r = await api.post<{ valid: number; rejected: number; unknown: number; skipped: number }>('/integration/checkCredentials');
       const summary = `${r.valid} valid, ${r.rejected} rejected${r.unknown ? `, ${r.unknown} could not be checked` : ''}${r.skipped ? `, ${r.skipped} skipped (disabled or webhook unhealthy)` : ''}.`;
       if (r.rejected) toast.error('Some credentials were rejected', `${summary} Rejected integrations are now marked invalid.`);
       else toast.success('Credentials checked', summary);

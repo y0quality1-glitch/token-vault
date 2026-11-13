@@ -1,6 +1,6 @@
 import { Check, Minus } from 'lucide-react';
 import { PERMISSIONS, ROLE_DESCRIPTIONS, ROLE_LABELS, ROLE_PERMISSIONS, type Member, type Permission, type Role } from '@token-vault/shared';
-import { useApi } from '@/hooks/useApi';
+import { usePost } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
 import { api } from '@/lib/api';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
@@ -28,12 +28,12 @@ const MATRIX: { label: string; perm: Permission }[] = [
 export function MembersPage() {
   const { can, session, refresh } = useAuth();
   const toast = useToast();
-  const { data, error, loading, reload, setData } = useApi<{ items: Member[] }>('/organizations/current/members');
+  const { data, error, loading, reload, setData } = usePost<{ items: Member[] }>('/member/getall');
   const manage = can(PERMISSIONS.MEMBERS_MANAGE);
 
   async function changeRole(m: Member, role: Role) {
     try {
-      const updated = await api.patch<Member>(`/organizations/current/members/${m.id}`, { role });
+      const updated = await api.post<Member>('/member/save', { id: m.id, role });
       setData({ items: data!.items.map((x) => (x.id === m.id ? updated : x)) });
       toast.success('Role updated', `${m.fullName} is now ${ROLE_LABELS[role]}`);
       if (m.userId === session?.user.id) await refresh();

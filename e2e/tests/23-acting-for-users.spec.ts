@@ -1,6 +1,6 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 import { generateKeyPairSync, sign } from 'node:crypto';
-import { DEMO_PASSWORD, login } from './helpers';
+import { DEMO_PASSWORD, details, login } from './helpers';
 
 /**
  * Acting on behalf of a user, end to end:
@@ -33,15 +33,15 @@ test.describe.serial('acting on behalf of a user (Demo Organization)', () => {
   }
   const listIssues = (onBehalfOf?: string) =>
     agentApi
-      .post('/agent/v1/execute', { data: { integration_id: 'int_github_001', operation: 'github.issues.list', resource: { repository: 'demo-org/demo-repo' }, ...(onBehalfOf ? { on_behalf_of: onBehalfOf } : {}) } })
-      .then(async (r) => ({ status: r.status(), body: await r.json() }));
+      .post('/agent/v1/request/execute', { data: { integration_id: 'int_github_001', operation: 'github.issues.list', resource: { repository: 'demo-org/demo-repo' }, ...(onBehalfOf ? { on_behalf_of: onBehalfOf } : {}) } })
+      .then(async (r) => ({ status: r.status(), body: await details(r) }));
 
   test.beforeAll(async ({ playwright, browser }) => {
     admin = await playwright.request.newContext({ baseURL: API });
     await admin.post('/api/v1/auth/login', { data: { email: 'owner@demo.test', password: DEMO_PASSWORD } });
-    await admin.post('/api/v1/auth/select-organization', { data: { organizationId: 'org_demo0000000001' } });
-    const agent = await (await admin.post('/api/v1/agents', { data: { name: agentName, environment: 'development', ownerTeam: 'Support', agentType: 'AI_AGENT' } })).json();
-    const grant = await admin.post('/api/v1/grants', {
+    await admin.post('/api/v1/auth/selectOrganization', { data: { organizationId: 'org_demo0000000001' } });
+    const agent = await details(await admin.post('/api/v1/agent/save', { data: { name: agentName, environment: 'development', ownerTeam: 'Support', agentType: 'AI_AGENT' } }));
+    const grant = await admin.post('/api/v1/grant/save', {
       data: {
         name: `${agentName} issues`,
         agentId: agent.agent.id,
@@ -62,8 +62,8 @@ test.describe.serial('acting on behalf of a user (Demo Organization)', () => {
   });
 
   test.afterAll(async () => {
-    const { items } = await (await admin.get('/api/v1/user-issuers')).json();
-    for (const i of items.filter((x: { issuer: string }) => x.issuer === ISSUER)) await admin.delete(`/api/v1/user-issuers/${i.id}`);
+    const { items } = await details(await admin.post('/api/v1/userIssuer/getall'));
+    for (const i of items.filter((x: { issuer: string }) => x.issuer === ISSUER)) await admin.delete(`/api/v1/userIssuer/delete/${i.id}`);
     await admin?.dispose();
     await agentApi?.dispose();
     await page?.close();
