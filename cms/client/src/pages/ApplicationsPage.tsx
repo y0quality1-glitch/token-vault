@@ -11,7 +11,8 @@ import { ErrorState, FormError } from '@ui/feedback';
 import { Field, Input, Textarea } from '@ui/form';
 import { PageHeader } from '@ui/navigation';
 import { DataTable } from '@ui/table';
-import { useApi, useMutation } from '@tv-hooks/useApi';
+import { useMutation } from '@tv-hooks/useApi';
+import { useQuery } from '@/lib/hooks';
 import { useAuth } from '@/auth';
 import { AvailabilityBadge } from '@/components/AvailabilityBadge';
 import { VersionBadge } from '@/components/VersionBadge';
@@ -21,7 +22,7 @@ import { relativeTime } from '@/lib/utils';
 export function ApplicationsPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
-  const list = useApi<{ items: CmsApplicationSummary[] }>('/applications');
+  const list = useQuery('applications', () => api.page<CmsApplicationSummary>('/application/getall', { pageSize: 200 }));
   const [open, setOpen] = useState(false);
   const canCreate = user?.role === 'EDITOR' || user?.role === 'ADMIN';
 
@@ -108,7 +109,7 @@ export function ApplicationsPage() {
 
 function NewApplicationDialog({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: (key: string) => void }) {
   const [form, setForm] = useState({ key: '', name: '', description: '' });
-  const create = useMutation((body: typeof form) => api.post<{ key: string }>('/applications', body));
+  const create = useMutation((body: typeof form) => api.post<{ key: string }>('/application/save', body));
   const fe = create.fieldErrors;
   return (
     <Dialog

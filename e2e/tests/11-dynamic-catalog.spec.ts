@@ -86,11 +86,11 @@ test.describe.serial('dynamic Integration Catalog', () => {
     await expect(page.getByTestId('catalog-kanban')).toHaveCount(0);
 
     const editor = await cms(playwright, 'editor@cms.test');
-    await editor.post('/api/v1/applications', { data: { key: 'kanban', name: 'Kanban Board' } });
-    expect((await (await editor.put('/api/v1/applications/kanban/versions/1', { data: { definition: kanban } })).json()).issues).toEqual([]);
-    await editor.post('/api/v1/applications/kanban/versions/1/submit');
+    await editor.post('/api/v1/application/save', { data: { key: 'kanban', name: 'Kanban Board' } });
+    expect((await (await editor.post('/api/v1/version/save', { data: { key: 'kanban', version: 1, definition: kanban } })).json()).details.issues).toEqual([]);
+    await editor.post('/api/v1/version/submit', { data: { key: 'kanban', version: 1 } });
     const publisher = await cms(playwright, 'publisher@cms.test');
-    expect((await (await publisher.post('/api/v1/applications/kanban/versions/1/approve', { data: { acknowledgeHostChange: true } })).json()).status).toBe('PUBLISHED');
+    expect((await (await publisher.post('/api/v1/version/approve', { data: { key: 'kanban', version: 1, acknowledgeHostChange: true } })).json()).details.status).toBe('PUBLISHED');
 
     // No reload: the page refreshes itself.
     const tile = page.getByTestId('catalog-kanban');
@@ -101,7 +101,7 @@ test.describe.serial('dynamic Integration Catalog', () => {
     await expect(page.getByRole('group', { name: 'Categories' }).getByRole('button', { name: /^Project management/ })).toBeVisible();
 
     const admin = await cms(playwright, 'admin@cms.test');
-    expect((await admin.post('/api/v1/applications/kanban/archive', { data: { reason: 'Replaced' } })).ok()).toBe(true);
+    expect((await admin.post('/api/v1/application/archive', { data: { key: 'kanban', reason: 'Replaced' } })).ok()).toBe(true);
     await expect(tile).toHaveCount(0, { timeout: 30_000 });
     await Promise.all([editor.dispose(), publisher.dispose(), admin.dispose()]);
   });

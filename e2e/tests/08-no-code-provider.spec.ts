@@ -57,14 +57,14 @@ test.describe.serial('no-code provider: published in the CMS, used through Token
 
   test('an editor and a publisher define and publish Ticket Desk in the CMS', async ({ playwright }) => {
     const editor = await cmsSession(playwright, 'editor@cms.test');
-    expect((await editor.post('/api/v1/applications', { data: { key: 'ticketdesk', name: 'Ticket Desk' } })).status()).toBe(201);
-    const saved = await (await editor.put('/api/v1/applications/ticketdesk/versions/1', { data: { definition: ticketDesk } })).json();
+    expect((await editor.post('/api/v1/application/save', { data: { key: 'ticketdesk', name: 'Ticket Desk' } })).status()).toBe(201);
+    const saved = (await (await editor.post('/api/v1/version/save', { data: { key: 'ticketdesk', version: 1, definition: ticketDesk } })).json()).details;
     expect(saved.issues).toEqual([]);
-    expect((await editor.post('/api/v1/applications/ticketdesk/versions/1/submit')).ok()).toBe(true);
+    expect((await editor.post('/api/v1/version/submit', { data: { key: 'ticketdesk', version: 1 } })).ok()).toBe(true);
 
     const publisher = await cmsSession(playwright, 'publisher@cms.test');
-    const published = await publisher.post('/api/v1/applications/ticketdesk/versions/1/approve', { data: { acknowledgeHostChange: true } });
-    expect((await published.json()).status).toBe('PUBLISHED');
+    const published = await publisher.post('/api/v1/version/approve', { data: { key: 'ticketdesk', version: 1, acknowledgeHostChange: true } });
+    expect((await published.json()).details.status).toBe('PUBLISHED');
     await Promise.all([editor.dispose(), publisher.dispose()]);
   });
 

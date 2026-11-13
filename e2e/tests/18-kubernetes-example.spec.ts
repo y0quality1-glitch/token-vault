@@ -42,13 +42,13 @@ test.describe.serial('Kubernetes example: orders-api', () => {
     // Slack must be available in the catalog: publish its open version, or switch it on.
     const cms = await playwright.request.newContext({ baseURL: CMS_API });
     await cms.post('/api/v1/auth/login', { data: { email: 'admin@cms.test', password: DEMO_PASSWORD } });
-    const slack = await (await cms.get('/api/v1/applications/slack')).json();
+    const slack = (await (await cms.get('/api/v1/application/getbyid/slack')).json()).details;
     if (slack.openVersion) {
-      const v = await (await cms.get(`/api/v1/applications/slack/versions/${slack.openVersion.version}`)).json();
-      await cms.put(`/api/v1/applications/slack/versions/${v.version}`, { data: { definition: { ...v.definition, catalog: { ...v.definition.catalog, availability: 'available' } } } });
-      expect((await cms.post(`/api/v1/applications/slack/versions/${v.version}/publish`, { data: { acknowledgeHostChange: true } })).ok()).toBe(true);
+      const v = (await (await cms.post('/api/v1/version/getdatabyid', { data: { key: 'slack', version: slack.openVersion.version } })).json()).details;
+      await cms.post('/api/v1/version/save', { data: { key: 'slack', version: v.version, definition: { ...v.definition, catalog: { ...v.definition.catalog, availability: 'available' } } } });
+      expect((await cms.post('/api/v1/version/publish', { data: { key: 'slack', version: v.version, acknowledgeHostChange: true } })).ok()).toBe(true);
     } else if (slack.availability !== 'available') {
-      expect((await cms.post('/api/v1/applications/slack/availability', { data: { availability: 'available' } })).ok()).toBe(true);
+      expect((await cms.post('/api/v1/application/availability', { data: { key: 'slack', availability: 'available' } })).ok()).toBe(true);
     }
     await cms.dispose();
     await expect.poll(async () => ((await (await admin.get('/api/v1/providers')).json()).providers as { key: string; catalog: { availability: string } }[]).find((p) => p.key === 'slack')?.catalog.availability, { timeout: 20_000 }).toBe('available');

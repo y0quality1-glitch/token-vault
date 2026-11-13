@@ -122,6 +122,8 @@ if (!existsSync(cmsEnv)) {
       `CMS_DATABASE_URL=${DEFAULT_CMS_DATABASE_URL}`,
       '# Ed25519 private key that signs published provider definitions (PEM, newlines escaped).',
       `CMS_SIGNING_PRIVATE_KEY=${pem.trim().replace(/\n/g, '\\n')}`,
+      '# Signs sign-in sessions (JWT). Optional outside production (derived from the signing key).',
+      `CMS_JWT_SECRET=${randomBytes(32).toString('base64url')}`,
       '',
     ].join('\n'),
   );

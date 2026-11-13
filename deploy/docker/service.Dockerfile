@@ -21,10 +21,16 @@ RUN --mount=type=secret,id=extra_ca,required=false \
     npm ci --workspace="$SERVICE" --workspace=shared --ignore-scripts --no-audit --no-fund && \
     npx --yes esbuild@0.25.0 "$SERVICE/src/index.ts" \
       --bundle --platform=node --target=node22 --format=esm \
-      --external:pg-native \
-      --banner:js="import { createRequire as __tvCreateRequire } from 'node:module'; const require = __tvCreateRequire(import.meta.url);" \
+      --external:pg-native --external:swagger-ui-dist \
+      --banner:js="import { createRequire as __tvCreateRequire } from 'node:module'; import { fileURLToPath as __tvFileURLToPath } from 'node:url'; import { dirname as __tvDirname } from 'node:path'; const require = __tvCreateRequire(import.meta.url); const __filename = __tvFileURLToPath(import.meta.url); const __dirname = __tvDirname(__filename);" \
       --outfile=/out/service.mjs && \
-    cp -r "$SERVICE/drizzle" /out/drizzle
+    # SQL migrations (server, webhook); the CMS API's TypeORM migrations are bundled.
+    if [ -d "$SERVICE/drizzle" ]; then cp -r "$SERVICE/drizzle" /out/drizzle; fi && \
+    # The CMS API serves swagger-ui's static files from disk, so it keeps that package.
+    if [ "$SERVICE" = "cms/api" ]; then \
+      mkdir -p /out/node_modules && \
+      for p in swagger-ui-dist; do cp -r "$(node -p "require('path').dirname(require.resolve('$p/package.json', { paths: ['$SERVICE'] }))")" /out/node_modules/; done; \
+    fi
 
 FROM ${NODE_IMAGE}
 ENV NODE_ENV=production MIGRATIONS_DIR=/app/drizzle

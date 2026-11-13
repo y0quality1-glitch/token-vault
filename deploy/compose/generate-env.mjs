@@ -57,6 +57,8 @@ const lines = [
   '# Provider CMS: Ed25519 signing key (CMS only) and its public key (pinned by the control plane and the webhook)',
   `CMS_SIGNING_PRIVATE_KEY=${escape(cms.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString())}`,
   `CMS_PUBLIC_KEY=${escape(pub)}`,
+  '# Signs CMS sign-in sessions (JWT); required in production',
+  `CMS_JWT_SECRET=${secret()}`,
   '# Set to false to require a second person for every publication',
   'CMS_ADMIN_DIRECT_PUBLISH=true',
   '',

@@ -236,7 +236,7 @@ token-vault/
 │       ├── lib/              API client, formatting utils
 │       └── pages/            one file per screen (see docs/SCREEN_MAP.md)
 ├── cms/                      Provider CMS (platform team): applications as signed, versioned definitions
-│   ├── api/                  Express + Drizzle: draft/review/publish workflow, Ed25519 signing, public catalog, audit
+│   ├── api/                  Express + TypeORM, structured per docs/fileStructure.md: draft/review/publish workflow, Ed25519 signing, public catalog, audit
 │   └── client/               React UI; reuses the console's UI components via the @ui alias
 ├── deploy/                   images (docker/), full-stack compose + smoke test (compose/), Kubernetes manifests (k8s/)
 ├── examples/kubernetes/      Node service on Kubernetes: config from a secrets manager at boot, Slack only through Token Vault
@@ -344,6 +344,8 @@ token-vault/
 | `PORT` | CMS API port (4200) |
 | `CMS_DATABASE_URL` | The CMS's own PostgreSQL database (`token_vault_cms`, separate role) |
 | `CMS_SIGNING_PRIVATE_KEY` | Ed25519 private key (PEM; `\n` escapes allowed) that signs published definitions. Only the CMS holds it; consumers pin the public key from `/catalog/v1/public-key`. To rotate without downtime, see Key rotation in [docs/CMS.md](docs/CMS.md) (`npm run cms:rotate-key` locally) |
+| `CMS_JWT_SECRET` | Signs CMS sign-in sessions (HS256, 32+ characters). Required in production; elsewhere derived from the signing key when unset |
+| `CMS_DATABASE_READ_URL` / `CMS_DATABASE_SSL` / `CMS_CORS_ORIGINS` | Optional: a read replica; `require` for TLS with certificate validation; browser origins allowed to call the API cross-origin (default: none) |
 | `SEED_MODE` | `if-empty` (default): seed demo users and the GitHub definition into an empty database. `reset`: wipe and reseed on start (tests, e2e) |
 
 ### Rotating keys
