@@ -44,6 +44,8 @@ const lines = [
   'WEBHOOK_PREVIOUS_SIGNING_SECRETS=',
   '# Control plane audit-chain signatures',
   `AUDIT_SIGNING_KEY=${secret()}`,
+  '# Signs console sign-in sessions (JWT); required in production',
+  `SESSION_JWT_SECRET=${secret()}`,
   '',
   '# Customer webhook credential encryption (AES-256). Losing it makes stored credentials unreadable.',
   `VAULT_ENCRYPTION_KEY=${randomBytes(32).toString('base64')}`,

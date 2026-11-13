@@ -68,7 +68,7 @@ TEST_DATABASE_URL=postgres://token_vault:token_vault@127.0.0.1:5432/token_vault_
 
 `WEBHOOK_TEST_DATABASE_URL` enables the webhook's store tests (`webhook/test/store.test.ts`) the same way, and `CMS_TEST_DATABASE_URL=postgres://token_vault_cms:token_vault_cms@127.0.0.1:5432/token_vault_cms_test` the CMS workflow tests (`cms/api/test/workflow.test.ts`).
 
-Schema changes: edit `server/src/db/schema.ts`, then run `npm run db:generate` and commit the new SQL file in `server/drizzle/`. `npm run db:migrate` applies migrations without starting the API.
+Control-plane schema changes: update the entity in `server/src/entities/` and add a TypeORM migration in `server/src/databases/migrations/` (listed in `dataSource.ts`). The first migration, `Baseline`, creates the schema on an empty database and brings databases created by the earlier Drizzle migrations up to date. `npm run db:migrate` applies migrations without starting the API.
 
 ```bash
 npm run build       # production builds of the console and the CMS UI
@@ -179,7 +179,7 @@ flowchart LR
 
 **Agent request flow** (spec Flow B):
 
-1. The agent calls `POST /agent/v1/execute` with `Authorization: Bearer tvak_<keyId>_<secret>`. Its identity is derived from that credential. No agent ID supplied by the caller is ever trusted.
+1. The agent calls `POST /agent/v1/request/execute` with `Authorization: Bearer tvak_<keyId>_<secret>`. Its identity is derived from that credential. No agent ID supplied by the caller is ever trusted.
 2. The control plane verifies the scrypt hash (and a user token in `on_behalf_of`, if sent), then runs the deterministic engine in this order: no emergency stop and agent active → **explicit DENY policies** (including argument rules on the request's input and resource) → grant exists and is active → validity window → integration active → scope → resource → **acting user** (an optional signed user token: the grant must allow acting for that user, within the user's own permissions) → **delegation limits** (a sub-agent with a `tvdt_` delegation token: only the delegated grant, operations, resources and request cap) → rate limit and budgets → source IP → **human approval** (only where a `REQUIRE_APPROVAL` policy matches: the request waits with `APPROVAL_REQUIRED` until a human approves that exact request). Any failed check means deny.
 3. On ALLOW, the broker sends the customer webhook a signed execution request containing `request_id`, `iat`, `exp` (+30 s), `nonce`, `aud` (the webhook instance ID) and the credential **reference**.
 4. The webhook verifies the HMAC, timestamp window, nonce (replay cache), audience, expiry and organization. It then decrypts the credential in memory, calls GitHub, and returns a **sanitized**, signed response.
@@ -196,29 +196,22 @@ token-vault/
 ├── shared/                   @token-vault/shared: domain types, provider definitions (GitHub), RBAC matrix, decision codes
 ├── sdk/                      @token-vault/sdk: TypeScript client for the agent API (typed errors, key never logged)
 ├── mcp/                      Token Vault MCP server (stdio): brokered GitHub tools, plus typed tools generated from the catalog for every granted application
-├── server/                   Control plane (Express modular monolith)
+├── server/                   Control plane, structured per docs/fileStructure.md (Express + TypeORM)
 │   ├── src/
-│   │   ├── app.ts            router composition (admin API /api/v1, agent API /agent/v1)
-│   │   ├── config.ts
-│   │   ├── lib/              crypto (scrypt, HMAC), ids, CIDR matching, sanitizer, zod validation
-│   │   ├── middleware/       session auth + RBAC, logging (no bodies), security headers, error handler
-│   │   ├── db/               Drizzle schema (spec data model), pg pool, migration runner
+│   │   ├── index.ts          connect, migrate, seed, then listen; graceful shutdown
+│   │   ├── app.ts            App: middlewares, admin controllers (/api/v1), agent controllers (/agent/v1), Slack, JWKS, API docs
+│   │   ├── config.ts         environment, validated at start-up
+│   │   ├── swagger.ts        OpenAPI built from the registered routes (/api-docs.json, /api-docs/)
+│   │   ├── controllers/      BaseController + one controller per module (routes, permissions, DTO validation)
+│   │   ├── services/         business logic per module, plus the policy engine, broker, audit chain, provider registry
+│   │   ├── entities/         TypeORM entities (camelCase properties on the snake_case tables)
+│   │   ├── databases/        DataSource, AppDatabase singleton, client (Executor, transaction), migrations, DTOs per module
+│   │   ├── core/             GenericResponse envelope, ApiError handling, ErrorCodes, AppRoutes
+│   │   ├── middlewares/      session auth (JWT) + RBAC, class-validator DTO validation, request logging
 │   │   ├── store/            repositories (only code that queries Postgres), seed, DTO views
-│   │   └── modules/
-│   │       ├── auth/             login, org selection, forgot-password placeholder
-│   │       ├── organizations/    org settings, members & roles
-│   │       ├── webhooks/         registry, signed client, health checks + heartbeat
-│   │       ├── integrations/     catalog, credential registration/rotation (forwarded, never stored)
-│   │       ├── agents/           registry, one-time credential issuance, API clients
-│   │       ├── grants/           create, revoke, approve, extend, versioning, expire-now (demo)
-│   │       ├── policies/         CRUD for ALLOW/DENY rules
-│   │       ├── policy-engine/    pure deterministic evaluator (unit tested)
-│   │       ├── broker/           agent execution API + credential broker
-│   │       ├── audit/            append-only access requests + audit events
-│   │       ├── dashboard/        overview aggregation
-│   │       └── demo/             reset
-│   ├── drizzle/              SQL migrations (0000 schema, 0001 append-only audit triggers)
-│   └── test/                 engine.test.ts (pure), db.test.ts (needs TEST_DATABASE_URL)
+│   │   ├── utils/jwt/        session tokens
+│   │   └── lib/              crypto (scrypt, HMAC), ids, CIDR matching, sanitizer
+│   └── test/                 vitest; database tests need TEST_DATABASE_URL
 ├── webhook/                  Customer webhook / vault runtime (separate process, customer trust zone)
 │   ├── src/
 │   │   ├── security/         HMAC verification + replay cache, AES-256-GCM sealing, masking
@@ -277,7 +270,7 @@ token-vault/
 
 - **React + Vite instead of Next.js.** You asked for React with an Express backend, so the client is a Vite SPA with React Router. Same stack otherwise: TypeScript, Tailwind, Lucide.
 - **Shadcn UI is not installed.** An equivalent component library was hand-written in `client/src/components/ui` in the same style. It has no CLI or codegen dependency.
-- **Drizzle instead of Prisma.** The spec allows either; Drizzle keeps the schema in TypeScript, emits plain SQL migrations, and needs no engine binary.
+- **TypeORM in the control plane, Drizzle in the webhook.** The control plane follows the service template in docs/fileStructure.md (TypeORM, class-validator, controllers and services). The customer webhook keeps Drizzle: it is a small, separately deployed runtime.
 - **Text IDs instead of UUIDs.** Primary keys are prefixed random IDs (`agt_…`, `grt_…`), so they are recognizable in logs and audit records.
 - **Integrations are soft-deleted** (`deleted_at`), so grants and audit records keep a valid reference.
 - **One local Postgres server hosts both trust zones** for convenience, as separate databases with separate roles: the control plane's `token_vault` role cannot connect to the customer databases. In a real deployment the customer runs their own database server.
@@ -299,6 +292,8 @@ token-vault/
 | `DEFAULT_WEBHOOK_URL` | Pre-filled webhook URL and the seeded webhook endpoint |
 | `DATABASE_URL` | PostgreSQL connection string (required) |
 | `AUDIT_SIGNING_KEY` | HMAC key (32+ characters) for the audit chain signatures (required). Never stored in the database. Changing it makes existing signatures fail verification; key rotation is not supported in the POC |
+| `SESSION_JWT_SECRET` | Signs console sessions (HS256 JWT, 32+ characters). Required in production; elsewhere derived from `AUDIT_SIGNING_KEY` when unset |
+| `DATABASE_READ_URL` / `DATABASE_SSL` | Optional: a read replica for plain reads; `require` for TLS with certificate validation |
 | `SEED_MODE` | `if-empty` (default): seed demo data into an empty database. `reset`: wipe and reseed on every start (used by the e2e suite) |
 | `DB_POOL_MAX` | Connection pool size (default 10) |
 | `HEARTBEAT_INTERVAL_MS` | Signed health-check interval (default 30000) |

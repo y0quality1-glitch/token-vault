@@ -2,95 +2,106 @@
 
 ## Admin API: `/api/v1`
 
-Authenticated with the `tv_session` httpOnly cookie, which is set by `POST /auth/login`. Org-scoped routes require a selected organization. Mutations are guarded by the RBAC matrix in `shared/src/rbac.ts`.
+Authenticated with the `tv_session` httpOnly cookie, which is set by `POST /auth/login` (a JWT recorded as a server-side session; API clients may send it as `Authorization: Bearer`). Org-scoped routes require a selected organization. Mutations are guarded by the RBAC matrix in `shared/src/rbac.ts`. The API follows the service template in [fileStructure.md](fileStructure.md); browse it at `/api-docs/` (OpenAPI: `/api-docs.json`).
 
-Errors use one shape: `{ "error": { "code": "…", "message": "…", "details": { "fields": { "name": "…" } } } }`.
+**Routes.** Lists are `POST /<module>/getall` (filters in the JSON body, same names as the table's filters), a record is `GET /<module>/getbyid/:id`, create and update are `POST /<module>/save` (with `id`: update), and other actions are `POST /<module>/<action>` with `{ id, … }` in the body.
+
+**Every response uses one envelope** (admin and agent API):
+
+```json
+{ "status": "10000", "msg": "Grant Fetched Successfully", "error": null, "details": { … }, "totalRecords": 0 }
+```
+
+`details` is the payload described below (lists: `{ items, … }`, with `totalRecords` = the number of items). A failure keeps its HTTP status and answers `{ "status": "10001", "msg": "", "error": "<message>", "code": "<CODE>", "details": { "fields": { "name": "…" } }, "totalRecords": 0 }`. A known path called with the wrong method answers 405 `METHOD_NOT_ALLOWED`.
 
 | Method | Path | Permission | Notes |
 | --- | --- | --- | --- |
 | POST | `/auth/login` | public | `{email, password}` → session info; auto-selects the org when the user has exactly one |
 | POST | `/auth/logout` | session | |
 | GET | `/auth/me` | session | user, memberships, current org, role, permissions |
-| POST | `/auth/select-organization` | session | `{organizationId}` |
-| POST | `/auth/forgot-password` | public | placeholder |
-| GET | `/organizations/current` | any role | |
-| PATCH | `/organizations/current` | `org:manage` | |
-| GET | `/organizations/current/members` | any role | |
-| PATCH | `/organizations/current/members/:id` | `members:manage` | `{role}`; the last owner cannot be demoted |
-| GET | `/dashboard` | any role | overview aggregation |
-| GET | `/webhooks` | any role | |
-| POST | `/webhooks` | `webhook:manage` | step 1: returns a `PENDING` webhook and a one-time `registrationChallenge` |
-| GET | `/webhooks/:id` | any role | |
-| PATCH | `/webhooks/:id` | `webhook:manage` | step 2 / later changes: `authenticationType` (`MTLS` needs an `https://` URL and a control-plane client certificate) and `endpointUrl` (audited `webhook.endpoint_changed`) |
-| POST | `/webhooks/:id/test` | `webhook:manage` | signed health challenge → `{webhook, result}` |
-| POST | `/webhooks/:id/simulate-outage` | `webhook:manage` | demo: `{enabled}` |
-| GET | `/integrations/catalog` | any role | |
-| GET | `/integrations` | any role | |
-| POST | `/integrations` | `integration:manage` | PAT: `{provider, webhookId, displayName, environment, accountLabel, authType: "PAT", secret, allowedResources, description}`. GitHub App: `{…, authType: "GITHUB_APP", appId, installationId (optional), keySource: "stored" \| "webhook_env", privateKey (PEM, when stored)}`; `accountLabel` is optional and defaults to the installation's account. Secrets are forwarded to the webhook and never stored. An invalid key or unknown installation returns 400 `INVALID_PRIVATE_KEY` / `INSTALLATION_NOT_FOUND` / `APP_KEY_NOT_CONFIGURED` |
-| GET | `/integrations/:id` | any role | includes granted agents |
-| PATCH | `/integrations/:id` | `integration:manage` | metadata only |
-| POST | `/integrations/:id/test` | `integration:manage` | webhook decrypts the credential and calls the provider |
-| PUT | `/integrations/:id/access-mode` | `integration:manage` | `{accessMode}`: `BROKERED` (default), `DECISION_ONLY` or `SHORT_LIVED_CREDENTIAL` (GitHub App and OAuth integrations only, else 400). Audited; leaving Brokered is a warning |
-| PUT | `/integrations/:id/rotation-policy` | `integration:manage` | `{intervalDays}` (7–730, or `null` to remove): rotation reminder; the detail returns `rotationIntervalDays`; audited |
-| POST | `/integrations/check-credentials` | `integration:manage` | re-tests every credential of the organization now (the scheduled check): returns `{valid, rejected, unknown, skipped}`; rejected → Invalid, recovered → Connected, both audited |
-| POST | `/integrations/:id/rotate` | `integration:manage` | PAT: `{secret}`. GitHub App: `{privateKey}` (400 `KEY_MANAGED_BY_WEBHOOK` if the key lives in the webhook's environment). OAuth: 400 `RECONNECT_REQUIRED` |
-| POST | `/integrations/oauth/start` | `integration:manage` | `{provider, authType, webhookId, displayName, environment, clientId, clientSecret, allowedResources, …}` → `{authorizeUrl}` (see [OAUTH.md](OAUTH.md)) |
-| POST | `/integrations/oauth/complete` | `integration:manage` | `{code, state}` from the provider redirect; only the admin who started, once, within 10 minutes (`OAUTH_STATE_INVALID` otherwise) → integration |
-| POST | `/integrations/oauth/cancel` | `integration:manage` | `{state}`: discard a pending connection |
-| POST | `/integrations/:id/disable` · `/enable` | `integration:manage` | |
-| DELETE | `/integrations/:id` | `integration:manage` | webhook crypto-shreds the credential; grants are revoked |
-| GET | `/agents` · `/agents/:id` | any role | |
-| POST | `/agents` | `agent:manage` | returns `{agent, credential: {apiKey, keyId, issuedAt}}`. **The key is shown once** |
-| PATCH | `/agents/:id` | `agent:manage` (owner) | |
-| POST | `/agents/:id/rotate-credential` | `agent:manage` (owner) | `{graceMinutes?}` (0–1440, default 0): how long the old key keeps working; returns the new key once |
-| POST | `/agents/:id/revoke-previous-credential` | `agent:manage` (owner) | ends the grace period: the old key stops working now |
-| POST | `/agents/:id/disable` · `/enable` | `agent:manage` (owner) | |
-| POST | `/agents/:id/revoke-grants` | `grant:revoke` | |
-| GET | `/api-clients` | any role | key IDs and masked keys only |
-| GET | `/grants` | any role | `?status=&agentId=&integrationId=` |
-| POST | `/grants/batch` | `grant:manage` | one agent, several applications: `{agentId, items: [{integrationId, scopes, repositories, name?}] (1–10, each integration once), validFrom, expiresAt, rateLimitPerMinute, …}` with the same shared fields as `/grants`. Creates one grant per item, all or none; a problem is reported as `items.<n>.<field>`. Default names: "<agent> → <integration>". 201 `{items: GrantDetail[]}` |
-| POST | `/grants` | `grant:manage` | optional budgets `maxRequestsPerDay` (rolling 24 h) and `maxWritesPerHour` (rolling hour); `null` = no limit; `onBehalfOf` (`ALLOWED` default, `REQUIRED`, `NOT_ALLOWED`) and `allowedUserGroups` for acting on behalf of users |
-| GET | `/grants/:id` | any role | usage, history, versions, matching policies |
-| POST | `/grants/:id/revoke` | `grant:revoke` | `{reason}`; takes effect on the next authorization check |
-| POST | `/grants/:id/approve` | `grant:approve` | simulated approval |
-| POST | `/grants/:id/extend` | `grant:manage` | `{expiresAt}` |
-| POST | `/grants/:id/versions` | `grant:manage` | edit restrictions → new version; the old version becomes `SUPERSEDED` |
-| POST | `/grants/:id/expire-now` | `grant:manage` | demo (Scenario E) |
-| GET | `/policies` | any role | |
-| POST | `/policies` · PUT `/policies/:id` | `policy:manage` | `effect`: `DENY`, `ALLOW`, `REQUIRE_APPROVAL` or `FILTER` (with `responseFilter: {mask: [email|phone|credit_card|ip_address|secret], customPatterns: [{name, pattern}], removeFields: [], promptInjection: off|flag|block}`); `conditions.operations`: exact operation ids or selectors that also cover operations published later (`*`, `github.*` for every operation of an application, `risk:read` / `risk:write` / `risk:destructive`, `github:write` for one risk in one application); `conditions.arguments`: up to 10 `{field, op, value}` argument rules (`field` is `input.<name>`, `resource.<name>`, or `user.sub`, `user.email`, `user.name`, `user.groups`, `user.issuer` for the user the agent acts for; `op` is one of `equals, not_equals, contains, not_contains, matches, not_matches, in, not_in, longer_than, greater_than, less_than`) |
-| GET | `/organizations/current/emergency-stop` | any role | `{stopped, stoppedAt, stoppedBy, stoppedByName, reason}` |
-| POST | `/organizations/current/emergency-stop` | `grant:revoke` | `{reason}`: denies every agent request with `EMERGENCY_STOP` until lifted |
-| POST | `/organizations/current/emergency-stop/lift` | `grant:approve` | `{note?}` |
-| GET | `/access-requests` · `/access-requests/:id` | `audit:read` | filters: `agentId, integrationId, grantId, decision, operation, from, to, search, user, sessionId` (`user` matches the subject or email of the user the agent acted for); each record has `onBehalfOf` |
-| GET | `/audit-events` · `/audit-events/:id` | `audit:read` | filters: `eventType, outcome, actorType, search, category=security` |
-| GET | `/grant-requests` · `/grant-requests/:id` | any role | just-in-time access requests (`?status=PENDING`); includes the `pending` count |
-| POST | `/grant-requests/:id/approve` | `grant:approve` | `{durationMinutes, operations?, repositories?, rateLimitPerMinute?, note?}`; may narrow but not widen the request; the agent's owner cannot approve it; creates an expiring grant |
-| POST | `/grant-requests/:id/reject` | `grant:approve` | `{note?}` |
-| GET | `/approvals` · `/approvals/:id` | any role | requests held by `REQUIRE_APPROVAL` policies, with the exact operation, resource and input (`?status=PENDING`); includes the `pending` count |
-| POST | `/approvals/:id/approve` | `grant:approve` | `{note?}`; the agent's owner cannot approve it; the agent may then run that exact request once, within 15 minutes |
-| POST | `/approvals/:id/reject` | `grant:approve` | `{note?}`; the same request is answered with `APPROVAL_REJECTED` for 24 hours |
-| GET | `/sessions` | `audit:read` | `?search=&agentId=`: requests grouped by session id (or trace id) and agent: `sessionLabel`, `requests`, `allowed`, `denied`, `held`, `firstAt`, `lastAt`, `integrations`, `users`, `subAgents` |
-| GET | `/sessions/:sessionId` | `audit:read` | `?agentId=`: the summary plus `timeline` (every request, oldest first) and `approvals` asked for during the session |
-| GET | `/delegations` | any role | `?agentId=` or `?grantId=`: sub-agent delegations with effective `status` (`ACTIVE`, `EXPIRED`, `REVOKED`, also when one up the chain was revoked), `statusReason` and `used` |
-| POST | `/delegations/:id/revoke` | `grant:revoke` | `{reason}`; stops it and everything delegated from it |
-| GET | `/slack-settings` | any role | the Slack connection (workspace, channel, token hint, `interactionsUrl`); secrets are never returned |
-| PUT | `/slack-settings` | `policy:manage` | `{botToken?, signingSecret?, channelId, enabled}`; a new token is checked with Slack (`auth.test`); both secrets are required the first time and stored encrypted |
-| POST | `/slack-settings/test` · DELETE `/slack-settings` | `policy:manage` | send a test message · disconnect |
-| GET | `/user-issuers` | any role | identity providers trusted to vouch for users (public keys only) |
-| POST | `/user-issuers` · PUT `/user-issuers/:id` | `policy:manage` | `{name, issuer, audience, publicKey, groupsClaim?, maxTokenLifetimeSeconds?, enabled?}`; `publicKey` is PEM or JWK (RSA 2048+, EC P-256/P-384, Ed25519), private keys are refused; `issuer` is unique per organization |
-| DELETE | `/user-issuers/:id` | `policy:manage` | tokens from it are refused from the next request |
-| POST | `/user-issuers/verify-token` | `policy:manage` | `{token}` → `{valid: true, user}` or `{valid: false, reason}`; runs nothing |
-| GET | `/audit-integrity` | `audit:read` | verifies both audit hash chains → `{ok, verifiedAt, chains: [{table, ok, chainedRecords, legacyRecords, headSeq, headHash, problems}]}` |
-| GET | `/access-reviews` | any role | active grants with review status, 30-day usage, due / unused / expiring counts (`?summary=1` for counts only) |
-| POST | `/access-reviews/certify` | `grant:revoke` | `{grantIds[], note?}`: records the review and restarts the 30-day interval. Revoke with `/grants/:id/revoke` |
+| POST | `/auth/selectOrganization` | session | `{organizationId}` |
+| POST | `/auth/forgotPassword` | public | placeholder |
+| POST | `/organization/getdata` | any role | the current organization |
+| POST | `/organization/save` | `org:manage` | |
+| POST | `/member/getall` | any role | |
+| POST | `/member/save` | `members:manage` | `{id, role}`; the last owner cannot be demoted |
+| POST | `/dashboard/getdata` | any role | overview aggregation |
+| POST | `/webhook/getall` | any role | |
+| POST | `/webhook/save` | `webhook:manage` | without `id`, step 1: returns a `PENDING` webhook and a one-time `registrationChallenge` |
+| GET | `/webhook/getbyid/:id` | any role | |
+| POST | `/webhook/save` | `webhook:manage` | with `id`, step 2 / later changes: `authenticationType` (`MTLS` needs an `https://` URL and a control-plane client certificate) and `endpointUrl` (audited `webhook.endpoint_changed`) |
+| POST | `/webhook/test` | `webhook:manage` | `{id}`: signed health challenge → `{webhook, result}` |
+| POST | `/webhook/simulateOutage` | `webhook:manage` | demo: `{id, enabled}` |
+| POST | `/integration/getCatalog` | any role | |
+| POST | `/integration/getall` | any role | |
+| POST | `/provider/getall` · GET `/provider/getbyid/:key` | any role | application definitions and catalog status |
+| POST | `/integration/save` | `integration:manage` | create (no `id`). PAT: `{provider, webhookId, displayName, environment, accountLabel, authType: "PAT", secret, allowedResources, description}`. GitHub App: `{…, authType: "GITHUB_APP", appId, installationId (optional), keySource: "stored" \| "webhook_env", privateKey (PEM, when stored)}`; `accountLabel` is optional and defaults to the installation's account. Secrets are forwarded to the webhook and never stored. An invalid key or unknown installation returns 400 `INVALID_PRIVATE_KEY` / `INSTALLATION_NOT_FOUND` / `APP_KEY_NOT_CONFIGURED` |
+| GET | `/integration/getbyid/:id` | any role | includes granted agents |
+| POST | `/integration/save` | `integration:manage` | with `id`: metadata only |
+| POST | `/integration/test` | `integration:manage` | `{id}`: webhook decrypts the credential and calls the provider |
+| POST | `/integration/setAccessMode` | `integration:manage` | `{id, accessMode}`: `BROKERED` (default), `DECISION_ONLY` or `SHORT_LIVED_CREDENTIAL` (GitHub App and OAuth integrations only, else 400). Audited; leaving Brokered is a warning |
+| POST | `/integration/setRotationPolicy` | `integration:manage` | `{id, intervalDays}` (7–730, or `null` to remove): rotation reminder; the detail returns `rotationIntervalDays`; audited |
+| POST | `/integration/checkCredentials` | `integration:manage` | re-tests every credential of the organization now (the scheduled check): returns `{valid, rejected, unknown, skipped}`; rejected → Invalid, recovered → Connected, both audited |
+| POST | `/integration/rotate` | `integration:manage` | `{id, …}`. PAT: `{secret}`. GitHub App: `{privateKey}` (400 `KEY_MANAGED_BY_WEBHOOK` if the key lives in the webhook's environment). OAuth: 400 `RECONNECT_REQUIRED` |
+| POST | `/integration/oauthStart` | `integration:manage` | `{provider, authType, webhookId, displayName, environment, clientId, clientSecret, allowedResources, …}` → `{authorizeUrl}` (see [OAUTH.md](OAUTH.md)) |
+| POST | `/integration/oauthComplete` | `integration:manage` | `{code, state}` from the provider redirect; only the admin who started, once, within 10 minutes (`OAUTH_STATE_INVALID` otherwise) → integration |
+| POST | `/integration/oauthCancel` | `integration:manage` | `{state}`: discard a pending connection |
+| POST | `/integration/disable` · `/integration/enable` | `integration:manage` | `{id}` |
+| DELETE | `/integration/delete/:id` | `integration:manage` | webhook crypto-shreds the credential; grants are revoked |
+| POST | `/agent/getall` · GET `/agent/getbyid/:id` | any role | |
+| POST | `/agent/save` | `agent:manage` | create (no `id`): returns `{agent, credential: {apiKey, keyId, issuedAt}}`. **The key is shown once** |
+| POST | `/agent/save` | `agent:manage` (owner) | with `id`: update |
+| POST | `/agent/rotateCredential` | `agent:manage` (owner) | `{id, graceMinutes?}` (0–1440, default 0): how long the old key keeps working; returns the new key once |
+| POST | `/agent/revokePreviousCredential` | `agent:manage` (owner) | `{id}`: ends the grace period: the old key stops working now |
+| POST | `/agent/disable` · `/agent/enable` | `agent:manage` (owner) | `{id}` |
+| POST | `/agent/revokeGrants` | `grant:revoke` | `{id, …}` |
+| POST | `/apiClient/getall` | any role | key IDs and masked keys only |
+| POST | `/grant/getall` | any role | `{status?, agentId?, integrationId?}` |
+| POST | `/grant/savemulti` | `grant:manage` | one agent, several applications: `{agentId, items: [{integrationId, scopes, repositories, name?}] (1–10, each integration once), validFrom, expiresAt, rateLimitPerMinute, …}` with the same shared fields as `/grant/save`. Creates one grant per item, all or none; a problem is reported as `items.<n>.<field>`. Default names: "<agent> → <integration>". 201 `{items: GrantDetail[]}` |
+| POST | `/grant/save` | `grant:manage` | optional budgets `maxRequestsPerDay` (rolling 24 h) and `maxWritesPerHour` (rolling hour); `null` = no limit; `onBehalfOf` (`ALLOWED` default, `REQUIRED`, `NOT_ALLOWED`) and `allowedUserGroups` for acting on behalf of users |
+| GET | `/grant/getbyid/:id` | any role | usage, history, versions, matching policies |
+| POST | `/grant/revoke` | `grant:revoke` | `{id, reason}`; takes effect on the next authorization check |
+| POST | `/grant/approve` | `grant:approve` | `{id}`: simulated approval |
+| POST | `/grant/extend` | `grant:manage` | `{id, expiresAt}` |
+| POST | `/grant/newVersion` | `grant:manage` | `{id, …}`: edit restrictions → new version; the old version becomes `SUPERSEDED` |
+| POST | `/grant/expireNow` | `grant:manage` | `{id}`: demo (Scenario E) |
+| POST | `/policy/getall` | any role | |
+| POST | `/policy/save` | `policy:manage` | create, or update with `id`; `effect`: `DENY`, `ALLOW`, `REQUIRE_APPROVAL` or `FILTER` (with `responseFilter: {mask: [email|phone|credit_card|ip_address|secret], customPatterns: [{name, pattern}], removeFields: [], promptInjection: off|flag|block}`); `conditions.operations`: exact operation ids or selectors that also cover operations published later (`*`, `github.*` for every operation of an application, `risk:read` / `risk:write` / `risk:destructive`, `github:write` for one risk in one application); `conditions.arguments`: up to 10 `{field, op, value}` argument rules (`field` is `input.<name>`, `resource.<name>`, or `user.sub`, `user.email`, `user.name`, `user.groups`, `user.issuer` for the user the agent acts for; `op` is one of `equals, not_equals, contains, not_contains, matches, not_matches, in, not_in, longer_than, greater_than, less_than`) |
+| POST | `/organization/getEmergencyStop` | any role | `{stopped, stoppedAt, stoppedBy, stoppedByName, reason}` |
+| POST | `/organization/emergencyStop` | `grant:revoke` | `{reason}`: denies every agent request with `EMERGENCY_STOP` until lifted |
+| POST | `/organization/liftEmergencyStop` | `grant:approve` | `{note?}` |
+| POST | `/accessRequest/getall` · GET `/accessRequest/getbyid/:id` | `audit:read` | filters (body): `agentId, integrationId, grantId, decision, operation, from, to, search, user, sessionId` (`user` matches the subject or email of the user the agent acted for); each record has `onBehalfOf` |
+| POST | `/auditEvent/getall` · GET `/auditEvent/getbyid/:id` | `audit:read` | filters (body): `eventType, outcome, actorType, search, category=security` |
+| POST | `/grantRequest/getall` · GET `/grantRequest/getbyid/:id` | any role | just-in-time access requests (`{status: "PENDING"}`); includes the `pending` count |
+| POST | `/grantRequest/approve` | `grant:approve` | `{id, durationMinutes, operations?, repositories?, rateLimitPerMinute?, note?}`; may narrow but not widen the request; the agent's owner cannot approve it; creates an expiring grant |
+| POST | `/grantRequest/reject` | `grant:approve` | `{id, note?}` |
+| POST | `/approval/getall` · GET `/approval/getbyid/:id` | any role | requests held by `REQUIRE_APPROVAL` policies, with the exact operation, resource and input (`{status: "PENDING"}`); includes the `pending` count |
+| POST | `/approval/approve` | `grant:approve` | `{id, note?}`; the agent's owner cannot approve it; the agent may then run that exact request once, within 15 minutes |
+| POST | `/approval/reject` | `grant:approve` | `{id, note?}`; the same request is answered with `APPROVAL_REJECTED` for 24 hours |
+| POST | `/session/getall` | `audit:read` | `{search?, agentId?}`: requests grouped by session id (or trace id) and agent: `sessionLabel`, `requests`, `allowed`, `denied`, `held`, `firstAt`, `lastAt`, `integrations`, `users`, `subAgents` |
+| POST | `/session/getdatabyid` | `audit:read` | `{id: sessionId, agentId?}`: the summary plus `timeline` (every request, oldest first) and `approvals` asked for during the session |
+| POST | `/delegation/getall` | any role | `{agentId?}` or `{grantId?}`: sub-agent delegations with effective `status` (`ACTIVE`, `EXPIRED`, `REVOKED`, also when one up the chain was revoked), `statusReason` and `used` |
+| POST | `/delegation/revoke` | `grant:revoke` | `{id, reason}`; stops it and everything delegated from it |
+| POST | `/slackSettings/getdata` | any role | the Slack connection (workspace, channel, token hint, `interactionsUrl`); secrets are never returned |
+| POST | `/slackSettings/save` | `policy:manage` | `{botToken?, signingSecret?, channelId, enabled}`; a new token is checked with Slack (`auth.test`); both secrets are required the first time and stored encrypted |
+| POST | `/slackSettings/test` · `/slackSettings/disconnect` | `policy:manage` | send a test message · disconnect |
+| POST | `/userIssuer/getall` | any role | identity providers trusted to vouch for users (public keys only) |
+| POST | `/userIssuer/save` | `policy:manage` | `{id?, name, issuer, audience, publicKey, groupsClaim?, maxTokenLifetimeSeconds?, enabled?}`; `publicKey` is PEM or JWK (RSA 2048+, EC P-256/P-384, Ed25519), private keys are refused; `issuer` is unique per organization |
+| DELETE | `/userIssuer/delete/:id` | `policy:manage` | tokens from it are refused from the next request |
+| POST | `/userIssuer/verifyToken` | `policy:manage` | `{token}` → `{valid: true, user}` or `{valid: false, reason}`; runs nothing |
+| POST | `/auditEvent/verifyIntegrity` | `audit:read` | verifies both audit hash chains → `{ok, verifiedAt, chains: [{table, ok, chainedRecords, legacyRecords, headSeq, headHash, problems}]}` |
+| POST | `/accessReview/getdata` | any role | active grants with review status, 30-day usage, due / unused / expiring counts (`{summary: "1"}` for counts only) |
+| POST | `/accessReview/certify` | `grant:revoke` | `{grantIds[], note?}`: records the review and restarts the 30-day interval. Revoke with `/grant/revoke` |
 | POST | `/demo/reset` | `demo:reset` | |
-| POST | `/demo/tamper-audit` | `demo:reset` | demo only: edits the newest chained audit event directly in the database (bypassing the append-only trigger) to demonstrate detection |
+| POST | `/demo/tamperAudit` | `demo:reset` | demo only: edits the newest chained audit event directly in the database (bypassing the append-only trigger) to demonstrate detection |
 
 ## Agent API: `/agent/v1`
 
+The same envelope as the admin API: `details` holds the bodies shown below (for `request/execute` the decision, also for denials, whose envelope has `status: "10001"`, `code` = `decision_code` and `error` = `reason`). Delegations: `POST /delegation/save`, `POST /delegation/getall`, `POST /delegation/revoke` `{id, reason?}`; `GET /accessRequest/getbyid/:id` reads a just-in-time request.
+
 Authenticated **only** with `Authorization: Bearer tvak_<keyId>_<secret>`. Admin cookies are ignored here.
 
-`POST /agent/v1/execute`
+`POST /agent/v1/request/execute`
 
 ```json
 {
@@ -154,11 +165,11 @@ Sending the same request again returns the same pending approval rather than a n
 | `USER_NOT_ALLOWED` | The grant works only for the agent itself, or the user is not in its allowed groups |
 | `USER_PERMISSION_DENIED` | The operation or resource is outside the user's `token_vault` permissions |
 
-The response then carries `"acting_for": { "sub", "email", "name", "issuer" }`. Approvals are bound to the user: an approval for one user's request is `APPROVAL_INVALID` for another user. `GET /agent/v1/approvals/:id` includes `on_behalf_of` (`sub`, `issuer`), and capabilities include each grant's `on_behalf_of` (`ALLOWED`, `REQUIRED` or `NOT_ALLOWED`) and `allowed_user_groups`.
+The response then carries `"acting_for": { "sub", "email", "name", "issuer" }`. Approvals are bound to the user: an approval for one user's request is `APPROVAL_INVALID` for another user. `GET /agent/v1/approval/getbyid/:id` includes `on_behalf_of` (`sub`, `issuer`), and capabilities include each grant's `on_behalf_of` (`ALLOWED`, `REQUIRED` or `NOT_ALLOWED`) and `allowed_user_groups`.
 
 **Response filtering.** When `FILTER` policies match an allowed request, the result is filtered (by the customer webhook, or by the control plane if the webhook did not) and the response carries `"filtering": { "policies", "masked": [{kind, count}], "removed_fields", "prompt_injection": { "detected", "signals": [{path, signal}] }, "withheld" }`. A withheld result (likely prompt injection with `promptInjection: block`, or too large to inspect) returns HTTP 200 with `decision: "ALLOW"`, `decision_code: "RESPONSE_WITHHELD"` and `result: null`; the operation did run. Access records include `filtering` (counts and signals, never values, and `appliedBy`: `webhook` or `control-plane`).
 
-**Delegation to sub-agents.** `Authorization: Bearer tvdt_…` (a delegation token) works on every agent endpoint except `POST /access-requests` (403). The request is evaluated as the delegating agent's, restricted to the delegated grant, operations, resources and request cap; the response then carries `"delegation": { "delegation_id", "label", "used", "max_requests" }`.
+**Delegation to sub-agents.** `Authorization: Bearer tvdt_…` (a delegation token) works on every agent endpoint except `POST /accessRequest/save` (403). The request is evaluated as the delegating agent's, restricted to the delegated grant, operations, resources and request cap; the response then carries `"delegation": { "delegation_id", "label", "used", "max_requests" }`.
 
 | Code | HTTP | When |
 | --- | --- | --- |
@@ -166,17 +177,17 @@ The response then carries `"acting_for": { "sub", "email", "name", "issuer" }`. 
 | `DELEGATION_REVOKED` | 403 | The delegation, or one it came from, was revoked |
 | `DELEGATION_EXPIRED` | 403 | The delegation, or one it came from, expired |
 
-`POST /agent/v1/delegations` `{grant_id, label, operations[], resources[]?, expires_in_seconds? (60–86400, default 3600), max_requests?, on_behalf_of?}` returns 201 with the delegation and its `token` (shown once). Called with a delegation token, it delegates further from that delegation (`grant_id` optional). 400 when it would widen anything or includes a destructive operation, 403 when the grant is not active or the depth would exceed 3, 429 at 50 active delegations. `GET /agent/v1/delegations` lists what the caller delegated (with `status`, `used`); `POST /agent/v1/delegations/:id/revoke` `{reason?}` revokes one (and so everything delegated from it).
+`POST /agent/v1/delegation/save` `{grant_id, label, operations[], resources[]?, expires_in_seconds? (60–86400, default 3600), max_requests?, on_behalf_of?}` returns 201 with the delegation and its `token` (shown once). Called with a delegation token, it delegates further from that delegation (`grant_id` optional). 400 when it would widen anything or includes a destructive operation, 403 when the grant is not active or the depth would exceed 3, 429 at 50 active delegations. `POST /agent/v1/delegation/getall` lists what the caller delegated (with `status`, `used`); `POST /agent/v1/delegation/revoke` (`{id, reason?}`) `{reason?}` revokes one (and so everything delegated from it).
 
-`GET /agent/v1/approvals/:id` returns one of the agent's own approvals: `status` (`PENDING`, `APPROVED`, `REJECTED`, `EXPIRED` or `EXECUTED`), the exact `integration_id`, `operation`, `resource` and `input` that were approved, `decision_note` and `executed_request_id`.
+`GET /agent/v1/approval/getbyid/:id` returns one of the agent's own approvals: `status` (`PENDING`, `APPROVED`, `REJECTED`, `EXPIRED` or `EXECUTED`), the exact `integration_id`, `operation`, `resource` and `input` that were approved, `decision_note` and `executed_request_id`.
 
-`GET /agent/v1/requests/:id` returns one of the calling agent's own requests.
+`GET /agent/v1/request/getbyid/:id` returns one of the calling agent's own requests.
 
-`POST /agent/v1/access-requests` submits a just-in-time access request: `{integration_id, operations[], repositories[], justification, duration_minutes, denied_request_id?}`. It returns 201 with a `PENDING` request, 200 with `duplicate: true` if an identical request is already pending, 400 for destructive or unknown operations, and 429 once the agent has 3 pending requests. `GET /agent/v1/access-requests/:id` returns the status of one of the agent's own requests, including `grant_id` and `grant_expires_at` once approved.
+`POST /agent/v1/accessRequest/save` submits a just-in-time access request: `{integration_id, operations[], repositories[], justification, duration_minutes, denied_request_id?}`. It returns 201 with a `PENDING` request, 200 with `duplicate: true` if an identical request is already pending, 400 for destructive or unknown operations, and 429 once the agent has 3 pending requests. `GET /agent/v1/accessRequest/getbyid/:id` returns the status of one of the agent's own requests, including `grant_id` and `grant_expires_at` once approved.
 
-`GET /agent/v1/operations` returns the shape of every operation of the applications the calling agent has a grant on (any status): the primary resource and extra resource fields (name, label, anchored pattern, example), and per operation its id, label, risk, whether the resource is required, and its inputs (type, required, maximum length). `version` changes whenever one of those definitions changes. Definitions are not secret; the MCP server uses this to offer typed tools. Authorization is still decided per request.
+`POST /agent/v1/operation/getall` returns the shape of every operation of the applications the calling agent has a grant on (any status): the primary resource and extra resource fields (name, label, anchored pattern, example), and per operation its id, label, risk, whether the resource is required, and its inputs (type, required, maximum length). `version` changes whenever one of those definitions changes. Definitions are not secret; the MCP server uses this to offer typed tools. Authorization is still decided per request.
 
-`GET /agent/v1/capabilities` returns the calling agent's own grants: integration, operations, repositories, status and expiry. Revoked and expired grants are listed with their status, and superseded versions are omitted. Agent tooling uses it to pick an integration and to show the model what it may do. Authorization is still decided per request by `/execute`. See [AGENTS.md](AGENTS.md) for the SDK and MCP server.
+`POST /agent/v1/capability/getdata` returns the calling agent's own grants: integration, operations, repositories, status and expiry. Revoked and expired grants are listed with their status, and superseded versions are omitted. Agent tooling uses it to pick an integration and to show the model what it may do. Authorization is still decided per request by `/execute`. See [AGENTS.md](AGENTS.md) for the SDK and MCP server.
 
 ## Slack: `/slack/interactions`
 
