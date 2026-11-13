@@ -12,10 +12,10 @@ const suite = url ? describe : describe.skip;
 suite('PostgreSQL storage', () => {
   // Imported lazily so config validation sees the test environment.
   let m: {
-    client: typeof import('../src/db/client');
+    client: typeof import('../src/databases/client');
     seed: typeof import('../src/store/seed');
     repos: typeof import('../src/store/repos');
-    broker: typeof import('../src/modules/broker/broker.service');
+    broker: typeof import('../src/services/brokerService/brokerService.service');
   };
 
   beforeAll(async () => {
@@ -24,10 +24,10 @@ suite('PostgreSQL storage', () => {
     process.env.AUDIT_SIGNING_KEY ??= randomBytes(32).toString('base64url');
     process.env.DB_POOL_MAX = '4';
     m = {
-      client: await import('../src/db/client'),
+      client: await import('../src/databases/client'),
       seed: await import('../src/store/seed'),
       repos: await import('../src/store/repos'),
-      broker: await import('../src/modules/broker/broker.service'),
+      broker: await import('../src/services/brokerService/brokerService.service'),
     };
     await m.client.runMigrations();
     await m.seed.resetDatabase();
@@ -61,19 +61,17 @@ suite('PostgreSQL storage', () => {
 
   it('rejects UPDATE and DELETE on audit tables (append-only trigger)', async () => {
     const { db } = m.client;
-    const { sql } = await import('drizzle-orm');
     const cause = (p: Promise<unknown>) => p.then(() => 'no error', (e: Error & { cause?: Error }) => e.cause?.message ?? e.message);
-    expect(await cause(db.execute(sql`update audit_events set actor_name = 'tampered'`))).toMatch(/append-only \(UPDATE rejected\)/);
-    expect(await cause(db.execute(sql`delete from access_requests`))).toMatch(/append-only \(DELETE rejected\)/);
+    expect(await cause(db.query(`update audit_events set actor_name = 'tampered'`))).toMatch(/append-only \(UPDATE rejected\)/);
+    expect(await cause(db.query('delete from access_requests'))).toMatch(/append-only \(DELETE rejected\)/);
   });
 
   it('stores only a hash of session tokens', async () => {
     const { db } = m.client;
-    const { sql } = await import('drizzle-orm');
     const token = randomBytes(32).toString('base64url');
     await m.repos.sessionRepo.createSession(token, m.seed.IDS.owner, null, 60_000);
     expect(await m.repos.sessionRepo.getSession(token)).toMatchObject({ userId: m.seed.IDS.owner });
-    const { rows } = await db.execute(sql`select token_hash from sessions`);
+    const rows: { token_hash: string }[] = await db.query('select token_hash from sessions');
     expect(rows.map((r) => r.token_hash)).not.toContain(token);
     await m.repos.sessionRepo.deleteSession(token);
     expect(await m.repos.sessionRepo.getSession(token)).toBeNull();
@@ -117,7 +115,7 @@ suite('PostgreSQL storage', () => {
   });
 
   it('persists the verified provider catalog, and a demo reset clears it', async () => {
-    const { pgCatalogCache } = await import('../src/modules/providers/catalog-cache');
+    const { pgCatalogCache } = await import('../src/services/providerService/catalogCache');
     const state = { envelopes: [], highWater: { notes: 4 }, savedAt: new Date().toISOString() };
     await pgCatalogCache.save(state);
     expect(await pgCatalogCache.load()).toMatchObject({ highWater: { notes: 4 } });

@@ -11,7 +11,7 @@ process.env.WEBHOOK_SIGNING_SECRET ??= 'demo-secret-for-the-webhook-tls-test-000
 process.env.AUDIT_SIGNING_KEY ??= 'demo-secret-for-the-webhook-tls-test-0002';
 process.env.DATABASE_URL ??= 'postgres://unused@localhost/unused';
 const { config } = await import('../src/config');
-const { callWebhook, WebhookUnavailableError } = await import('../src/modules/webhooks/webhook.client');
+const { callWebhook, WebhookUnavailableError } = await import('../src/services/webhookService/webhook.client');
 
 const hex = (key: string, s: string) => createHmac('sha256', key).update(s).digest('hex');
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');

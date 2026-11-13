@@ -1,1 +1,0 @@
-ALTER TABLE "integrations" ADD COLUMN "rotation_interval_days" integer;

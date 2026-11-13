@@ -23,14 +23,14 @@ function userToken(sub: string, ttlS = 600) {
 
 suite('delegation to sub-agents', () => {
   let m: {
-    client: typeof import('../src/db/client');
+    client: typeof import('../src/databases/client');
     config: typeof import('../src/config');
     seed: typeof import('../src/store/seed');
     repos: typeof import('../src/store/repos');
-    broker: typeof import('../src/modules/broker/broker.service');
+    broker: typeof import('../src/services/brokerService/brokerService.service');
     crypto: typeof import('../src/lib/crypto');
-    chain: typeof import('../src/modules/audit/chain');
-    dlg: typeof import('../src/modules/delegations/delegations.service');
+    chain: typeof import('../src/services/auditService/chain');
+    dlg: typeof import('../src/services/delegationService/delegationService.service');
   };
   let apiKey = '';
   let agent: Awaited<ReturnType<typeof import('../src/store/repos').agentRepo.getAgent>>;
@@ -53,14 +53,14 @@ suite('delegation to sub-agents', () => {
     process.env.AUDIT_SIGNING_KEY ??= randomBytes(32).toString('base64url');
     process.env.DB_POOL_MAX = '4';
     m = {
-      client: await import('../src/db/client'),
+      client: await import('../src/databases/client'),
       config: await import('../src/config'),
       seed: await import('../src/store/seed'),
       repos: await import('../src/store/repos'),
-      broker: await import('../src/modules/broker/broker.service'),
+      broker: await import('../src/services/brokerService/brokerService.service'),
       crypto: await import('../src/lib/crypto'),
-      chain: await import('../src/modules/audit/chain'),
-      dlg: await import('../src/modules/delegations/delegations.service'),
+      chain: await import('../src/services/auditService/chain'),
+      dlg: await import('../src/services/delegationService/delegationService.service'),
     };
     await m.client.runMigrations();
     await m.seed.resetDatabase();

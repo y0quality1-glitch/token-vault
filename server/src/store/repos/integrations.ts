@@ -1,44 +1,46 @@
-import { and, eq, inArray, isNull, ne } from 'drizzle-orm';
-import { db, type Executor } from '../../db/client';
-import { integrations } from '../../db/schema';
+import { IsNull, Not } from 'typeorm';
+import { db, type Executor } from '../../databases/client';
+import { IntegrationEntity } from '../../entities';
 import type { IntegrationRecord } from '../types';
+import { insertRow, updateRow, updateWhere } from './orm';
 
-const live = isNull(integrations.deletedAt);
+/** Soft-deleted integrations are hidden from everything except name lookups. */
+const live = { deletedAt: IsNull() };
 
 export async function listIntegrations(organizationId: string, ex: Executor = db): Promise<IntegrationRecord[]> {
-  return ex.select().from(integrations).where(and(eq(integrations.organizationId, organizationId), live)).orderBy(integrations.createdAt);
+  return ex.find(IntegrationEntity, { where: { organizationId, ...live }, order: { createdAt: 'ASC' } });
 }
 
 export async function getIntegration(organizationId: string, id: string, ex: Executor = db): Promise<IntegrationRecord | null> {
-  const [row] = await ex.select().from(integrations).where(and(eq(integrations.organizationId, organizationId), eq(integrations.id, id), live));
-  return row ?? null;
+  if (!id || !organizationId) return null;
+  return ex.findOneBy(IntegrationEntity, { organizationId, id, ...live });
 }
 
 /** Display names including soft-deleted integrations (for grants and audit views). */
 export async function integrationNames(organizationId: string, ex: Executor = db): Promise<Map<string, string>> {
-  const rows = await ex.select({ id: integrations.id, name: integrations.displayName, deletedAt: integrations.deletedAt }).from(integrations).where(eq(integrations.organizationId, organizationId));
-  return new Map(rows.map((r) => [r.id, r.deletedAt ? `${r.name} (deleted)` : r.name]));
+  const rows = await ex.find(IntegrationEntity, { where: { organizationId }, select: { id: true, displayName: true, deletedAt: true } });
+  return new Map(rows.map((r) => [r.id, r.deletedAt ? `${r.displayName} (deleted)` : r.displayName]));
 }
 
 /** Seeded integrations whose masked identifier has not yet been fetched from the webhook. */
 export async function listUnsyncedIntegrations(ex: Executor = db): Promise<IntegrationRecord[]> {
-  return ex.select().from(integrations).where(and(eq(integrations.maskedIdentifier, ''), live));
+  return ex.findBy(IntegrationEntity, { maskedIdentifier: '', ...live });
 }
 
 export async function insertIntegration(record: IntegrationRecord, ex: Executor = db): Promise<IntegrationRecord> {
-  const [row] = await ex.insert(integrations).values(record).returning();
-  return row!;
+  return insertRow(ex, IntegrationEntity, record, { id: record.id });
 }
 
 export async function updateIntegration(id: string, patch: Partial<Omit<IntegrationRecord, 'id' | 'organizationId'>>, ex: Executor = db): Promise<IntegrationRecord> {
-  const [row] = await ex.update(integrations).set(patch).where(eq(integrations.id, id)).returning();
-  return row!;
+  return updateRow(ex, IntegrationEntity, { id }, patch);
 }
 
 /** Every live integration that is not disabled, across organizations (scheduled credential checks). */
 export async function listCheckableIntegrations(organizationId?: string, ex: Executor = db): Promise<IntegrationRecord[]> {
-  const scope = organizationId ? eq(integrations.organizationId, organizationId) : undefined;
-  return ex.select().from(integrations).where(and(live, ne(integrations.credentialStatus, 'DISABLED'), scope)).orderBy(integrations.organizationId, integrations.createdAt);
+  return ex.find(IntegrationEntity, {
+    where: { ...live, credentialStatus: Not('DISABLED'), ...(organizationId ? { organizationId } : {}) },
+    order: { organizationId: 'ASC', createdAt: 'ASC' },
+  });
 }
 
 /**
@@ -46,6 +48,6 @@ export async function listCheckableIntegrations(organizationId?: string, ex: Exe
  * the same rejection change it, and audit it, once). Returns the updated row, or null.
  */
 export async function transitionCredentialStatus(id: string, from: IntegrationRecord['credentialStatus'][], patch: Partial<Omit<IntegrationRecord, 'id' | 'organizationId'>>, ex: Executor = db): Promise<IntegrationRecord | null> {
-  const [row] = await ex.update(integrations).set(patch).where(and(eq(integrations.id, id), inArray(integrations.credentialStatus, from), live)).returning();
-  return row ?? null;
+  if (!from.length) return null;
+  return updateWhere(ex, IntegrationEntity, 'id = :id AND credential_status IN (:...from) AND deleted_at IS NULL', { id, from }, patch);
 }

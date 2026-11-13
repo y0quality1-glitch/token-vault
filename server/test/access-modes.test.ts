@@ -15,8 +15,8 @@ const suite = url ? describe : describe.skip;
 
 type Reply = { status: number; body: Record<string, unknown> };
 const webhook = vi.hoisted(() => ({ calls: [] as { path: string; claims: Record<string, unknown> }[], reply: (_path: string, _claims: Record<string, unknown>): Reply => ({ status: 200, body: {} }) }));
-vi.mock('../src/modules/webhooks/webhook.client', async (orig) => {
-  const real = await orig<typeof import('../src/modules/webhooks/webhook.client')>();
+vi.mock('../src/services/webhookService/webhook.client', async (orig) => {
+  const real = await orig<typeof import('../src/services/webhookService/webhook.client')>();
   return {
     ...real,
     callWebhook: async (_wh: unknown, _method: string, path: string, claims: Record<string, unknown>) => {
@@ -30,15 +30,14 @@ const ISSUE_TOKEN = 'ghs_issuedForThisRequestOnly0123456789';
 
 suite('Access modes', () => {
   let m: {
-    client: typeof import('../src/db/client');
+    client: typeof import('../src/databases/client');
     seed: typeof import('../src/store/seed');
     repos: typeof import('../src/store/repos');
-    broker: typeof import('../src/modules/broker/broker.service');
+    broker: typeof import('../src/services/brokerService/brokerService.service');
     crypto: typeof import('../src/lib/crypto');
     tokens: typeof import('../src/lib/decision-token');
-    integrations: typeof import('../src/modules/integrations/integrations.routes');
-    db: typeof import('../src/db/schema');
-    orm: typeof import('drizzle-orm');
+    integrations: typeof import('../src/services/integrationService/integrationService.service');
+    db: typeof import('../src/entities');
   };
   let apiKey = '';
   const input = { title: 'Ship it', body: 'Release notes' };
@@ -63,15 +62,14 @@ suite('Access modes', () => {
     process.env.AUDIT_SIGNING_KEY ??= randomBytes(32).toString('base64url');
     process.env.DB_POOL_MAX = '4';
     m = {
-      client: await import('../src/db/client'),
+      client: await import('../src/databases/client'),
       seed: await import('../src/store/seed'),
       repos: await import('../src/store/repos'),
-      broker: await import('../src/modules/broker/broker.service'),
+      broker: await import('../src/services/brokerService/brokerService.service'),
       crypto: await import('../src/lib/crypto'),
       tokens: await import('../src/lib/decision-token'),
-      integrations: await import('../src/modules/integrations/integrations.routes'),
-      db: await import('../src/db/schema'),
-      orm: await import('drizzle-orm'),
+      integrations: await import('../src/services/integrationService/integrationService.service'),
+      db: await import('../src/entities'),
     };
     await m.client.runMigrations();
     await m.seed.resetDatabase();
@@ -144,7 +142,7 @@ suite('Access modes', () => {
     expect(verifyToken(r.body.authorization!.decision_token).mode).toBe('SHORT_LIVED_CREDENTIAL');
 
     const record = await m.repos.auditRepo.getAccessRequest(m.seed.IDS.demoOrg, r.body.request_id);
-    const events = await m.client.db.select().from(m.db.auditEvents).where(m.orm.eq(m.db.auditEvents.correlationId, r.body.correlation_id));
+    const events = await m.client.db.findBy(m.db.AuditEventEntity, { correlationId: r.body.correlation_id });
     expect(JSON.stringify(record)).not.toContain(ISSUE_TOKEN);
     expect(JSON.stringify(events)).not.toContain(ISSUE_TOKEN);
     expect(events[0]!.metadata).toMatchObject({ accessMode: 'SHORT_LIVED_CREDENTIAL' });

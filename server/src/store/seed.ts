@@ -8,13 +8,12 @@ import {
   type Policy,
 } from '@token-vault/shared';
 import { config } from '../config';
-import { chainBatch } from '../modules/audit/chain';
+import { chainBatch } from '../services/auditService/chain';
 import { generateAgentCredential, hashSecret } from '../lib/crypto';
 import { correlationId, newId, requestId } from '../lib/ids';
-import { sql } from 'drizzle-orm';
 import type { Organization } from '@token-vault/shared';
-import { db as pg, transaction, type Executor } from '../db/client';
-import * as t from '../db/schema';
+import { db as pg, transaction, type Executor } from '../databases/client';
+import * as t from '../entities';
 import type { AgentRecord, GrantRecord, IntegrationRecord, MemberRecord, UserRecord, WebhookRecord } from './types';
 
 /**
@@ -478,26 +477,28 @@ function seedHistory() {
 const TABLES_IN_INSERT_ORDER = ['organizations', 'users', 'organization_members', 'webhooks', 'integrations', 'agents', 'grants', 'grant_requests', 'operation_approvals', 'policies', 'user_issuers', 'delegations', 'slack_settings', 'access_requests', 'audit_events'];
 
 async function insertSeed(data: SeedData, ex: Executor) {
-  await ex.insert(t.organizations).values(data.organizations);
-  await ex.insert(t.users).values(data.users);
-  await ex.insert(t.organizationMembers).values(data.members);
-  await ex.insert(t.webhooks).values(data.webhooks);
-  await ex.insert(t.integrations).values(data.integrations);
-  await ex.insert(t.agents).values(data.agents);
-  await ex.insert(t.grants).values(data.grants);
-  await ex.insert(t.policies).values(data.policies);
+  const put = async (entity: Parameters<Executor['insert']>[0], rows: object[]) => {
+    if (rows.length) await ex.insert(entity, rows as never);
+  };
+  await put(t.OrganizationEntity, data.organizations);
+  await put(t.UserEntity, data.users);
+  await put(t.OrganizationMemberEntity, data.members);
+  await put(t.WebhookEntity, data.webhooks);
+  await put(t.IntegrationEntity, data.integrations);
+  await put(t.AgentEntity, data.agents);
+  await put(t.GrantEntity, data.grants);
+  await put(t.PolicyEntity, data.policies);
   // Seeded audit history is chained like live records (oldest first, per organization).
-  await ex.insert(t.accessRequests).values(chainBatch(config.auditSigningKey, 'access_requests', data.accessRequests));
-  await ex.insert(t.auditEvents).values(chainBatch(config.auditSigningKey, 'audit_events', data.auditEvents));
+  await put(t.AccessRequestEntity, chainBatch(config.auditSigningKey, 'access_requests', data.accessRequests));
+  await put(t.AuditEventEntity, chainBatch(config.auditSigningKey, 'audit_events', data.auditEvents));
 }
 
 /** Seeds demo data only when the database has no organizations yet. Returns true if it seeded. */
 export async function seedIfEmpty(): Promise<boolean> {
   return transaction(async (tx) => {
     // Serialize concurrent starters on one advisory lock.
-    await tx.execute(sql`select pg_advisory_xact_lock(7316001)`);
-    const existing = await tx.select({ id: t.organizations.id }).from(t.organizations).limit(1);
-    if (existing.length > 0) return false;
+    await tx.query('SELECT pg_advisory_xact_lock(7316001)');
+    if ((await tx.count(t.OrganizationEntity)) > 0) return false;
     await insertSeed(buildSeed(), tx);
     return true;
   });
@@ -511,7 +512,7 @@ export async function seedIfEmpty(): Promise<boolean> {
  */
 export async function resetDatabase(ex: Executor = pg) {
   const run = async (tx: Executor) => {
-    await tx.execute(sql.raw(`TRUNCATE ${[...TABLES_IN_INSERT_ORDER, 'provider_catalog_state', 'oauth_pending'].join(', ')} CASCADE`));
+    await tx.query(`TRUNCATE ${[...TABLES_IN_INSERT_ORDER, 'provider_catalog_state', 'oauth_pending'].join(', ')} CASCADE`);
     await insertSeed(buildSeed(), tx);
   };
   if (ex === pg) await transaction(run);

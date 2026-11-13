@@ -1,2 +1,0 @@
-ALTER TABLE "access_requests" ADD COLUMN "trace" jsonb;--> statement-breakpoint
-CREATE INDEX "access_requests_org_session_idx" ON "access_requests" USING btree ("organization_id",("trace"->>'sessionId'));

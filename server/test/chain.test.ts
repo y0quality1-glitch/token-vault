@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { GENESIS, canonical, chainBatch, hashRecord, link, verify } from '../src/modules/audit/chain';
+import { GENESIS, canonical, chainBatch, hashRecord, link, verify } from '../src/services/auditService/chain';
 
 const KEY = 'k'.repeat(40);
 

@@ -25,14 +25,14 @@ const suite = url ? describe : describe.skip;
 
 suite('agent sessions', () => {
   let m: {
-    client: typeof import('../src/db/client');
+    client: typeof import('../src/databases/client');
     config: typeof import('../src/config');
     seed: typeof import('../src/store/seed');
     repos: typeof import('../src/store/repos');
-    broker: typeof import('../src/modules/broker/broker.service');
+    broker: typeof import('../src/services/brokerService/brokerService.service');
     crypto: typeof import('../src/lib/crypto');
-    chain: typeof import('../src/modules/audit/chain');
-    approvals: typeof import('../src/modules/approvals/approvals.service');
+    chain: typeof import('../src/services/auditService/chain');
+    approvals: typeof import('../src/services/approvalService/approvalService.service');
   };
   let apiKey = '';
   const TRACE = '4bf92f3577b34da6a3ce929d0e0e4736';
@@ -52,14 +52,14 @@ suite('agent sessions', () => {
     process.env.AUDIT_SIGNING_KEY ??= randomBytes(32).toString('base64url');
     process.env.DB_POOL_MAX = '4';
     m = {
-      client: await import('../src/db/client'),
+      client: await import('../src/databases/client'),
       config: await import('../src/config'),
       seed: await import('../src/store/seed'),
       repos: await import('../src/store/repos'),
-      broker: await import('../src/modules/broker/broker.service'),
+      broker: await import('../src/services/brokerService/brokerService.service'),
       crypto: await import('../src/lib/crypto'),
-      chain: await import('../src/modules/audit/chain'),
-      approvals: await import('../src/modules/approvals/approvals.service'),
+      chain: await import('../src/services/auditService/chain'),
+      approvals: await import('../src/services/approvalService/approvalService.service'),
     };
     await m.client.runMigrations();
     await m.seed.resetDatabase();
