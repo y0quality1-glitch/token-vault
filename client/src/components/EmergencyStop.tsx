@@ -27,7 +27,7 @@ const CHANGED = 'tv:emergency-stop-changed';
 export function useEmergencyStop() {
   const { pathname } = useLocation();
   const [state, setState] = useState<EmergencyStopState | null>(null);
-  const load = useCallback(() => api.get<EmergencyStopState>('/organizations/current/emergency-stop').then(setState).catch(() => undefined), []);
+  const load = useCallback(() => api.post<EmergencyStopState>('/organization/getEmergencyStop').then(setState).catch(() => undefined), []);
   useEffect(() => {
     void load();
     const t = setInterval(load, 15_000);
@@ -111,7 +111,7 @@ export function EmergencyStopCard() {
 function StopDialog({ open, stopping, onClose }: { open: boolean; stopping: boolean; onClose: () => void }) {
   const toast = useToast();
   const [text, setText] = useState('');
-  const save = useMutation((t: string) => (stopping ? api.post<EmergencyStopState>('/organizations/current/emergency-stop', { reason: t }) : api.post<EmergencyStopState>('/organizations/current/emergency-stop/lift', { note: t })));
+  const save = useMutation((t: string) => (stopping ? api.post<EmergencyStopState>('/organization/emergencyStop', { reason: t }) : api.post<EmergencyStopState>('/organization/liftEmergencyStop', { note: t })));
   useEffect(() => {
     if (open) {
       setText('');

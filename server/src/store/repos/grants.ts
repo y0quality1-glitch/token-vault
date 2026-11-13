@@ -1,39 +1,36 @@
-import { and, desc, eq, inArray, ne, sql } from 'drizzle-orm';
-import { db, type Executor } from '../../db/client';
-import { grants } from '../../db/schema';
+import { In, Not } from 'typeorm';
+import { db, type Executor } from '../../databases/client';
+import { GrantEntity } from '../../entities';
 import type { GrantRecord } from '../types';
+import { insertRow, oneBy, updateRow } from './orm';
 
 export async function listGrants(organizationId: string, filter: { agentId?: string; integrationId?: string } = {}, ex: Executor = db): Promise<GrantRecord[]> {
-  const where = [eq(grants.organizationId, organizationId)];
-  if (filter.agentId) where.push(eq(grants.agentId, filter.agentId));
-  if (filter.integrationId) where.push(eq(grants.integrationId, filter.integrationId));
-  return ex.select().from(grants).where(and(...where)).orderBy(desc(grants.createdAt));
+  return ex.find(GrantEntity, {
+    where: { organizationId, ...(filter.agentId ? { agentId: filter.agentId } : {}), ...(filter.integrationId ? { integrationId: filter.integrationId } : {}) },
+    order: { createdAt: 'DESC' },
+  });
 }
 
 export async function getGrant(organizationId: string, id: string, ex: Executor = db): Promise<GrantRecord | null> {
-  const [row] = await ex.select().from(grants).where(and(eq(grants.organizationId, organizationId), eq(grants.id, id)));
-  return row ?? null;
+  return oneBy(ex, GrantEntity, { organizationId, id });
 }
 
 /** All non-superseded grants for an agent + integration pair (input to the policy engine). */
 export async function grantsForPair(organizationId: string, agentId: string, integrationId: string, ex: Executor = db): Promise<GrantRecord[]> {
-  return ex
-    .select()
-    .from(grants)
-    .where(and(eq(grants.organizationId, organizationId), eq(grants.agentId, agentId), eq(grants.integrationId, integrationId), ne(grants.storedStatus, 'SUPERSEDED')));
+  if (!organizationId || !agentId || !integrationId) return [];
+  return ex.findBy(GrantEntity, { organizationId, agentId, integrationId, storedStatus: Not('SUPERSEDED') });
 }
 
 export async function grantNameExists(organizationId: string, name: string, ex: Executor = db): Promise<boolean> {
-  const rows = await ex
-    .select({ id: grants.id })
-    .from(grants)
-    .where(and(eq(grants.organizationId, organizationId), sql`lower(${grants.name}) = lower(${name})`, ne(grants.storedStatus, 'SUPERSEDED')));
-  return rows.length > 0;
+  return ex
+    .createQueryBuilder(GrantEntity, 'g')
+    .where('g.organization_id = :organizationId AND lower(g.name) = lower(:name) AND g.status <> :superseded', { organizationId, name, superseded: 'SUPERSEDED' })
+    .getExists();
 }
 
 /** Full version chain (v1 … vN) that contains the given grant. */
 export async function versionChain(organizationId: string, grant: GrantRecord, ex: Executor = db): Promise<GrantRecord[]> {
-  const all = await ex.select().from(grants).where(and(eq(grants.organizationId, organizationId), eq(grants.agentId, grant.agentId), eq(grants.integrationId, grant.integrationId)));
+  const all: GrantRecord[] = await ex.findBy(GrantEntity, { organizationId, agentId: grant.agentId, integrationId: grant.integrationId });
   const byId = new Map(all.map((g) => [g.id, g]));
   let root: GrantRecord = grant;
   while (root.previousVersionId && byId.has(root.previousVersionId)) root = byId.get(root.previousVersionId)!;
@@ -48,25 +45,25 @@ export async function versionChain(organizationId: string, grant: GrantRecord, e
 }
 
 export async function insertGrant(record: GrantRecord, ex: Executor = db): Promise<GrantRecord> {
-  const [row] = await ex.insert(grants).values(record).returning();
-  return row!;
+  return insertRow(ex, GrantEntity, record, { id: record.id });
 }
 
 export async function updateGrant(id: string, patch: Partial<Omit<GrantRecord, 'id' | 'organizationId'>>, ex: Executor = db): Promise<GrantRecord> {
-  const [row] = await ex.update(grants).set(patch).where(eq(grants.id, id)).returning();
-  return row!;
+  return updateRow(ex, GrantEntity, { id }, patch);
 }
 
 /** Revokes every given grant in one statement. */
 export async function revokeGrants(ids: string[], revokedBy: string, reason: string, ex: Executor = db) {
   if (ids.length === 0) return;
-  await ex.update(grants).set({ storedStatus: 'REVOKED', revokedAt: new Date().toISOString(), revokedBy, revocationReason: reason }).where(inArray(grants.id, ids));
+  await ex.update(GrantEntity, { id: In(ids) }, { storedStatus: 'REVOKED', revokedAt: new Date().toISOString(), revokedBy, revocationReason: reason });
 }
 
 /** Atomic usage counter update after an authorized request. */
 export async function recordGrantUse(id: string, ex: Executor = db) {
   await ex
-    .update(grants)
-    .set({ usageCount: sql`${grants.usageCount} + 1`, lastUsedAt: new Date().toISOString() })
-    .where(eq(grants.id, id));
+    .createQueryBuilder()
+    .update(GrantEntity)
+    .set({ usageCount: () => 'usage_count + 1', lastUsedAt: new Date().toISOString() })
+    .where('id = :id', { id })
+    .execute();
 }

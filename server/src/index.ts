@@ -1,13 +1,14 @@
+import 'reflect-metadata';
 import { config } from './config';
 import { describeError } from './lib/errors';
 import { sanitize } from './lib/sanitize';
 import { createApp } from './app';
-import { closeDatabase, runMigrations } from './db/client';
+import { closeDatabase, runMigrations } from './databases/client';
 import { DEMO_PASSWORD, resetDatabase, seedIfEmpty } from './store/seed';
 import { sessionRepo } from './store/repos';
-import { startHeartbeat } from './modules/webhooks/webhook.service';
-import { startCredentialChecks } from './modules/integrations/credential-health';
-import { catalogSync } from './modules/providers/registry';
+import { startHeartbeat } from './services/webhookService/webhookService.service';
+import { startCredentialChecks } from './services/integrationService/credentialHealth';
+import { catalogSync } from './services/providerService/registry';
 
 async function main() {
   await runMigrations();

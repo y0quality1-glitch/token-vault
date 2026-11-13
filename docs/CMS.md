@@ -67,7 +67,7 @@ Order of operations (locally, `npm run cms:rotate-key` does steps 1 and 2 in the
 
 1. Add the new public key to every consumer's `CMS_PUBLIC_KEY`, next to the old one, and restart them. They now accept either key.
 2. Give the CMS the new private key (`CMS_SIGNING_PRIVATE_KEY`) and restart it. It signs every published version with the new key, and new publications are signed with the new key only.
-3. Once every consumer has synced (`/api/v1/providers` → `catalog.lastSuccessAt`, or the webhook health check), remove the old key from the consumers (`npm run cms:rotate-key -- --retire` locally) and restart them.
+3. Once every consumer has synced (`POST /api/v1/provider/getall` → `catalog.lastSuccessAt`, or the webhook health check), remove the old key from the consumers (`npm run cms:rotate-key -- --retire` locally) and restart them.
 
 Doing step 2 before step 1 is safe for existing definitions (they still carry the old key's signature), but anything published in between would be refused by consumers that do not pin the new key yet.
 
@@ -131,7 +131,7 @@ The control plane and every customer webhook pull `/catalog/v1/definitions` **in
 - **Start-up and polling.** Each service syncs at start-up (without blocking it) and then polls every `CMS_POLL_INTERVAL_MS` (default 30 s), using the ETag so an unchanged catalog costs a 304. The webhook also refreshes once when asked to run an operation it does not know yet.
 - **All or nothing.** If any entry in a catalog snapshot fails verification, the whole snapshot is rejected and the service keeps what it had.
 - **No rollbacks.** A version lower than one already accepted is refused, so an old signed definition cannot be replayed. The highest accepted version per provider is persisted, so this holds across restarts.
-- **Survives restarts.** Each service stores its last verified catalog in its own database (`provider_catalog_state`: the signed envelopes plus the version marks). On start-up it restores the marks first, then **re-verifies** every stored envelope against the pinned key. If the CMS is down, the restored definitions apply until it answers. A row edited in the database, or signed with a key that is no longer pinned, is ignored: only the bundled definitions apply until the next successful sync. `GET /api/v1/providers` reports `catalog.restoredFrom` when this happened. `SEED_MODE=reset` clears the stored catalog.
+- **Survives restarts.** Each service stores its last verified catalog in its own database (`provider_catalog_state`: the signed envelopes plus the version marks). On start-up it restores the marks first, then **re-verifies** every stored envelope against the pinned key. If the CMS is down, the restored definitions apply until it answers. A row edited in the database, or signed with a key that is no longer pinned, is ignored: only the bundled definitions apply until the next successful sync. `POST /api/v1/provider/getall` reports `catalog.restoredFrom` when this happened. `SEED_MODE=reset` clears the stored catalog.
 - **Bundled baseline.** Definitions shipped with the code (GitHub) are always available. A catalog version replaces the bundled one by key.
 - **Archiving.** A provider that disappears from the catalog is removed, or falls back to its bundled version.
 

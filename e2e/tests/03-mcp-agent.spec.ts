@@ -2,7 +2,7 @@ import { expect, test, type APIRequestContext } from '@playwright/test';
 import { resolve } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { DEMO_PASSWORD } from './helpers';
+import { DEMO_PASSWORD, details } from './helpers';
 
 /**
  * A real MCP client drives the real Token Vault MCP server process against the running
@@ -28,11 +28,11 @@ test.describe.serial('AI agent via MCP (Demo Organization)', () => {
     // Admin setup through the control-plane API: a dedicated agent with its own grant.
     admin = await playwright.request.newContext({ baseURL: API });
     expect((await admin.post('/api/v1/auth/login', { data: { email: 'owner@demo.test', password: DEMO_PASSWORD } })).ok()).toBe(true);
-    expect((await admin.post('/api/v1/auth/select-organization', { data: { organizationId: 'org_demo0000000001' } })).ok()).toBe(true);
-    const agent = await (await admin.post('/api/v1/agents', { data: { name: 'Claude MCP Agent', environment: 'development', ownerTeam: 'Platform AI', agentType: 'AI_AGENT' } })).json();
+    expect((await admin.post('/api/v1/auth/selectOrganization', { data: { organizationId: 'org_demo0000000001' } })).ok()).toBe(true);
+    const agent = await details(await admin.post('/api/v1/agent/save', { data: { name: 'Claude MCP Agent', environment: 'development', ownerTeam: 'Platform AI', agentType: 'AI_AGENT' } }));
     apiKey = agent.credential.apiKey;
     const now = Date.now();
-    const grant = await admin.post('/api/v1/grants', {
+    const grant = await admin.post('/api/v1/grant/save', {
       data: {
         name: 'MCP agent issue access',
         agentId: agent.agent.id,
@@ -46,7 +46,7 @@ test.describe.serial('AI agent via MCP (Demo Organization)', () => {
       },
     });
     expect(grant.ok(), await grant.text()).toBe(true);
-    grantId = (await grant.json()).id;
+    grantId = (await details(grant)).id;
 
     // Launch the MCP server exactly as an MCP host would: credential via environment only.
     const transport = new StdioClientTransport({
@@ -83,7 +83,7 @@ test.describe.serial('AI agent via MCP (Demo Organization)', () => {
     expect(r.text).toContain('demo-org/demo-repo/issues/');
     const requestId = /Token Vault request (req_[0-9a-f]+)/.exec(r.text)?.[1];
     expect(requestId).toBeTruthy();
-    const audit = await (await admin.get(`/api/v1/access-requests/${requestId}`)).json();
+    const audit = await details(await admin.get(`/api/v1/accessRequest/getbyid/${requestId}`));
     expect(audit).toMatchObject({ agentName: 'Claude MCP Agent', operation: 'github.issues.create', decision: 'ALLOW', executionStatus: 'SUCCEEDED', source: 'agent-api' });
   });
 
@@ -97,7 +97,7 @@ test.describe.serial('AI agent via MCP (Demo Organization)', () => {
   });
 
   test('revocation takes effect on the agent’s very next tool call', async () => {
-    expect((await admin.post(`/api/v1/grants/${grantId}/revoke`, { data: { reason: 'MCP e2e revocation' } })).ok()).toBe(true);
+    expect((await admin.post('/api/v1/grant/revoke', { data: { id: grantId, reason: 'MCP e2e revocation' } })).ok()).toBe(true);
     const r = await call('github_create_issue', { repository: 'demo-org/demo-repo', title: 'after revoke' });
     expect(r.isError).toBe(true);
     expect(r.text).toContain('GRANT_REVOKED');

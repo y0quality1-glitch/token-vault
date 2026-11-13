@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { ShieldAlert, Search } from 'lucide-react';
 import type { AuditEvent } from '@token-vault/shared';
-import { useApi } from '@/hooks/useApi';
-import { qs } from '@/lib/api';
+import { usePost } from '@/hooks/useApi';
+import { compact } from '@/lib/api';
 import { Card, DetailList } from '@/components/ui/card';
 import { Badge, StatusBadge } from '@/components/ui/badge';
 import { Input, Select } from '@/components/ui/form';
@@ -30,7 +30,7 @@ const CATEGORIES = [
 
 export function SecurityEventsPage() {
   const [f, setF] = useState({ eventType: '', outcome: '', actorType: '', search: '' });
-  const { data, error, loading, reload } = useApi<{ items: AuditEvent[]; total: number }>(`/audit-events${qs({ ...f, category: 'security' })}`);
+  const { data, error, loading, reload } = usePost<{ items: AuditEvent[]; total: number }>('/auditEvent/getall', compact({ ...f, category: 'security' }));
   const [selected, setSelected] = useState<AuditEvent | null>(null);
   const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setF((x) => ({ ...x, [k]: e.target.value }));
 

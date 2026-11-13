@@ -1,6 +1,6 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 import { createHash, createPublicKey, generateKeyPairSync, verify } from 'node:crypto';
-import { DEMO_PASSWORD, login } from './helpers';
+import { DEMO_PASSWORD, details, login } from './helpers';
 
 /**
  * Access modes, end to end (mock GitHub): an administrator switches a GitHub App integration
@@ -21,21 +21,21 @@ test.describe.serial('access modes (Demo Organization)', () => {
   const input = { title: `Handed off ${run}`, body: '' };
 
   const createIssue = async () => {
-    const r = await agentApi.post('/agent/v1/execute', { data: { integration_id: integrationId, operation: 'github.issues.create', resource: { repository: 'demo-org/demo-repo' }, input } });
-    return { status: r.status(), body: await r.json() };
+    const r = await agentApi.post('/agent/v1/request/execute', { data: { integration_id: integrationId, operation: 'github.issues.create', resource: { repository: 'demo-org/demo-repo' }, input } });
+    return { status: r.status(), body: await details(r) };
   };
 
   test.beforeAll(async ({ playwright, browser }) => {
     admin = await playwright.request.newContext({ baseURL: API });
     await admin.post('/api/v1/auth/login', { data: { email: 'owner@demo.test', password: DEMO_PASSWORD } });
-    await admin.post('/api/v1/auth/select-organization', { data: { organizationId: 'org_demo0000000001' } });
-    const integration = await admin.post('/api/v1/integrations', {
+    await admin.post('/api/v1/auth/selectOrganization', { data: { organizationId: 'org_demo0000000001' } });
+    const integration = await admin.post('/api/v1/integration/save', {
       data: { provider: 'github', authType: 'GITHUB_APP', displayName: `Handoff App ${run}`, environment: 'development', webhookId: 'wh_local0000000001', appId: '123456', installationId: '', keySource: 'stored', privateKey: PEM, allowedResources: ['demo-org/demo-repo'] },
     });
     expect(integration.ok(), await integration.text()).toBe(true);
-    integrationId = (await integration.json()).id;
-    const agent = await (await admin.post('/api/v1/agents', { data: { name: `Handoff Agent ${run}`, environment: 'development', ownerTeam: 'Release', agentType: 'AI_AGENT' } })).json();
-    const grant = await admin.post('/api/v1/grants', {
+    integrationId = (await details(integration)).id;
+    const agent = await details(await admin.post('/api/v1/agent/save', { data: { name: `Handoff Agent ${run}`, environment: 'development', ownerTeam: 'Release', agentType: 'AI_AGENT' } }));
+    const grant = await admin.post('/api/v1/grant/save', {
       data: { name: `Handoff ${run}`, agentId: agent.agent.id, integrationId, environment: 'development', scopes: ['github.issues.create'], repositories: ['demo-org/demo-repo'], validFrom: new Date(Date.now() - 60_000).toISOString(), expiresAt: new Date(Date.now() + 86_400_000).toISOString(), rateLimitPerMinute: 60 },
     });
     expect(grant.ok(), await grant.text()).toBe(true);
@@ -84,7 +84,7 @@ test.describe.serial('access modes (Demo Organization)', () => {
   });
 
   test('short-lived credential: the webhook issues a GitHub App token for this repository and permission only', async () => {
-    const set = await admin.put(`/api/v1/integrations/${integrationId}/access-mode`, { data: { accessMode: 'SHORT_LIVED_CREDENTIAL' } });
+    const set = await admin.post('/api/v1/integration/setAccessMode', { data: { id: integrationId, accessMode: 'SHORT_LIVED_CREDENTIAL' } });
     expect(set.ok(), await set.text()).toBe(true);
     const r = await createIssue();
     expect(r.body).toMatchObject({
@@ -95,18 +95,18 @@ test.describe.serial('access modes (Demo Organization)', () => {
     expect(r.body.authorization.credential.token).toMatch(/^ghs_/);
 
     // The audit names what was issued, never the token.
-    const record = await (await admin.get(`/api/v1/access-requests/${r.body.request_id}`)).text();
+    const record = await (await admin.get(`/api/v1/accessRequest/getbyid/${r.body.request_id}`)).text();
     expect(record).not.toContain(r.body.authorization.credential.token);
   });
 
   test('a personal access token cannot be handed out', async () => {
-    const r = await admin.put('/api/v1/integrations/int_github_001/access-mode', { data: { accessMode: 'SHORT_LIVED_CREDENTIAL' } });
+    const r = await admin.post('/api/v1/integration/setAccessMode', { data: { id: 'int_github_001', accessMode: 'SHORT_LIVED_CREDENTIAL' } });
     expect(r.status()).toBe(400);
     expect(JSON.stringify(await r.json())).toContain('GitHub App or OAuth');
   });
 
   test('back to Brokered', async () => {
-    expect((await admin.put(`/api/v1/integrations/${integrationId}/access-mode`, { data: { accessMode: 'BROKERED' } })).ok()).toBe(true);
+    expect((await admin.post('/api/v1/integration/setAccessMode', { data: { id: integrationId, accessMode: 'BROKERED' } })).ok()).toBe(true);
     expect((await createIssue()).body).toMatchObject({ decision: 'ALLOW', execution: { status: 'SUCCEEDED' } });
   });
 });

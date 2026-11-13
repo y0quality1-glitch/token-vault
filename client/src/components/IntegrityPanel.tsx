@@ -26,7 +26,7 @@ export function IntegrityPanel({ onChanged }: { onChanged?: () => void }) {
   async function verify() {
     setBusy(true);
     try {
-      setReport(await api.get<IntegrityReport>('/audit-integrity'));
+      setReport(await api.post<IntegrityReport>('/auditEvent/verifyIntegrity'));
     } catch (e) {
       toast.error('Verification failed', (e as Error).message);
     } finally {
@@ -37,7 +37,7 @@ export function IntegrityPanel({ onChanged }: { onChanged?: () => void }) {
   async function tamper() {
     setBusy(true);
     try {
-      const r = await api.post<{ seq: number }>('/demo/tamper-audit');
+      const r = await api.post<{ seq: number }>('/demo/tamperAudit');
       toast.info('Audit record edited directly in the database', `Record #${r.seq} was changed with the append-only trigger switched off. Verify to see it detected.`);
       setTamperOpen(false);
       setReport(null);

@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
-import { DEMO_PASSWORD, login } from './helpers';
+import { DEMO_PASSWORD, details, login } from './helpers';
 
 /**
  * One agent, several applications: the grant wizard creates one grant per selected
@@ -21,8 +21,8 @@ test.describe.serial('grants for several applications at once (Demo Organization
   test.beforeAll(async ({ playwright, browser }) => {
     admin = await playwright.request.newContext({ baseURL: API });
     await admin.post('/api/v1/auth/login', { data: { email: 'owner@demo.test', password: DEMO_PASSWORD } });
-    await admin.post('/api/v1/auth/select-organization', { data: { organizationId: 'org_demo0000000001' } });
-    const agent = await (await admin.post('/api/v1/agents', { data: { name: agentName, environment: 'development', ownerTeam: 'Platform AI', agentType: 'AI_AGENT' } })).json();
+    await admin.post('/api/v1/auth/selectOrganization', { data: { organizationId: 'org_demo0000000001' } });
+    const agent = await details(await admin.post('/api/v1/agent/save', { data: { name: agentName, environment: 'development', ownerTeam: 'Platform AI', agentType: 'AI_AGENT' } }));
     agentId = agent.agent.id;
     agentKey = agent.credential.apiKey;
     contexts.push(await playwright.request.newContext({ baseURL: API, extraHTTPHeaders: { authorization: `Bearer ${agentKey}` } }));
@@ -37,7 +37,7 @@ test.describe.serial('grants for several applications at once (Demo Organization
 
   test('the API creates all grants or none, and names the item that failed', async () => {
     const window = { validFrom: new Date(Date.now() - 60_000).toISOString(), expiresAt: new Date(Date.now() + 86_400_000).toISOString(), rateLimitPerMinute: 30 };
-    const refused = await admin.post('/api/v1/grants/batch', {
+    const refused = await admin.post('/api/v1/grant/savemulti', {
       data: {
         agentId,
         ...window,
@@ -49,8 +49,8 @@ test.describe.serial('grants for several applications at once (Demo Organization
     });
     expect(refused.status()).toBe(400);
     const body = await refused.json();
-    expect(Object.keys(body.error.details.fields)).toContain('items.1.repositories');
-    const { items } = await (await admin.get(`/api/v1/grants?agentId=${agentId}`)).json();
+    expect(Object.keys(body.details.fields)).toContain('items.1.repositories');
+    const { items } = await details(await admin.post('/api/v1/grant/getall', { data: { agentId } }));
     expect(items).toHaveLength(0); // the valid first item was not created either
   });
 
@@ -86,18 +86,18 @@ test.describe.serial('grants for several applications at once (Demo Organization
   });
 
   test('each application got its own grant, and the agent uses them all with one key', async () => {
-    const { items } = await (await admin.get(`/api/v1/grants?agentId=${agentId}`)).json();
+    const { items } = await details(await admin.post('/api/v1/grant/getall', { data: { agentId } }));
     const byIntegration = Object.fromEntries(items.map((g: { integrationId: string }) => [g.integrationId, g]));
     expect(byIntegration.int_github_001).toMatchObject({ scopes: ['github.issues.create'], resourceConstraints: { repositories: ['demo-org/demo-repo'] }, rateLimitPerMinute: 20, environment: 'development' });
     expect(byIntegration.int_github_003).toMatchObject({ scopes: ['github.repositories.read'], resourceConstraints: { repositories: ['partner-org/shared-repo'] } });
     expect(byIntegration.int_github_002).toMatchObject({ scopes: ['github.issues.list'], environment: 'staging' });
 
     const agentApi = contexts[0]!;
-    const caps = await (await agentApi.get('/agent/v1/capabilities')).json();
+    const caps = await details(await agentApi.post('/agent/v1/capability/getdata'));
     expect(caps.grants.map((g: { integration_id: string }) => g.integration_id).sort()).toEqual(['int_github_001', 'int_github_002', 'int_github_003']);
-    const created = await agentApi.post('/agent/v1/execute', { data: { integration_id: 'int_github_001', operation: 'github.issues.create', resource: { repository: 'demo-org/demo-repo' }, input: { title: 'Multi-app grant', body: '' } } });
-    expect((await created.json()).decision).toBe('ALLOW');
-    const read = await agentApi.post('/agent/v1/execute', { data: { integration_id: 'int_github_003', operation: 'github.repositories.read', resource: { repository: 'partner-org/shared-repo' } } });
-    expect((await read.json()).decision).toBe('ALLOW');
+    const created = await agentApi.post('/agent/v1/request/execute', { data: { integration_id: 'int_github_001', operation: 'github.issues.create', resource: { repository: 'demo-org/demo-repo' }, input: { title: 'Multi-app grant', body: '' } } });
+    expect((await details(created)).decision).toBe('ALLOW');
+    const read = await agentApi.post('/agent/v1/request/execute', { data: { integration_id: 'int_github_003', operation: 'github.repositories.read', resource: { repository: 'partner-org/shared-repo' } } });
+    expect((await details(read)).decision).toBe('ALLOW');
   });
 });

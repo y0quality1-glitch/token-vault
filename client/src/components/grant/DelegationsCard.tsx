@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { GitBranch } from 'lucide-react';
 import { PERMISSIONS, actingUserLabel, type DelegationView } from '@token-vault/shared';
-import { useApi, useMutation } from '@/hooks/useApi';
+import { useMutation, usePost } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
 import { api } from '@/lib/api';
 import { operationLabel } from '@/lib/providers';
@@ -24,11 +24,11 @@ const STATUS_TONE = { ACTIVE: 'green', EXPIRED: 'gray', REVOKED: 'red' } as cons
 export function DelegationsCard({ agentId, grantId }: { agentId?: string; grantId?: string }) {
   const { can } = useAuth();
   const toast = useToast();
-  const query = agentId ? `agentId=${encodeURIComponent(agentId)}` : `grantId=${encodeURIComponent(grantId ?? '')}`;
-  const { data, error, loading, reload } = useApi<{ items: DelegationView[] }>(`/delegations?${query}`);
+  const query = agentId ? { agentId } : { grantId: grantId ?? '' };
+  const { data, error, loading, reload } = usePost<{ items: DelegationView[] }>('/delegation/getall', query);
   const [revoking, setRevoking] = useState<DelegationView | null>(null);
   const [reason, setReason] = useState('');
-  const revoke = useMutation((id: string, why: string) => api.post<DelegationView>(`/delegations/${id}/revoke`, { reason: why }));
+  const revoke = useMutation((id: string, why: string) => api.post<DelegationView>('/delegation/revoke', { id, reason: why }));
   const items = data?.items ?? [];
   const byId = new Map(items.map((d) => [d.id, d]));
 

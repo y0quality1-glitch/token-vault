@@ -24,13 +24,13 @@ function userToken(sub: string, extra: Record<string, unknown> = {}, key: KeyObj
 
 suite('acting on behalf of a user', () => {
   let m: {
-    client: typeof import('../src/db/client');
+    client: typeof import('../src/databases/client');
     config: typeof import('../src/config');
     seed: typeof import('../src/store/seed');
     repos: typeof import('../src/store/repos');
-    broker: typeof import('../src/modules/broker/broker.service');
+    broker: typeof import('../src/services/brokerService/brokerService.service');
     crypto: typeof import('../src/lib/crypto');
-    chain: typeof import('../src/modules/audit/chain');
+    chain: typeof import('../src/services/auditService/chain');
   };
   let apiKey = '';
 
@@ -49,13 +49,13 @@ suite('acting on behalf of a user', () => {
     process.env.AUDIT_SIGNING_KEY ??= randomBytes(32).toString('base64url');
     process.env.DB_POOL_MAX = '4';
     m = {
-      client: await import('../src/db/client'),
+      client: await import('../src/databases/client'),
       config: await import('../src/config'),
       seed: await import('../src/store/seed'),
       repos: await import('../src/store/repos'),
-      broker: await import('../src/modules/broker/broker.service'),
+      broker: await import('../src/services/brokerService/brokerService.service'),
       crypto: await import('../src/lib/crypto'),
-      chain: await import('../src/modules/audit/chain'),
+      chain: await import('../src/services/auditService/chain'),
     };
     await m.client.runMigrations();
     await m.seed.resetDatabase();
@@ -93,7 +93,7 @@ suite('acting on behalf of a user', () => {
     expect(record.onBehalfOf).toMatchObject({ sub: 'ada', groups: ['engineering'], issuerId: 'uis_test' });
     expect(record.checks.find((c) => c.name === 'Acting user')?.detail).toContain('ada@acme.test');
     expect((await m.repos.userIssuerRepo.getIssuer(m.seed.IDS.demoOrg, 'uis_test'))?.lastUsedAt).toBeTruthy();
-    const { items } = await m.repos.auditRepo.listAccessRequests(m.seed.IDS.demoOrg, { user: 'ADA@acme' }, 50);
+    const { items } = await new (await import('../src/services/accessRequestService/accessRequestService.service')).default().list(m.seed.IDS.demoOrg, { user: 'ADA@acme', limit: 50 });
     expect(items.map((i) => i.id)).toContain(r.body.request_id);
   });
 

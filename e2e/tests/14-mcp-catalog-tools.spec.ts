@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
-import { DEMO_PASSWORD } from './helpers';
+import { DEMO_PASSWORD, details } from './helpers';
 
 /**
  * MCP tools come from the catalog: an application published in the CMS becomes typed MCP
@@ -69,7 +69,7 @@ test.describe.serial('MCP tools generated from the catalog', () => {
     expect((await cms.post('/api/v1/auth/login', { data: { email: 'admin@cms.test', password: DEMO_PASSWORD } })).ok()).toBe(true);
     admin = await playwright.request.newContext({ baseURL: API });
     expect((await admin.post('/api/v1/auth/login', { data: { email: 'owner@demo.test', password: DEMO_PASSWORD } })).ok()).toBe(true);
-    await admin.post('/api/v1/auth/select-organization', { data: { organizationId: 'org_demo0000000001' } });
+    await admin.post('/api/v1/auth/selectOrganization', { data: { organizationId: 'org_demo0000000001' } });
   });
   test.afterAll(async () => {
     await client?.close();
@@ -79,14 +79,14 @@ test.describe.serial('MCP tools generated from the catalog', () => {
   test('a CMS application, connected and granted, becomes a typed MCP tool', async () => {
     expect((await cms.post('/api/v1/applications', { data: { key: 'statuspage', name: 'Status Page' } })).status()).toBe(201);
     await publish([list], 1);
-    await expect.poll(async () => ((await (await admin.get('/api/v1/providers')).json()).providers as { key: string }[]).some((p) => p.key === 'statuspage'), { timeout: 15_000 }).toBe(true);
+    await expect.poll(async () => ((await details(await admin.post('/api/v1/provider/getall'))).providers as { key: string }[]).some((p) => p.key === 'statuspage'), { timeout: 15_000 }).toBe(true);
 
-    const integration = await admin.post('/api/v1/integrations', { data: { provider: 'statuspage', authType: 'API_KEY', displayName: 'Acme Status', webhookId: 'wh_local0000000001', secret: STATUS_KEY, allowedResources: ['acme', 'beta'], environment: 'development' } });
+    const integration = await admin.post('/api/v1/integration/save', { data: { provider: 'statuspage', authType: 'API_KEY', displayName: 'Acme Status', webhookId: 'wh_local0000000001', secret: STATUS_KEY, allowedResources: ['acme', 'beta'], environment: 'development' } });
     expect(integration.status(), await integration.text()).toBe(201);
-    const integrationId = (await integration.json()).id;
-    const agent = await (await admin.post('/api/v1/agents', { data: { name: 'Status Agent', environment: 'development', ownerTeam: 'SRE', agentType: 'AI_AGENT' } })).json();
+    const integrationId = (await details(integration)).id;
+    const agent = await details(await admin.post('/api/v1/agent/save', { data: { name: 'Status Agent', environment: 'development', ownerTeam: 'SRE', agentType: 'AI_AGENT' } }));
     const now = Date.now();
-    const grant = await admin.post('/api/v1/grants', {
+    const grant = await admin.post('/api/v1/grant/save', {
       data: { name: 'Status read', agentId: agent.agent.id, integrationId, environment: 'development', scopes: ['statuspage.incidents.list'], repositories: ['acme'], validFrom: new Date(now - 60_000).toISOString(), expiresAt: new Date(now + 86_400_000).toISOString(), rateLimitPerMinute: 30 },
     });
     expect(grant.ok(), await grant.text()).toBe(true);

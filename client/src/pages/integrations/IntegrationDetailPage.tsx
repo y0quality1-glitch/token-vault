@@ -23,7 +23,7 @@ export function IntegrationDetailPage() {
   const navigate = useNavigate();
   const toast = useToast();
   const { can } = useAuth();
-  const { data: i, error, loading, reload, setData } = useApi<IntegrationDetail>(`/integrations/${id}`);
+  const { data: i, error, loading, reload, setData } = useApi<IntegrationDetail>(`/integration/getbyid/${id}`);
   const [dialog, setDialog] = useState<null | 'edit' | 'rotate' | 'disable' | 'delete'>(null);
   const [busy, setBusy] = useState(false);
   const manage = can(PERMISSIONS.INTEGRATION_MANAGE);
@@ -62,7 +62,7 @@ export function IntegrationDetailPage() {
                 loading={busy}
                 onClick={() =>
                   action(async () => {
-                    const r = await api.post<{ valid: boolean; upstreamStatus: number | null; integration: IntegrationDetail }>(`/integrations/${i.id}/test`);
+                    const r = await api.post<{ valid: boolean; upstreamStatus: number | null; integration: IntegrationDetail }>('/integration/test', { id: i.id });
                     setData(r.integration);
                     if (r.valid) toast.success('Connection test passed', `Webhook decrypted the credential; upstream responded ${r.upstreamStatus} (simulated).`);
                     else toast.error('Connection test failed', `Upstream responded ${r.upstreamStatus ?? 'n/a'}. Rotate the credential.`);
@@ -84,7 +84,7 @@ export function IntegrationDetailPage() {
                   variant="outline"
                   onClick={() =>
                     action(async () => {
-                      setData(await api.post<IntegrationDetail>(`/integrations/${i.id}/enable`));
+                      setData(await api.post<IntegrationDetail>('/integration/enable', { id: i.id }));
                       toast.success('Integration enabled');
                     })
                   }
@@ -205,7 +205,7 @@ export function IntegrationDetailPage() {
         loading={busy}
         onConfirm={() =>
           action(async () => {
-            setData(await api.post<IntegrationDetail>(`/integrations/${i.id}/disable`));
+            setData(await api.post<IntegrationDetail>('/integration/disable', { id: i.id }));
             setDialog(null);
             toast.success('Integration disabled');
           })
@@ -221,7 +221,7 @@ export function IntegrationDetailPage() {
         loading={busy}
         onConfirm={() =>
           action(async () => {
-            const r = await api.del<{ credentialShredded: boolean; grantsRevoked: number }>(`/integrations/${i.id}`);
+            const r = await api.del<{ credentialShredded: boolean; grantsRevoked: number }>(`/integration/delete/${i.id}`);
             toast.success('Integration deleted', `${r.grantsRevoked} grant(s) revoked. Credential ${r.credentialShredded ? 'shredded by webhook' : 'could not be reached for shredding'}.`);
             navigate('/integrations/connected');
           })
@@ -237,7 +237,7 @@ function EditMetadataDialog({ open, integration, onClose, onSaved }: { open: boo
   useEffect(() => {
     if (open) setForm({ displayName: integration.displayName, accountLabel: integration.accountLabel, description: integration.description, allowedResources: integration.allowedResources.join('\n') });
   }, [open, integration]);
-  const save = useMutation((body: unknown) => api.patch<IntegrationDetail>(`/integrations/${integration.id}`, body));
+  const save = useMutation((body: unknown) => api.post<IntegrationDetail>('/integration/save', { ...(body as object), id: integration.id }));
   const fe = save.fieldErrors;
   return (
     <Dialog
@@ -289,7 +289,7 @@ function RotateDialog({ open, integration, onClose, onSaved }: { open: boolean; 
   const toast = useToast();
   const isApp = integration.authType === 'GITHUB_APP';
   const [secret, setSecret] = useState('');
-  const rotate = useMutation((s: string) => api.post<IntegrationDetail>(`/integrations/${integration.id}/rotate`, isApp ? { privateKey: s } : { secret: s }));
+  const rotate = useMutation((s: string) => api.post<IntegrationDetail>('/integration/rotate', isApp ? { id: integration.id, privateKey: s } : { id: integration.id, secret: s }));
   useEffect(() => {
     if (!open) setSecret('');
   }, [open]);
@@ -348,7 +348,7 @@ function RotateDialog({ open, integration, onClose, onSaved }: { open: boolean; 
 /** Rotation reminder: how often this credential should be rotated, and when it is next due. */
 function RotationReminder({ i, manage, oauth, onSaved }: { i: IntegrationDetail; manage: boolean; oauth: boolean; onSaved: (next: IntegrationDetail) => void }) {
   const toast = useToast();
-  const save = useMutation((intervalDays: number | null) => api.put<IntegrationDetail>(`/integrations/${i.id}/rotation-policy`, { intervalDays }));
+  const save = useMutation((intervalDays: number | null) => api.post<IntegrationDetail>('/integration/setRotationPolicy', { id: i.id, intervalDays }));
   const r = rotationState(i);
   const options = ROTATION_INTERVAL_OPTIONS.includes(i.rotationIntervalDays as (typeof ROTATION_INTERVAL_OPTIONS)[number]) || !i.rotationIntervalDays ? ROTATION_INTERVAL_OPTIONS : [...ROTATION_INTERVAL_OPTIONS, i.rotationIntervalDays];
   const tone = r.state === 'overdue' ? 'border-amber-300 bg-amber-50 text-amber-900' : r.state === 'due_soon' ? 'border-sky-200 bg-sky-50 text-sky-900' : 'border-slate-200 bg-slate-50 text-slate-700';
@@ -411,7 +411,7 @@ const ACCESS_MODE_TEXT: Record<AccessMode, { title: string; description: string 
 function AccessModeCard({ i, manage, onSaved }: { i: IntegrationDetail; manage: boolean; onSaved: (next: IntegrationDetail) => void }) {
   const toast = useToast();
   const [pick, setPick] = useState<AccessMode | null>(null);
-  const save = useMutation((accessMode: AccessMode) => api.put<IntegrationDetail>(`/integrations/${i.id}/access-mode`, { accessMode }));
+  const save = useMutation((accessMode: AccessMode) => api.post<IntegrationDetail>('/integration/setAccessMode', { id: i.id, accessMode }));
   const method = getProvider(i.provider)?.auth.find((a) => a.id === i.authType);
   const issuable = method?.kind === 'oauth2' || (method?.kind === 'plugin' && method.plugin === 'github_app');
   const apply = async (mode: AccessMode) => {

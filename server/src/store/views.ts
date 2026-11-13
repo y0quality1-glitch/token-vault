@@ -1,5 +1,5 @@
 import type { Agent, Grant, GrantStatus, Integration } from '@token-vault/shared';
-import { db, type Executor } from '../db/client';
+import { db, type Executor } from '../databases/client';
 import { agentRepo, grantRepo, integrationRepo, orgRepo, webhookRepo } from './repos';
 import type { AgentRecord, GrantRecord, IntegrationRecord } from './types';
 

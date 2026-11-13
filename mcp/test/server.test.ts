@@ -109,14 +109,22 @@ describe('MCP tools', () => {
       ...over,
     };
     const calls: { url: string; body: unknown }[] = [];
+    // The agent API envelope: `details` is the payload; a decision's code and reason on 4xx/5xx.
+    const reply = (details: unknown, status: number) => {
+      const env = status < 400
+        ? { status: '10000', msg: 'OK', error: null, details, totalRecords: 1 }
+        : { status: '10001', msg: '', error: (details as ExecuteResponseBody).reason, code: (details as ExecuteResponseBody).decision_code, details, totalRecords: 0 };
+      return new Response(JSON.stringify(env), { status });
+    };
     const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       const u = String(url);
       calls.push({ url: u, body: init?.body ? JSON.parse(String(init.body)) : null });
-      if (u.endsWith('/operations')) return new Response(JSON.stringify(ops.current), { status: 200 });
-      if (u.endsWith('/access-requests')) return new Response(JSON.stringify({ access_request_id: 'gr_1', status: 'PENDING', expires_at: '2026-11-07T00:00:00.000Z' }), { status: 201 });
-      if (u.includes('/approvals/')) return new Response(JSON.stringify(approvalNow.current), { status: 200 });
-      const payload = u.endsWith('/capabilities') ? capsNow.current : body;
-      return new Response(JSON.stringify(payload), { status: u.endsWith('/capabilities') ? 200 : httpStatus });
+      if (u.endsWith('/agent/v1/operation/getall')) return reply(ops.current, 200);
+      if (u.endsWith('/agent/v1/accessRequest/save')) return reply({ access_request_id: 'gr_1', status: 'PENDING', expires_at: '2026-11-07T00:00:00.000Z' }, 201);
+      if (u.includes('/agent/v1/approval/getbyid/')) return reply(approvalNow.current, 200);
+      if (u.endsWith('/agent/v1/capability/getdata')) return reply(capsNow.current, 200);
+      if (u.endsWith('/agent/v1/request/execute')) return reply(body, httpStatus);
+      return new Response(JSON.stringify({ status: '10001', msg: '', error: 'Not found', code: 'NOT_FOUND', details: null, totalRecords: 0 }), { status: 404 });
     });
     const tv = new TokenVault({ apiKey: KEY, baseUrl: 'http://tv.test', fetch: fetchMock as unknown as typeof fetch });
     const [clientT, serverT] = InMemoryTransport.createLinkedPair();
@@ -150,7 +158,7 @@ describe('MCP tools', () => {
     approvalNow.current = { ...approvalNow.current, status: 'APPROVED' };
     const before = calls.length;
     await client.callTool({ name: 'token_vault_check_approval', arguments: { approval_id: 'apv_1' } });
-    expect(calls.slice(before).at(-1)).toMatchObject({ url: 'http://tv.test/agent/v1/execute', body: { integration_id: 'int_github_001', operation: 'github.issues.create', input: { title: 'Ship it', body: '' }, approval_id: 'apv_1' } });
+    expect(calls.slice(before).at(-1)).toMatchObject({ url: 'http://tv.test/agent/v1/request/execute', body: { integration_id: 'int_github_001', operation: 'github.issues.create', input: { title: 'Ship it', body: '' }, approval_id: 'apv_1' } });
   });
 
   it('creates an issue through Token Vault and returns the sanitized result with its request ID', async () => {
@@ -159,7 +167,7 @@ describe('MCP tools', () => {
     expect(r.isError).toBeFalsy();
     expect(textOf(r)).toContain('req_abc');
     expect(textOf(r)).toContain('issues/44');
-    expect(calls.at(-1)).toMatchObject({ url: 'http://tv.test/agent/v1/execute', body: { integration_id: 'int_github_001', operation: 'github.issues.create', resource: { repository: 'demo-org/demo-repo' }, input: { title: 'Hello from an agent' } } });
+    expect(calls.at(-1)).toMatchObject({ url: 'http://tv.test/agent/v1/request/execute', body: { integration_id: 'int_github_001', operation: 'github.issues.create', resource: { repository: 'demo-org/demo-repo' }, input: { title: 'Hello from an agent' } } });
     expect(JSON.stringify(r)).not.toContain(KEY);
   });
 
@@ -230,12 +238,12 @@ describe('MCP tools', () => {
 
     const bad = await client.callTool({ name: 'slack_messages_post', arguments: { channel: 'general', text: 'hi' } });
     expect(bad.isError).toBe(true);
-    expect(calls.some((c) => c.url.endsWith('/execute'))).toBe(false);
+    expect(calls.some((c) => c.url.endsWith('/request/execute'))).toBe(false);
 
     const r = await client.callTool({ name: 'slack_messages_post', arguments: { channel: 'C0123456789', text: 'Deploy finished' } });
     expect(r.isError).toBeFalsy();
     expect(textOf(r)).toContain('Post a message succeeded (simulated Slack)');
-    expect(calls.at(-1)).toMatchObject({ url: 'http://tv.test/agent/v1/execute', body: { integration_id: 'int_slack_1', operation: 'slack.messages.post', resource: { channel: 'C0123456789' }, input: { text: 'Deploy finished' } } });
+    expect(calls.at(-1)).toMatchObject({ url: 'http://tv.test/agent/v1/request/execute', body: { integration_id: 'int_slack_1', operation: 'slack.messages.post', resource: { channel: 'C0123456789' }, input: { text: 'Deploy finished' } } });
   });
 
   it('follows catalog changes: unchanged versions are free, removed applications lose their tools', async () => {
@@ -254,7 +262,7 @@ describe('MCP tools', () => {
     const { client, calls } = await connect({});
     const r = await client.callTool({ name: 'token_vault_request_access', arguments: { operations: ['slack.messages.post'], resource: 'C0123456789', justification: 'Post the release notes to the team channel' } });
     expect(r.isError).toBeFalsy();
-    expect(calls.at(-1)).toMatchObject({ url: 'http://tv.test/agent/v1/access-requests', body: { integration_id: 'int_slack_1', operations: ['slack.messages.post'], repositories: ['C0123456789'] } });
+    expect(calls.at(-1)).toMatchObject({ url: 'http://tv.test/agent/v1/accessRequest/save', body: { integration_id: 'int_slack_1', operations: ['slack.messages.post'], repositories: ['C0123456789'] } });
     const mixed = await client.callTool({ name: 'token_vault_request_access', arguments: { operations: ['slack.messages.post', 'github.issues.create'], justification: 'Needs both for the release' } });
     expect(textOf(mixed)).toMatch(/one application at a time/);
   });

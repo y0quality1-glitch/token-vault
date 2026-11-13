@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { BadgeCheck, Pencil, Plus, Trash2, UserRoundCheck } from 'lucide-react';
 import { PERMISSIONS, actingUserLabel, type ActingUser, type UserIssuer } from '@token-vault/shared';
-import { useApi, useMutation } from '@/hooks/useApi';
+import { useMutation, usePost } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -24,11 +24,11 @@ export function UserIdentityPage() {
   const { can } = useAuth();
   const toast = useToast();
   const manage = can(PERMISSIONS.POLICY_MANAGE);
-  const { data, error, loading, reload } = useApi<{ items: UserIssuer[] }>('/user-issuers');
+  const { data, error, loading, reload } = usePost<{ items: UserIssuer[] }>('/userIssuer/getall');
   const [editing, setEditing] = useState<UserIssuer | 'new' | null>(null);
   const [deleting, setDeleting] = useState<UserIssuer | null>(null);
   const [checking, setChecking] = useState(false);
-  const remove = useMutation((id: string) => api.del(`/user-issuers/${id}`));
+  const remove = useMutation((id: string) => api.del(`/userIssuer/delete/${id}`));
 
   return (
     <div className="space-y-4">
@@ -148,7 +148,7 @@ function IssuerDialog({ issuer, onClose, onSaved }: { issuer: UserIssuer | null;
     enabled: issuer?.enabled ?? true,
   });
   const set = (patch: Partial<typeof f>) => setF((x) => ({ ...x, ...patch }));
-  const save = useMutation((body: unknown) => (issuer ? api.put<UserIssuer>(`/user-issuers/${issuer.id}`, body) : api.post<UserIssuer>('/user-issuers', body)));
+  const save = useMutation((body: unknown) => (issuer ? api.post<UserIssuer>('/userIssuer/save', { ...(body as object), id: issuer.id }) : api.post<UserIssuer>('/userIssuer/save', body)));
   const fe = save.fieldErrors;
 
   return (
@@ -219,7 +219,7 @@ function IssuerDialog({ issuer, onClose, onSaved }: { issuer: UserIssuer | null;
 
 function CheckTokenDialog({ onClose }: { onClose: () => void }) {
   const [token, setToken] = useState('');
-  const check = useMutation((t: string) => api.post<{ valid: true; user: ActingUser } | { valid: false; reason: string }>('/user-issuers/verify-token', { token: t }));
+  const check = useMutation((t: string) => api.post<{ valid: true; user: ActingUser } | { valid: false; reason: string }>('/userIssuer/verifyToken', { token: t }));
   const [result, setResult] = useState<{ valid: true; user: ActingUser } | { valid: false; reason: string } | null>(null);
   return (
     <Dialog

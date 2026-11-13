@@ -157,7 +157,7 @@ export function LoginPage() {
           <Button
             onClick={async () => {
               try {
-                const r = await api.post<{ message: string }>('/auth/forgot-password', { email: email || 'unknown@demo.test' });
+                const r = await api.post<{ message: string }>('/auth/forgotPassword', { email: email || 'unknown@demo.test' });
                 setForgotMsg(r.message);
               } catch (e) {
                 setForgotMsg((e as Error).message);

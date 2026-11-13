@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ExternalLink, Plug, Search } from 'lucide-react';
 import { PERMISSIONS, type CatalogEntry } from '@token-vault/shared';
-import { useApi } from '@/hooks/useApi';
+import { usePost } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -26,7 +26,7 @@ const REFRESH_MS = 15_000;
 export function CatalogPage() {
   const navigate = useNavigate();
   const { can } = useAuth();
-  const { data, error, loading, reload } = useApi<{ items: CatalogEntry[] }>('/integrations/catalog');
+  const { data, error, loading, reload } = usePost<{ items: CatalogEntry[] }>('/integration/getCatalog');
   const [filter, setFilter] = useState<'all' | 'connected' | 'not'>('all');
   const [category, setCategory] = useState<string>('all');
   const [query, setQuery] = useState('');

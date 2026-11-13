@@ -5,7 +5,7 @@ import { getOperation, getProvider, useProviders } from '@/lib/providers';
 import { OperationPicker, selectorLabel } from '@/components/policy/OperationPicker';
 import { SearchSelect } from '@/components/policy/SearchSelect';
 import { EMPTY_DRAFT, ResponseFilterEditor, describeFilter, fromDraft, toDraft, type FilterDraft } from '@/components/policy/ResponseFilterEditor';
-import { useApi, useMutation } from '@/hooks/useApi';
+import { useMutation, usePost } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -31,9 +31,9 @@ const EFFECTS: Record<PolicyEffect, { label: string; tone: 'red' | 'green' | 'am
 export function PoliciesPage() {
   const { can } = useAuth();
   const toast = useToast();
-  const { data, error, loading, reload, setData } = useApi<{ items: Policy[] }>('/policies');
-  const agents = useApi<{ items: Agent[] }>('/agents');
-  const integrations = useApi<{ items: Integration[] }>('/integrations');
+  const { data, error, loading, reload, setData } = usePost<{ items: Policy[] }>('/policy/getall');
+  const agents = usePost<{ items: Agent[] }>('/agent/getall');
+  const integrations = usePost<{ items: Integration[] }>('/integration/getall');
   const [editing, setEditing] = useState<Policy | 'new' | null>(null);
   const manage = can(PERMISSIONS.POLICY_MANAGE);
 
@@ -46,7 +46,7 @@ export function PoliciesPage() {
   async function toggle(p: Policy, enabled: boolean) {
     try {
       const { id: _i, organizationId: _o, createdAt: _c, updatedAt: _u, ...body } = p;
-      const updated = await api.put<Policy>(`/policies/${p.id}`, { ...body, enabled });
+      const updated = await api.post<Policy>('/policy/save', { ...body, id: p.id, enabled });
       setData({ items: data!.items.map((x) => (x.id === p.id ? updated : x)) });
       toast.success(`Policy ${enabled ? 'enabled' : 'disabled'}`, p.name);
     } catch (e) {
@@ -208,7 +208,7 @@ function PolicyDialog({ policy, agents, integrations, onClose, onSaved }: { poli
       });
     }
   }, [policy]);
-  const save = useMutation((body: unknown) => (isNew ? api.post<Policy>('/policies', body) : api.put<Policy>(`/policies/${(policy as Policy).id}`, body)));
+  const save = useMutation((body: unknown) => (isNew ? api.post<Policy>('/policy/save', body) : api.post<Policy>('/policy/save', { ...(body as object), id: (policy as Policy).id })));
   const fe = save.fieldErrors;
 
   // "Where" decides "what": the application the policy is limited to, if any.

@@ -21,15 +21,14 @@ suite('Slack approvals', () => {
   let slackServer: Server;
   let slackUrl = '';
   let m: {
-    client: typeof import('../src/db/client');
+    client: typeof import('../src/databases/client');
     seed: typeof import('../src/store/seed');
     repos: typeof import('../src/store/repos');
-    broker: typeof import('../src/modules/broker/broker.service');
+    broker: typeof import('../src/services/brokerService/brokerService.service');
     crypto: typeof import('../src/lib/crypto');
-    slack: typeof import('../src/modules/slack/slack.service');
-    approvals: typeof import('../src/modules/approvals/approvals.service');
-    db: typeof import('../src/db/schema');
-    orm: typeof import('drizzle-orm');
+    slack: typeof import('../src/services/slackService/slackService.service');
+    approvals: typeof import('../src/services/approvalService/approvalService.service');
+    db: typeof import('../src/entities');
   };
   let apiKey = '';
   let n = 0;
@@ -81,15 +80,14 @@ suite('Slack approvals', () => {
     process.env.AUDIT_SIGNING_KEY ??= randomBytes(32).toString('base64url');
     process.env.DB_POOL_MAX = '4';
     m = {
-      client: await import('../src/db/client'),
+      client: await import('../src/databases/client'),
       seed: await import('../src/store/seed'),
       repos: await import('../src/store/repos'),
-      broker: await import('../src/modules/broker/broker.service'),
+      broker: await import('../src/services/brokerService/brokerService.service'),
       crypto: await import('../src/lib/crypto'),
-      slack: await import('../src/modules/slack/slack.service'),
-      approvals: await import('../src/modules/approvals/approvals.service'),
-      db: await import('../src/db/schema'),
-      orm: await import('drizzle-orm'),
+      slack: await import('../src/services/slackService/slackService.service'),
+      approvals: await import('../src/services/approvalService/approvalService.service'),
+      db: await import('../src/entities'),
     };
     await m.client.runMigrations();
     await m.seed.resetDatabase();
@@ -116,7 +114,7 @@ suite('Slack approvals', () => {
     const view = await m.slack.saveSettings(ctx, { botToken: BOT_TOKEN, signingSecret: SIGNING_SECRET, channelId: 'C0APPROVALS' });
     expect(view).toMatchObject({ configured: true, enabled: true, teamId: 'T_DEMO', teamName: 'Demo Workspace', channelId: 'C0APPROVALS', botTokenHint: 'xoxb-…mnop', interactionsUrl: expect.stringMatching(/\/slack\/interactions$/) });
     expect(JSON.stringify(view)).not.toContain(BOT_TOKEN);
-    const [row] = await m.client.db.select().from(m.db.slackSettings);
+    const [row] = await m.client.db.find(m.db.SlackSettingsEntity);
     expect(row!.botTokenSealed).not.toContain('abcdefghijklmnop');
     expect(row!.signingSecretSealed).not.toContain(SIGNING_SECRET);
   });
@@ -125,12 +123,11 @@ suite('Slack approvals', () => {
     const ctx = { user: (await owner())!, org: { id: m.seed.IDS.sandboxOrg } } as never;
     await expect(m.slack.saveSettings(ctx, { botToken: BOT_TOKEN, signingSecret: SIGNING_SECRET, channelId: 'C0SANDBOX' })).rejects.toMatchObject({ status: 409 });
     // Two saves racing past that check still can't both land: the unique index refuses the second.
-    const [demo] = await m.client.db.select().from(m.db.slackSettings);
+    const [demo] = await m.client.db.find(m.db.SlackSettingsEntity);
     const codes: string[] = [];
     await m.client.db
-      .insert(m.db.slackSettings)
-      .values({ ...demo!, organizationId: m.seed.IDS.sandboxOrg })
-      .catch((e) => {
+      .insert(m.db.SlackSettingsEntity, { ...demo!, organizationId: m.seed.IDS.sandboxOrg })
+      .catch((e: any) => {
         for (let x = e; x; x = x.cause) codes.push(x.code);
       });
     expect(codes).toContain('23505');
@@ -174,13 +171,12 @@ suite('Slack approvals', () => {
     expect(m.slack.verifySlackSignature(SIGNING_SECRET, 'payload=x', ts, 'v0=short')).toBe(false);
 
     const id = await holdRequest();
-    const { slackSettings } = m.db;
-    const [row] = await m.client.db.select().from(slackSettings);
-    await m.client.db.update(slackSettings).set({ signingSecretSealed: 'v1:damaged' });
+    const [row] = await m.client.db.find(m.db.SlackSettingsEntity);
+    await m.client.db.query('UPDATE slack_settings SET signing_secret_sealed = $1', ['v1:damaged']);
     try {
       expect(await click(id, 'U_SEC', 'tv_approve')).toEqual({ status: 401 });
     } finally {
-      await m.client.db.update(slackSettings).set({ signingSecretSealed: row!.signingSecretSealed });
+      await m.client.db.query('UPDATE slack_settings SET signing_secret_sealed = $1', [row!.signingSecretSealed]);
     }
     expect((await m.repos.approvalRepo.getApproval(m.seed.IDS.demoOrg, id))!.status).toBe('PENDING');
   });
@@ -197,7 +193,7 @@ suite('Slack approvals', () => {
     // A second click is refused like in the console.
     await click(id, 'U_SEC', 'tv_reject');
     expect(replies(id).at(-1)!.body.text).toContain('can no longer be rejected');
-    const events = await m.client.db.select().from(m.db.auditEvents).where(m.orm.eq(m.db.auditEvents.eventType, 'approval.approved'));
+    const events = await m.client.db.findBy(m.db.AuditEventEntity, { eventType: 'approval.approved' });
     expect(events.find((e) => (e.metadata as { approvalId?: string }).approvalId === id)?.metadata).toMatchObject({ via: 'slack' });
   });
 

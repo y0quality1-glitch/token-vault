@@ -1,7 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import { Plug, Plus } from 'lucide-react';
 import { PERMISSIONS, type Integration } from '@token-vault/shared';
-import { useApi } from '@/hooks/useApi';
+import { usePost } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -15,7 +15,7 @@ import { relativeTime } from '@/lib/utils';
 export function ConnectedIntegrationsPage() {
   const navigate = useNavigate();
   const { can } = useAuth();
-  const { data, error, loading, reload } = useApi<{ items: Integration[] }>('/integrations');
+  const { data, error, loading, reload } = usePost<{ items: Integration[] }>('/integration/getall');
   return (
     <div>
       <PageHeader

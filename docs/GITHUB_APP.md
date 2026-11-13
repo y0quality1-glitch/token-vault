@@ -11,7 +11,7 @@ A GitHub App is the recommended way to connect GitHub. Compared with a personal 
 
 ## How a request flows
 
-1. The agent calls `POST /agent/v1/execute`. Token Vault evaluates grants and policies exactly as for a PAT.
+1. The agent calls `POST /agent/v1/request/execute`. Token Vault evaluates grants and policies exactly as for a PAT.
 2. If allowed, Token Vault sends a signed execution request to the customer webhook.
 3. The webhook decrypts the App credential, signs a 9-minute App JWT (RS256) and calls `POST /app/installations/{id}/access_tokens` with `repositories: [<repo>]` and the operation's permission:
 

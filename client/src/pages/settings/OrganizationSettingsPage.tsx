@@ -21,7 +21,7 @@ export function OrganizationSettingsPage() {
   const [form, setForm] = useState({ name: org.name, environment: org.environment as Environment });
   const [reset, setReset] = useState(false);
   const [resetting, setResetting] = useState(false);
-  const save = useMutation((body: unknown) => api.patch<Organization>('/organizations/current', body));
+  const save = useMutation((body: unknown) => api.post<Organization>('/organization/save', body));
   const manage = can(PERMISSIONS.ORG_MANAGE);
   useEffect(() => setForm({ name: org.name, environment: org.environment }), [org]);
 

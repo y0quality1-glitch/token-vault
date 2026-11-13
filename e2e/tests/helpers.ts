@@ -1,4 +1,13 @@
-import { expect, type Page } from '@playwright/test';
+import { expect, type APIResponse, type Page } from '@playwright/test';
+
+/**
+ * Reads the payload of a control-plane response. Every /api/v1 and /agent/v1 route answers
+ * `{ status, msg, error, code?, details, totalRecords }`; `details` is the route's own body.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function details(response: APIResponse): Promise<any> {
+  return (await response.json()).details;
+}
 
 export const DEMO_PASSWORD = 'TokenVault-Demo-2026';
 export const MOCK_TOKEN = 'mock_ghp_E2EtestTokenValue1234567890';

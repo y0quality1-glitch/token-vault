@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
-import { DEMO_PASSWORD, login } from './helpers';
+import { DEMO_PASSWORD, details, login } from './helpers';
 
 /**
  * Phase 1 guardrails, end to end: an argument rule written in the policy editor, a grant
@@ -15,18 +15,18 @@ test.describe.serial('guardrails: argument rules, budgets, emergency stop (Demo 
   let agentName = '';
 
   const createIssue = (title: string) =>
-    agentApi.post('/agent/v1/execute', { data: { integration_id: 'int_github_001', operation: 'github.issues.create', resource: { repository: 'demo-org/demo-repo' }, input: { title, body: '' } } }).then(async (r) => ({ status: r.status(), body: await r.json() }));
+    agentApi.post('/agent/v1/request/execute', { data: { integration_id: 'int_github_001', operation: 'github.issues.create', resource: { repository: 'demo-org/demo-repo' }, input: { title, body: '' } } }).then(async (r) => ({ status: r.status(), body: await details(r) }));
   const readRepo = () =>
-    agentApi.post('/agent/v1/execute', { data: { integration_id: 'int_github_001', operation: 'github.repositories.read', resource: { repository: 'demo-org/demo-repo' } } }).then(async (r) => ({ status: r.status(), body: await r.json() }));
+    agentApi.post('/agent/v1/request/execute', { data: { integration_id: 'int_github_001', operation: 'github.repositories.read', resource: { repository: 'demo-org/demo-repo' } } }).then(async (r) => ({ status: r.status(), body: await details(r) }));
 
   test.beforeAll(async ({ playwright, browser }) => {
     admin = await playwright.request.newContext({ baseURL: API });
     await admin.post('/api/v1/auth/login', { data: { email: 'owner@demo.test', password: DEMO_PASSWORD } });
-    await admin.post('/api/v1/auth/select-organization', { data: { organizationId: 'org_demo0000000001' } });
+    await admin.post('/api/v1/auth/selectOrganization', { data: { organizationId: 'org_demo0000000001' } });
     agentName = `Guardrail Agent ${Date.now() % 100000}`;
-    const agent = await (await admin.post('/api/v1/agents', { data: { name: agentName, environment: 'development', ownerTeam: 'Platform AI', agentType: 'AI_AGENT' } })).json();
+    const agent = await details(await admin.post('/api/v1/agent/save', { data: { name: agentName, environment: 'development', ownerTeam: 'Platform AI', agentType: 'AI_AGENT' } }));
     const now = Date.now();
-    const grant = await admin.post('/api/v1/grants', {
+    const grant = await admin.post('/api/v1/grant/save', {
       data: {
         name: `${agentName} issues`,
         agentId: agent.agent.id,
@@ -46,7 +46,7 @@ test.describe.serial('guardrails: argument rules, budgets, emergency stop (Demo 
   });
 
   test.afterAll(async () => {
-    await admin?.post('/api/v1/organizations/current/emergency-stop/lift', { data: {} }).catch(() => undefined);
+    await admin?.post('/api/v1/organization/liftEmergencyStop', { data: {} }).catch(() => undefined);
     await admin?.dispose();
     await agentApi?.dispose();
     await page?.close();

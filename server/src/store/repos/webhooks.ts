@@ -1,28 +1,26 @@
-import { and, eq, isNotNull } from 'drizzle-orm';
-import { db, type Executor } from '../../db/client';
-import { webhooks } from '../../db/schema';
+import { Not, IsNull } from 'typeorm';
+import { db, type Executor } from '../../databases/client';
+import { WebhookEntity } from '../../entities';
 import type { WebhookRecord } from '../types';
+import { insertRow, oneBy, updateRow } from './orm';
 
 export async function listWebhooks(organizationId: string, ex: Executor = db): Promise<WebhookRecord[]> {
-  return ex.select().from(webhooks).where(eq(webhooks.organizationId, organizationId)).orderBy(webhooks.createdAt);
+  return ex.find(WebhookEntity, { where: { organizationId }, order: { createdAt: 'ASC' } });
 }
 
 export async function getWebhook(organizationId: string, id: string, ex: Executor = db): Promise<WebhookRecord | null> {
-  const [row] = await ex.select().from(webhooks).where(and(eq(webhooks.organizationId, organizationId), eq(webhooks.id, id)));
-  return row ?? null;
+  return oneBy(ex, WebhookEntity, { organizationId, id });
 }
 
 /** Webhooks that completed verification, across organizations (for the heartbeat). */
 export async function listVerifiedWebhooks(ex: Executor = db): Promise<WebhookRecord[]> {
-  return ex.select().from(webhooks).where(isNotNull(webhooks.verifiedAt));
+  return ex.findBy(WebhookEntity, { verifiedAt: Not(IsNull()) });
 }
 
 export async function insertWebhook(record: WebhookRecord, ex: Executor = db): Promise<WebhookRecord> {
-  const [row] = await ex.insert(webhooks).values(record).returning();
-  return row!;
+  return insertRow(ex, WebhookEntity, record, { id: record.id });
 }
 
 export async function updateWebhook(id: string, patch: Partial<Omit<WebhookRecord, 'id' | 'organizationId'>>, ex: Executor = db): Promise<WebhookRecord> {
-  const [row] = await ex.update(webhooks).set(patch).where(eq(webhooks.id, id)).returning();
-  return row!;
+  return updateRow(ex, WebhookEntity, { id }, patch);
 }

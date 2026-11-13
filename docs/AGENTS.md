@@ -52,7 +52,7 @@ The one-line `claude mcp add …` command and the Claude Desktop JSON that the h
 
 - The tool name is the operation id with dots replaced, e.g. `slack.messages.post` becomes `slack_messages_post`. Its title is "<Application>: <operation label>".
 - Arguments are typed from the definition. The resource (`channel`, `calendar`, `page`, …) is checked against the definition's pattern, and the inputs carry their types, required flags and maximum lengths. An input whose name is already taken by a resource field becomes `input_<name>`. Every tool also takes an optional `integration`.
-- The definitions come from `GET /agent/v1/operations`, limited to the applications in the agent's own grants. A tool is offered for operations the agent is not granted too: calling it is denied (`SCOPE_DENIED`), and the agent may ask a human with `token_vault_request_access`.
+- The definitions come from `POST /agent/v1/operation/getall`, limited to the applications in the agent's own grants. A tool is offered for operations the agent is not granted too: calling it is denied (`SCOPE_DENIED`), and the agent may ask a human with `token_vault_request_access`.
 - The server re-reads them at start-up, every `TOKEN_VAULT_TOOLS_REFRESH_S` seconds, and when `token_vault_list_access` is called. When something changed (a newly published version, a new grant on another application), it updates its tools and notifies the client with `tools/list_changed`. If the catalog cannot be read, the GitHub and Token Vault tools keep working.
 - Destructive operations become tools only for an agent holding a grant for them, and every call waits for human approval (see *Destructive operations* below).
 
@@ -293,7 +293,7 @@ const helper = new TokenVault({ apiKey: d.token }); // tvdt_…, shown once
 
 **Users.** A delegation created on behalf of a user (`onBehalfOf`, or a client made with `forUser`) makes every sub-agent request for that user, and never outlives the user's token. A sub-agent cannot send a user token of its own (`DELEGATION_DENIED`). A delegation made for the agent itself cannot be used for a user.
 
-**What a sub-agent can do through the agent API:** `/execute`, `/capabilities` (only its slice, plus a `delegation` block), `/operations`, `/requests/:id` and `/approvals/:id` for its own requests, and `/delegations` to delegate further, list and revoke what it delegated. It cannot request access just in time (403): it may only narrow. Approvals are bound to the sub-agent that asked.
+**What a sub-agent can do through the agent API:** `POST /request/execute`, `POST /capability/getdata` (only its slice, plus a `delegation` block), `POST /operation/getall`, `GET /request/getbyid/:id` and `GET /approval/getbyid/:id` for its own requests, and `POST /delegation/save`, `/delegation/getall` and `/delegation/revoke` to delegate further, list and revoke what it delegated. It cannot request access just in time (`POST /accessRequest/save` answers 403): it may only narrow. Approvals are bound to the sub-agent that asked.
 
 **Seeing and stopping them.** Each agent's **Access Grants** tab and each grant's page list its delegations: what was delegated, how many requests were used, status, and who it acts for. Owners, Vault Administrators and Security Administrators can **Revoke** one with a reason. The access log shows "via sub-agent <label>" on every request a sub-agent made, and the audit has `delegation.created` and `delegation.revoked`.
 
