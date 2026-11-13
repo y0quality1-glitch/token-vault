@@ -1,4 +1,3 @@
-import { type SelectQueryBuilder } from 'typeorm';
 import type { AccessRequest, AuditEvent } from '@token-vault/shared';
 import { config } from '../../config';
 import { db, transaction, type Executor } from '../../databases/client';
@@ -44,43 +43,6 @@ export async function chainRows(table: ChainTable, organizationId: string, ex: E
   return { rows: rows as unknown as (Record<string, unknown> & { id: string; seq: number; prevHash: string | null; hash: string | null; mac: string | null })[], legacy };
 }
 
-export interface AccessRequestFilter {
-  agentId?: string;
-  integrationId?: string;
-  grantId?: string;
-  decision?: string;
-  operation?: string;
-  from?: string;
-  to?: string;
-  search?: string;
-  /** The user the agent acted for: matches the subject or email (case-insensitive, partial). */
-  user?: string;
-  /** Exact session id (Audit → Sessions). */
-  sessionId?: string;
-}
-
-export async function listAccessRequests(organizationId: string, f: AccessRequestFilter, limit: number, ex: Executor = db): Promise<{ items: AccessRequest[]; total: number }> {
-  const qb = ex.createQueryBuilder(AccessRequestEntity, 'r').where('r.organization_id = :organizationId', { organizationId });
-  if (f.agentId) qb.andWhere('r.agent_id = :agentId', { agentId: f.agentId });
-  if (f.integrationId) qb.andWhere('r.integration_id = :integrationId', { integrationId: f.integrationId });
-  if (f.grantId) qb.andWhere('r.grant_id = :grantId', { grantId: f.grantId });
-  if (f.decision === 'ALLOW' || f.decision === 'DENY') qb.andWhere('r.decision = :decision', { decision: f.decision });
-  if (f.operation) qb.andWhere('r.operation = :operation', { operation: f.operation });
-  if (f.from) qb.andWhere('r.created_at >= :from', { from: f.from });
-  if (f.to) qb.andWhere('r.created_at <= :to', { to: f.to });
-  if (f.search) {
-    qb.andWhere(
-      `(r.id ILIKE :search OR r.correlation_id ILIKE :search OR r.agent_name ILIKE :search OR r.integration_name ILIKE :search OR r.decision_code ILIKE :search
-        OR r.on_behalf_of->>'sub' ILIKE :search OR r.on_behalf_of->>'email' ILIKE :search)`,
-      { search: `%${escapeLike(f.search)}%` },
-    );
-  }
-  if (f.sessionId) qb.andWhere(`r.trace->>'sessionId' = :sessionId`, { sessionId: f.sessionId });
-  if (f.user) qb.andWhere(`(r.on_behalf_of->>'sub' ILIKE :user OR r.on_behalf_of->>'email' ILIKE :user)`, { user: `%${escapeLike(f.user)}%` });
-  const [items, total] = await Promise.all([qb.clone().orderBy('r.created_at', 'DESC').take(limit).getMany(), qb.clone().getCount()]);
-  return { items, total };
-}
-
 export async function getAccessRequest(organizationId: string, id: string, ex: Executor = db): Promise<AccessRequest | null> {
   return oneBy(ex, AccessRequestEntity, { organizationId, id });
 }
@@ -122,33 +84,6 @@ export async function latestAccessRequests(organizationId: string, limit: number
 
 export async function hasAccessRequests(organizationId: string, ex: Executor = db): Promise<boolean> {
   return ex.existsBy(AccessRequestEntity, { organizationId });
-}
-
-export interface AuditEventFilter {
-  actorType?: string;
-  eventType?: string;
-  outcome?: string;
-  targetId?: string;
-  from?: string;
-  to?: string;
-  search?: string;
-  securityOnly?: boolean;
-}
-
-export async function listAuditEvents(organizationId: string, f: AuditEventFilter, limit: number, ex: Executor = db): Promise<{ items: AuditEvent[]; total: number }> {
-  const qb: SelectQueryBuilder<AuditEventEntity> = ex.createQueryBuilder(AuditEventEntity, 'e').where('e.organization_id = :organizationId', { organizationId });
-  if (f.securityOnly) qb.andWhere(`e.event_type <> 'access.allowed'`);
-  if (f.actorType) qb.andWhere('e.actor_type = :actorType', { actorType: f.actorType });
-  if (f.eventType) qb.andWhere('e.event_type LIKE :eventType', { eventType: `${escapeLike(f.eventType)}%` });
-  if (f.outcome) qb.andWhere('e.outcome = :outcome', { outcome: f.outcome });
-  if (f.targetId) qb.andWhere('e.target_id = :targetId', { targetId: f.targetId });
-  if (f.from) qb.andWhere('e.created_at >= :from', { from: f.from });
-  if (f.to) qb.andWhere('e.created_at <= :to', { to: f.to });
-  if (f.search) {
-    qb.andWhere('(e.id ILIKE :search OR e.correlation_id ILIKE :search OR e.actor_name ILIKE :search OR e.target_name ILIKE :search OR e.event_type ILIKE :search)', { search: `%${escapeLike(f.search)}%` });
-  }
-  const [items, total] = await Promise.all([qb.clone().orderBy('e.created_at', 'DESC').take(limit).getMany(), qb.clone().getCount()]);
-  return { items, total };
 }
 
 export async function getAuditEvent(organizationId: string, id: string, ex: Executor = db): Promise<AuditEvent | null> {

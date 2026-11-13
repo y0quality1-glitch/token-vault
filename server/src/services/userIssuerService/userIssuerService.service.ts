@@ -1,3 +1,4 @@
+import type { SelectQueryBuilder } from 'typeorm';
 import type { UserIssuer } from '@token-vault/shared';
 import { transaction } from '../../databases/client';
 import type { UserIssuerDto } from '../../databases/repository/userIssuer/userIssuer.dto';
@@ -6,6 +7,8 @@ import { newId } from '../../lib/ids';
 import { parsePublicKey, verifyUserToken } from '../../lib/user-token';
 import { userIssuerRepo } from '../../store/repos';
 import type { AdminContext } from '../../types/express';
+import { UserIssuerEntity } from '../../entities';
+import { BaseServices } from '../baseService';
 import { recordEvent, userActor } from '../auditService/auditService.service';
 
 type OrgContext = AdminContext & { org: { id: string } };
@@ -20,9 +23,23 @@ function checkedKey(publicKey: string) {
  * User identity issuers: who may vouch for the users agents act for (Settings → User identity).
  * Managing them is a security decision (policy:manage: Owner, Security Administrator).
  */
-export default class UserIssuerService {
-  list(orgId: string) {
-    return userIssuerRepo.listIssuers(orgId).then((items) => ({ items }));
+export default class UserIssuerService extends BaseServices<UserIssuerEntity, UserIssuer> {
+  constructor() {
+    super(UserIssuerEntity);
+  }
+  getModuleName() {
+    return 'User issuer';
+  }
+  getGlobalSearchColumns() {
+    return ['main.name', 'main.issuer', 'main.audience'];
+  }
+  protected prepareFilter(qb: SelectQueryBuilder<UserIssuerEntity>, orgId: string) {
+    return qb.where('main.organization_id = :orgId', { orgId }).orderBy('main.created_at', 'ASC');
+  }
+
+  async list(orgId: string, body: unknown = {}) {
+    const { records, totalRecords } = await this.getAll(orgId, body);
+    return { items: records, total: totalRecords };
   }
 
   /** Plain data for storage (the DTO is a class instance). */

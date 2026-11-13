@@ -26,7 +26,7 @@ export class AgentController extends BaseController {
 
   protected _initialiseRoutes(): void {
     const manage = requirePermission(PERMISSIONS.AGENT_MANAGE);
-    this.route('post', '/getall', [], (req) => this.service.list(orgCtx(req).org.id));
+    this.route('post', '/getall', [], (req) => this.service.list(orgCtx(req).org.id, req.body ?? {}));
     this.route('get', '/getbyid/:id', [], (req) => this.service.detail(orgCtx(req).org.id, String(req.params.id)));
     this.route('post', '/save', [manage, validationMiddleware(AgentDto)], async (req) => {
       const { result, created } = await this.service.save(orgCtx(req), req.body as AgentDto);

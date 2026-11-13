@@ -1,3 +1,7 @@
+import type { SelectQueryBuilder } from 'typeorm';
+import { DelegationEntity } from '../../entities';
+import { BaseServices } from '../baseService';
+import type { Pagination } from '../../core/Y0Params';
 import { z } from 'zod';
 import { DECISION_CODES, type ActingUser, type AgentDelegationBody, type DelegationRef, type DelegationStatus, type DelegationView } from '@token-vault/shared';
 import { transaction } from '../../databases/client';
@@ -296,13 +300,30 @@ export async function toViews(organizationId: string, list: DelegationRecord[]):
 
 // ---------------------------------------------------------------- admin API
 
-const filter = (v: unknown) => (typeof v === 'string' && v ? v : undefined);
-
 /** Console view of sub-agent delegations; revoking one stops everything delegated from it. */
-export default class DelegationService {
-  async list(orgId: string, f: Record<string, unknown> = {}) {
-    const list = await delegationRepo.listDelegations(orgId, { agentId: filter(f.agentId), grantId: filter(f.grantId) });
-    return { items: await toViews(orgId, list) };
+export default class DelegationService extends BaseServices<DelegationEntity, DelegationView> {
+  constructor() {
+    super(DelegationEntity);
+  }
+  getModuleName() {
+    return 'Delegation';
+  }
+  getGlobalSearchColumns() {
+    return ['main.id', 'main.label'];
+  }
+  /** Filters: agentId, grantId. */
+  protected applyFilters(qb: SelectQueryBuilder<DelegationEntity>, { filters: f }: Pagination) {
+    if (f.agentId) qb.andWhere('main.agent_id = :agentId', { agentId: f.agentId });
+    if (f.grantId) qb.andWhere('main.grant_id = :grantId', { grantId: f.grantId });
+    return qb;
+  }
+  protected async postProcessAfterGetData(rows: DelegationEntity[], orgId: string) {
+    return toViews(orgId, rows as unknown as DelegationRecord[]);
+  }
+
+  async list(orgId: string, body: Record<string, unknown> = {}) {
+    const { records, totalRecords } = await this.getAll(orgId, body);
+    return { items: records, total: totalRecords };
   }
 
   revoke(ctx: AdminContext & { org: { id: string } }, id: string, raw: unknown) {

@@ -101,7 +101,7 @@ suite('agent sessions', () => {
     expect((await m.repos.auditRepo.listSessions(m.seed.IDS.demoOrg, { search: 'triage' })).map((s) => s.sessionId)).toEqual(['task-42']);
     const timeline = await m.repos.auditRepo.sessionTimeline(m.seed.IDS.demoOrg, 'task-42', m.seed.IDS.agtAssistant);
     expect(timeline.map((r) => r.operation)).toEqual(['github.issues.list', 'github.contents.read']);
-    const { items } = await m.repos.auditRepo.listAccessRequests(m.seed.IDS.demoOrg, { sessionId: 'task-42' }, 50);
+    const { items } = await new (await import('../src/services/accessRequestService/accessRequestService.service')).default().list(m.seed.IDS.demoOrg, { sessionId: 'task-42', limit: 50 });
     expect(items).toHaveLength(2);
   });
 

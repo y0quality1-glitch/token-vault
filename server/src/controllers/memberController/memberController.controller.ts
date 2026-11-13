@@ -18,7 +18,7 @@ export class MemberController extends BaseController {
   }
 
   protected _initialiseRoutes(): void {
-    this.route('post', '/getall', [], (req) => this.service.list(orgCtx(req).org.id));
+    this.route('post', '/getall', [], (req) => this.service.list(orgCtx(req).org.id, req.body ?? {}));
     this.route('post', '/save', [requirePermission(PERMISSIONS.MEMBERS_MANAGE), validationMiddleware(MemberDto)], (req) => this.service.setRole(orgCtx(req), req.body as MemberDto));
   }
 }

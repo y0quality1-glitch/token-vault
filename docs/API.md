@@ -4,7 +4,7 @@
 
 Authenticated with the `tv_session` httpOnly cookie, which is set by `POST /auth/login` (a JWT recorded as a server-side session; API clients may send it as `Authorization: Bearer`). Org-scoped routes require a selected organization. Mutations are guarded by the RBAC matrix in `shared/src/rbac.ts`. The API follows the service template in [fileStructure.md](fileStructure.md); browse it at `/api-docs/` (OpenAPI: `/api-docs.json`).
 
-**Routes.** Lists are `POST /<module>/getall` (filters in the JSON body, same names as the table's filters), a record is `GET /<module>/getbyid/:id`, create and update are `POST /<module>/save` (with `id`: update), and other actions are `POST /<module>/<action>` with `{ id, … }` in the body.
+**Routes.** Lists are `POST /<module>/getall` (filters in the JSON body, same names as the table's filters; also `pageNumber` from 1, `pageSize` up to 500 (the default), and `search`; the payload adds `total`, the number of matches across pages, also sent as `totalRecords`), a record is `GET /<module>/getbyid/:id`, create and update are `POST /<module>/save` (with `id`: update), and other actions are `POST /<module>/<action>` with `{ id, … }` in the body.
 
 **Every response uses one envelope** (admin and agent API):
 

@@ -55,11 +55,6 @@ const toMember = (r: MemberRow): Member => ({ id: r.id, organizationId: r.organi
 const MEMBER_SQL = `SELECT m.id, m.organization_id, u.id AS user_id, u.email, u.full_name, m.role, m.created_at
   FROM organization_members m JOIN users u ON u.id = m.user_id`;
 
-export async function listMembers(organizationId: string, ex: Executor = db): Promise<Member[]> {
-  const rows: MemberRow[] = await ex.query(`${MEMBER_SQL} WHERE m.organization_id = $1 ORDER BY m.created_at, u.full_name`, [organizationId]);
-  return rows.map(toMember);
-}
-
 export async function getMember(organizationId: string, memberId: string, ex: Executor = db): Promise<Member | null> {
   const [row]: MemberRow[] = await ex.query(`${MEMBER_SQL} WHERE m.organization_id = $1 AND m.id = $2`, [organizationId, memberId]);
   return row ? toMember(row) : null;

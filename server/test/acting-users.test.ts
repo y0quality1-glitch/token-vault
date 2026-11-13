@@ -93,7 +93,7 @@ suite('acting on behalf of a user', () => {
     expect(record.onBehalfOf).toMatchObject({ sub: 'ada', groups: ['engineering'], issuerId: 'uis_test' });
     expect(record.checks.find((c) => c.name === 'Acting user')?.detail).toContain('ada@acme.test');
     expect((await m.repos.userIssuerRepo.getIssuer(m.seed.IDS.demoOrg, 'uis_test'))?.lastUsedAt).toBeTruthy();
-    const { items } = await m.repos.auditRepo.listAccessRequests(m.seed.IDS.demoOrg, { user: 'ADA@acme' }, 50);
+    const { items } = await new (await import('../src/services/accessRequestService/accessRequestService.service')).default().list(m.seed.IDS.demoOrg, { user: 'ADA@acme', limit: 50 });
     expect(items.map((i) => i.id)).toContain(r.body.request_id);
   });
 

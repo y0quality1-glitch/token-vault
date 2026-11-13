@@ -1,3 +1,4 @@
+import type { SelectQueryBuilder } from 'typeorm';
 import { describeOperationSelector, selectorApplication, type Policy } from '@token-vault/shared';
 import { transaction } from '../../databases/client';
 import type { PolicyDto } from '../../databases/repository/policy/policy.dto';
@@ -5,6 +6,8 @@ import { badRequest, notFound } from '../../lib/errors';
 import { newId } from '../../lib/ids';
 import { agentRepo, integrationRepo, policyRepo } from '../../store/repos';
 import type { AdminContext } from '../../types/express';
+import { PolicyEntity } from '../../entities';
+import { BaseServices } from '../baseService';
 import { recordEvent, userActor } from '../auditService/auditService.service';
 import { getOperation, operations, registry } from '../providerService/registry';
 
@@ -12,9 +15,24 @@ type OrgContext = AdminContext & { org: { id: string } };
 type Conditions = PolicyDto['conditions'];
 
 /** Policies: the Who / Where / What rules evaluated on every agent request. */
-export default class PolicyService {
-  list(orgId: string) {
-    return policyRepo.listPolicies(orgId).then((items) => ({ items }));
+export default class PolicyService extends BaseServices<PolicyEntity, Policy> {
+  constructor() {
+    super(PolicyEntity);
+  }
+  getModuleName() {
+    return 'Policy';
+  }
+  getGlobalSearchColumns() {
+    return ['main.name', 'main.description'];
+  }
+  /** Evaluation order: priority, then age. */
+  protected prepareFilter(qb: SelectQueryBuilder<PolicyEntity>, orgId: string) {
+    return qb.where('main.organization_id = :orgId', { orgId }).orderBy('main.priority', 'ASC').addOrderBy('main.created_at', 'ASC');
+  }
+
+  async list(orgId: string, body: unknown = {}) {
+    const { records, totalRecords } = await this.getAll(orgId, body);
+    return { items: records, total: totalRecords };
   }
 
   /**

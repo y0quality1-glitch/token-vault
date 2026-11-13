@@ -1,3 +1,6 @@
+import { GrantRequestEntity } from '../../entities';
+import { BaseServices } from '../baseService';
+import type { Pagination } from '../../core/Y0Params';
 import { z } from 'zod';
 import { type AgentAccessRequestBody, type GrantRequest, type GrantRequestStatus } from '@token-vault/shared';
 import { transaction } from '../../databases/client';
@@ -280,19 +283,37 @@ export async function reject(ctx: AdminContext & { org: { id: string } }, id: st
 // ---------------------------------------------------------------- admin API
 
 /** Admin API for just-in-time access requests (named grant requests to avoid clashing with the access-request audit log). */
-export default class GrantRequestService {
-  /** `status` filters the list; `pending` counts the pending requests among the listed ones. */
+export default class GrantRequestService extends BaseServices<GrantRequestEntity, GrantRequest> {
+  constructor() {
+    super(GrantRequestEntity);
+  }
+  /** Shown to people as "access request" (the audit log's access requests are a different module). */
+  getModuleName() {
+    return 'Access request';
+  }
+  getGlobalSearchColumns() {
+    return ['main.id', 'main.justification'];
+  }
+  protected async postProcessAfterGetData(rows: GrantRequestEntity[], orgId: string, _param: Pagination) {
+    return toViews(orgId, rows);
+  }
+  protected async postProcessAfterGetById(r: GrantRequestEntity, orgId: string) {
+    return (await toViews(orgId, [r]))[0]!;
+  }
+
+  /**
+   * `status` filters the list. It is the effective status (a lapsed request shows as EXPIRED),
+   * so it is applied to the loaded page; `pending` counts the pending requests among the listed ones.
+   */
   async list(orgId: string, f: Record<string, unknown> = {}) {
-    let items = await toViews(orgId, await grantRequestRepo.listGrantRequests(orgId));
-    const status = typeof f.status === 'string' ? f.status : '';
-    if (status) items = items.filter((r) => r.status === status);
-    return { items, pending: items.filter((r) => r.status === 'PENDING').length };
+    const { status, ...body } = f;
+    const { records, totalRecords } = await this.getAll(orgId, body);
+    const items = typeof status === 'string' && status ? records.filter((r) => r.status === status) : records;
+    return { items, pending: items.filter((r) => r.status === 'PENDING').length, total: typeof status === 'string' && status ? items.length : totalRecords };
   }
 
   async detail(orgId: string, id: string) {
-    const r = await grantRequestRepo.getGrantRequest(orgId, id);
-    if (!r) throw notFound('Access request');
-    return (await toViews(orgId, [r]))[0];
+    return this.getById(orgId, id);
   }
 
   async approve(ctx: AdminContext & { org: { id: string } }, id: string, raw: unknown) {

@@ -10,7 +10,8 @@ export enum StatusCode {
  *   { status: "10000", msg, error: null, details, totalRecords }               success
  *   { status: "10001", msg: "", error, code, details, totalRecords: 0 }         failure
  *
- * `details` is the route's payload (for lists `{ items, ... }`, with `totalRecords` = items).
+ * `details` is the route's payload. For lists it is `{ items, total, ... }`; `totalRecords` is the
+ * number of matching records across all pages (`total`), or the number of items.
  * On failure `code` is the stable machine-readable code and `details` holds extra data such as
  * `{ fields }`. The HTTP status carries the outcome as well.
  */
@@ -27,7 +28,8 @@ export class GenericResponse<T> {
     r.msg = msg;
     r.details = details;
     const items = (details as { items?: unknown } | null)?.items;
-    r.totalRecords = Array.isArray(items) ? items.length : Array.isArray(details) ? details.length : 0;
+    const total = (details as { total?: unknown } | null)?.total;
+    r.totalRecords = typeof total === 'number' ? total : Array.isArray(items) ? items.length : Array.isArray(details) ? details.length : 0;
     return r;
   }
 

@@ -1,4 +1,8 @@
-import { type GrantDetail } from '@token-vault/shared';
+import type { SelectQueryBuilder } from 'typeorm';
+import { type Grant, type GrantDetail } from '@token-vault/shared';
+import type { Pagination } from '../../core/Y0Params';
+import { GrantEntity } from '../../entities';
+import { BaseServices } from '../baseService';
 import { transaction, type Executor } from '../../databases/client';
 import type { ExtendGrantDto, GrantBatchDto, GrantDto, GrantVersionDto, RevokeGrantDto } from '../../databases/repository/grant/grant.dto';
 import { HttpError, badRequest, conflict, notFound } from '../../lib/errors';
@@ -200,13 +204,37 @@ function assertMutable(g: GrantRecord) {
 }
 
 /** Grants: an agent's time-limited access to operations of one integration. */
-export default class GrantService {
+export default class GrantService extends BaseServices<GrantEntity, Grant> {
+  constructor() {
+    super(GrantEntity);
+  }
+  getModuleName() {
+    return 'Grant';
+  }
+  getGlobalSearchColumns() {
+    return ['main.name', 'main.id'];
+  }
+  /** Filters: agentId, integrationId (status is the effective one: see list). */
+  protected applyFilters(qb: SelectQueryBuilder<GrantEntity>, { filters: f }: Pagination) {
+    if (f.agentId) qb.andWhere('main.agent_id = :agentId', { agentId: f.agentId });
+    if (f.integrationId) qb.andWhere('main.integration_id = :integrationId', { integrationId: f.integrationId });
+    return qb;
+  }
+  protected async postProcessAfterGetData(rows: GrantEntity[], orgId: string): Promise<Grant[]> {
+    const lookups = await loadLookups(orgId);
+    return rows.map((g) => toGrant(g, lookups));
+  }
+
+  /**
+   * `status` is the effective status (EXPIRED and SCHEDULED are computed from the dates), so it
+   * is applied to the loaded page.
+   */
   async list(orgId: string, f: Record<string, unknown> = {}) {
-    const [list, lookups] = await Promise.all([grantRepo.listGrants(orgId, { agentId: q(f.agentId), integrationId: q(f.integrationId) }), loadLookups(orgId)]);
-    let items = list.map((g) => toGrant(g, lookups));
-    const status = q(f.status);
-    if (status) items = items.filter((g) => g.status === status);
-    return { items };
+    const { status, ...body } = f;
+    const { records, totalRecords } = await this.getAll(orgId, body);
+    const wanted = q(status);
+    const items = wanted ? records.filter((g) => g.status === wanted) : records;
+    return { items, total: wanted ? items.length : totalRecords };
   }
 
   async detail(orgId: string, id: string) {

@@ -1,3 +1,7 @@
+import type { SelectQueryBuilder } from 'typeorm';
+import { IntegrationEntity } from '../../entities';
+import { BaseServices } from '../baseService';
+import type { Pagination } from '../../core/Y0Params';
 import { z } from 'zod';
 import { rotationDueAt, type AccessMode, type AuthMethodDefinition, type CatalogEntry, type IntegrationDetail, type ProviderDefinition } from '@token-vault/shared';
 import { createHash } from 'node:crypto';
@@ -126,7 +130,29 @@ async function discardWebhookCredential(webhook: Parameters<typeof callWebhook>[
 }
 
 /** Integrations: connections to applications whose credentials live on the customer webhook. */
-export default class IntegrationService {
+export default class IntegrationService extends BaseServices<IntegrationEntity, ReturnType<typeof toIntegration>> {
+  constructor() {
+    super(IntegrationEntity);
+  }
+  getModuleName() {
+    return 'Integration';
+  }
+  getGlobalSearchColumns() {
+    return ['main.display_name', 'main.provider', 'main.account_label', 'main.description'];
+  }
+  /** Soft-deleted integrations are hidden; oldest first. */
+  protected prepareFilter(qb: SelectQueryBuilder<IntegrationEntity>, orgId: string, _param: Pagination) {
+    return qb.where('main.organization_id = :orgId AND main.deleted_at IS NULL', { orgId }).orderBy('main.created_at', 'ASC');
+  }
+  protected async postProcessAfterGetData(rows: IntegrationEntity[], orgId: string) {
+    const lookups = await loadLookups(orgId, rows.map((i) => i.createdBy));
+    return rows.map((i) => toIntegration(i, lookups));
+  }
+  /** Lookups also skip soft-deleted integrations. */
+  protected async findEntity(orgId: string, id: string): Promise<IntegrationEntity> {
+    return (await this.get(orgId, id)) as IntegrationEntity;
+  }
+
   private async get(orgId: string, id: string): Promise<IntegrationRecord> {
     const i = await integrationRepo.getIntegration(orgId, id);
     if (!i) throw notFound('Integration');
@@ -174,10 +200,9 @@ export default class IntegrationService {
     return { items };
   }
 
-  async list(orgId: string) {
-    const list = await integrationRepo.listIntegrations(orgId);
-    const lookups = await loadLookups(orgId, list.map((i) => i.createdBy));
-    return { items: list.map((i) => toIntegration(i, lookups)) };
+  async list(orgId: string, body: unknown = {}) {
+    const { records, totalRecords } = await this.getAll(orgId, body);
+    return { items: records, total: totalRecords };
   }
 
   async getById(orgId: string, id: string) {

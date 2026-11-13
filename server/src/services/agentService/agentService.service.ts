@@ -1,4 +1,5 @@
-import { PERMISSIONS, roleHas, type ApiClient, type IssuedCredential } from '@token-vault/shared';
+import type { SelectQueryBuilder } from 'typeorm';
+import { PERMISSIONS, roleHas, type Agent, type ApiClient, type IssuedCredential } from '@token-vault/shared';
 import { transaction } from '../../databases/client';
 import type { AgentDto } from '../../databases/repository/agent/agent.dto';
 import { generateAgentCredential, maskAgentKey } from '../../lib/crypto';
@@ -8,6 +9,8 @@ import { agentRepo, auditRepo, grantRepo } from '../../store/repos';
 import type { AgentRecord } from '../../store/types';
 import { agentView, effectiveGrantStatus, loadLookups, toAgent, toGrant } from '../../store/views';
 import type { AdminContext } from '../../types/express';
+import { AgentEntity } from '../../entities';
+import { BaseServices } from '../baseService';
 import { recordEvent, userActor } from '../auditService/auditService.service';
 
 type OrgContext = AdminContext & { org: { id: string } };
@@ -42,7 +45,24 @@ function assertCanManage(ctx: AdminContext, agent: AgentRecord) {
 }
 
 /** Agents (machine identities) and their API credentials. */
-export default class AgentService {
+export default class AgentService extends BaseServices<AgentEntity, Agent> {
+  constructor() {
+    super(AgentEntity);
+  }
+  getModuleName() {
+    return 'Agent';
+  }
+  getGlobalSearchColumns() {
+    return ['main.name', 'main.owner_team', 'main.description'];
+  }
+  protected prepareFilter(qb: SelectQueryBuilder<AgentEntity>, orgId: string) {
+    return qb.where('main.organization_id = :orgId', { orgId }).orderBy('main.created_at', 'ASC');
+  }
+  protected async postProcessAfterGetData(rows: AgentEntity[], orgId: string): Promise<Agent[]> {
+    const lookups = await loadLookups(orgId);
+    return rows.map((a) => toAgent(a, lookups));
+  }
+
   private async get(orgId: string, id: string): Promise<AgentRecord> {
     const a = await agentRepo.getAgent(orgId, id);
     if (!a) throw notFound('Agent');
@@ -56,9 +76,10 @@ export default class AgentService {
     return a;
   }
 
-  async list(orgId: string) {
-    const [list, lookups] = await Promise.all([agentRepo.listAgents(orgId), loadLookups(orgId)]);
-    return { items: list.map((a) => toAgent(a, lookups)) };
+  /** Every agent of the organization, oldest first (paging and `search` from the template). */
+  async list(orgId: string, body: unknown = {}) {
+    const { records, totalRecords } = await this.getAll(orgId, body);
+    return { items: records, total: totalRecords };
   }
 
   async detail(orgId: string, id: string) {

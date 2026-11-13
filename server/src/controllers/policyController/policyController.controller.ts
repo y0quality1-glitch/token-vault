@@ -18,7 +18,7 @@ export class PolicyController extends BaseController {
   }
 
   protected _initialiseRoutes(): void {
-    this.route('post', '/getall', [], (req) => this.service.list(orgCtx(req).org.id));
+    this.route('post', '/getall', [], (req) => this.service.list(orgCtx(req).org.id, req.body ?? {}));
     this.route('post', '/save', [requirePermission(PERMISSIONS.POLICY_MANAGE), validationMiddleware(PolicyDto)], async (req) => {
       const { policy, created } = await this.service.save(orgCtx(req), req.body as PolicyDto);
       return new Reply(policy, created ? 201 : 200);

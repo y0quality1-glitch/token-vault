@@ -1,8 +1,11 @@
+import type { SelectQueryBuilder } from 'typeorm';
+import { WebhookEntity } from '../../entities';
+import { BaseServices } from '../baseService';
 import { config } from '../../config';
 import { transaction } from '../../databases/client';
 import type { CreateWebhookDto, UpdateWebhookDto } from '../../databases/repository/webhook/webhook.dto';
 import { hmacHex, randomToken, safeEqualHex } from '../../lib/crypto';
-import { badRequest, conflict, describeError, notFound } from '../../lib/errors';
+import { badRequest, conflict, describeError } from '../../lib/errors';
 import { newId } from '../../lib/ids';
 import { sanitize } from '../../lib/sanitize';
 import { integrationRepo, webhookRepo } from '../../store/repos';
@@ -165,21 +168,32 @@ function checkUrl(url: string, environment: string) {
 }
 
 /** Webhook registrations (admin API): register, configure, verify, simulate an outage. */
-export default class WebhookService {
-  private async get(orgId: string, id: string): Promise<WebhookRecord> {
-    const w = await webhookRepo.getWebhook(orgId, id);
-    if (!w) throw notFound('Webhook');
-    return w;
+export default class WebhookService extends BaseServices<WebhookEntity, WebhookRecord | (WebhookRecord & { integrations: { id: string; displayName: string }[] })> {
+  constructor() {
+    super(WebhookEntity);
   }
-
-  async list(orgId: string) {
-    return { items: await webhookRepo.listWebhooks(orgId), defaultEndpointUrl: config.defaultWebhookUrl, transport: transportInfo() };
+  getModuleName() {
+    return 'Webhook';
   }
-
-  async getById(orgId: string, id: string) {
-    const w = await this.get(orgId, id);
+  getGlobalSearchColumns() {
+    return ['main.name', 'main.endpoint_url', 'main.description'];
+  }
+  protected prepareFilter(qb: SelectQueryBuilder<WebhookEntity>, orgId: string) {
+    return qb.where('main.organization_id = :orgId', { orgId }).orderBy('main.created_at', 'ASC');
+  }
+  /** The detail lists the integrations served by the webhook. */
+  protected async postProcessAfterGetById(w: WebhookEntity, orgId: string) {
     const integrations = (await integrationRepo.listIntegrations(orgId)).filter((i) => i.webhookId === w.id).map((i) => ({ id: i.id, displayName: i.displayName }));
     return { ...w, integrations };
+  }
+
+  private async get(orgId: string, id: string): Promise<WebhookRecord> {
+    return this.findEntity(orgId, id);
+  }
+
+  async list(orgId: string, body: unknown = {}) {
+    const { records, totalRecords } = await this.getAll(orgId, body);
+    return { items: records, total: totalRecords, defaultEndpointUrl: config.defaultWebhookUrl, transport: transportInfo() };
   }
 
   /** Step 1: register endpoint (PENDING) and issue a one-time registration challenge. */

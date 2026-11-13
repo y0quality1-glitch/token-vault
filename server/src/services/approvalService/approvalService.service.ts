@@ -1,3 +1,6 @@
+import { OperationApprovalEntity } from '../../entities';
+import { BaseServices } from '../baseService';
+import type { Pagination } from '../../core/Y0Params';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { canonicalJson, type ActingUser, type AgentApprovalBody, type DelegationRef, type OperationApproval, type OperationApprovalStatus } from '@token-vault/shared';
@@ -314,20 +317,37 @@ export const reject = (ctx: DeciderContext, id: string, raw: unknown, via: Decis
 // ---------------------------------------------------------------- admin API
 
 /** Admin API for operation approvals (requests held back by REQUIRE_APPROVAL policies). */
-export default class ApprovalService {
-  /** `status` filters the list; `pending` counts every pending approval of the organization. */
+export default class ApprovalService extends BaseServices<OperationApprovalEntity, OperationApproval> {
+  constructor() {
+    super(OperationApprovalEntity);
+  }
+  getModuleName() {
+    return 'Approval';
+  }
+  getGlobalSearchColumns() {
+    return ['main.id', 'main.operation', 'main.policy_name'];
+  }
+  protected async postProcessAfterGetData(rows: OperationApprovalEntity[], orgId: string, _param: Pagination) {
+    return toViews(orgId, rows);
+  }
+  protected async postProcessAfterGetById(r: OperationApprovalEntity, orgId: string) {
+    return (await toViews(orgId, [r]))[0]!;
+  }
+
+  /**
+   * `status` filters the list. It is the effective status (a lapsed request shows as EXPIRED),
+   * so it is applied to the loaded page; `pending` counts the pending ones on it.
+   */
   async list(orgId: string, f: Record<string, unknown> = {}) {
-    let items = await toViews(orgId, await approvalRepo.listApprovals(orgId));
-    const pending = items.filter((r) => r.status === 'PENDING').length;
-    const status = typeof f.status === 'string' ? f.status : '';
-    if (status) items = items.filter((r) => r.status === status);
-    return { items, pending };
+    const { status, ...body } = f;
+    const { records, totalRecords } = await this.getAll(orgId, body);
+    const pending = records.filter((r) => r.status === 'PENDING').length;
+    const items = typeof status === 'string' && status ? records.filter((r) => r.status === status) : records;
+    return { items, pending, total: typeof status === 'string' && status ? items.length : totalRecords };
   }
 
   async detail(orgId: string, id: string) {
-    const r = await approvalRepo.getApproval(orgId, id);
-    if (!r) throw notFound('Approval');
-    return (await toViews(orgId, [r]))[0];
+    return this.getById(orgId, id);
   }
 
   async approve(ctx: DeciderContext, id: string, raw: unknown) {

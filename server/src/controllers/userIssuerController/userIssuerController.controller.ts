@@ -20,7 +20,7 @@ export class UserIssuerController extends BaseController {
   }
 
   protected _initialiseRoutes(): void {
-    this.route('post', '/getall', [], (req) => this.service.list(orgCtx(req).org.id));
+    this.route('post', '/getall', [], (req) => this.service.list(orgCtx(req).org.id, req.body ?? {}));
     this.route('post', '/save', [requirePermission(PERMISSIONS.POLICY_MANAGE), validationMiddleware(UserIssuerDto)], async (req) => {
       const { issuer, created } = await this.service.save(orgCtx(req), req.body as UserIssuerDto);
       return new Reply(issuer, created ? 201 : 200);

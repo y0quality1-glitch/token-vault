@@ -120,7 +120,7 @@ suite('just-in-time access requests', () => {
     expect((await m.jit.toViews(m.seed.IDS.demoOrg, [(await m.repos.grantRequestRepo.getGrantRequest(m.seed.IDS.demoOrg, lapsed.id))!]))[0]!.status).toBe('EXPIRED');
     expect(await error(m.jit.approve(await ctxFor(m.seed.IDS.securityAdmin), lapsed.id, { durationMinutes: 30 }))).toMatchObject({ status: 409 });
 
-    const events = await m.repos.auditRepo.listAuditEvents(m.seed.IDS.demoOrg, { eventType: 'grant_request.' }, 50);
+    const events = await new (await import('../src/services/auditEventService/auditEventService.service')).default().list(m.seed.IDS.demoOrg, { eventType: 'grant_request.', limit: 50 });
     expect(events.items.map((e) => e.eventType)).toEqual(expect.arrayContaining(['grant_request.created', 'grant_request.approved', 'grant_request.rejected']));
   });
 });

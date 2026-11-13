@@ -30,7 +30,7 @@ export class WebhookController extends BaseController {
   }
 
   protected _initialiseRoutes(): void {
-    this.route('post', '/getall', [], (req) => this.service.list(orgCtx(req).org.id));
+    this.route('post', '/getall', [], (req) => this.service.list(orgCtx(req).org.id, req.body ?? {}));
     this.route('get', '/getbyid/:id', [], (req) => this.service.getById(orgCtx(req).org.id, String(req.params.id)));
     this.route('post', '/save', [requirePermission(PERMISSIONS.WEBHOOK_MANAGE), validateSave], async (req) => {
       const body = req.body as CreateWebhookDto | UpdateWebhookDto;

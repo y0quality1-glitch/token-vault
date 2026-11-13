@@ -203,7 +203,7 @@ token-vault/
 │   │   ├── config.ts         environment, validated at start-up
 │   │   ├── swagger.ts        OpenAPI built from the registered routes (/api-docs.json, /api-docs/)
 │   │   ├── controllers/      BaseController + one controller per module (routes, permissions, DTO validation)
-│   │   ├── services/         business logic per module, plus the policy engine, broker, audit chain, provider registry
+│   │   ├── services/         BaseServices (org-scoped lists, paging, search, lookups) and one service per module; plus the policy engine, broker, audit chain, provider registry
 │   │   ├── entities/         TypeORM entities (camelCase properties on the snake_case tables)
 │   │   ├── databases/        DataSource, AppDatabase singleton, client (Executor, transaction), migrations, DTOs per module
 │   │   ├── core/             GenericResponse envelope, ApiError handling, ErrorCodes, AppRoutes

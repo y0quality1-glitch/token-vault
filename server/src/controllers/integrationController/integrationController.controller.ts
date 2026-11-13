@@ -35,7 +35,7 @@ export class IntegrationController extends BaseController {
 
   protected _initialiseRoutes(): void {
     this.route('post', '/getCatalog', [], (req) => this.service.catalog(orgCtx(req).org.id));
-    this.route('post', '/getall', [], (req) => this.service.list(orgCtx(req).org.id));
+    this.route('post', '/getall', [], (req) => this.service.list(orgCtx(req).org.id, req.body ?? {}));
     this.route('get', '/getbyid/:id', [], (req) => this.service.getById(orgCtx(req).org.id, String(req.params.id)));
     // The create body depends on the provider's auth method, so the service validates it.
     this.route('post', '/save', [manage], async (req) => {
