@@ -39,7 +39,7 @@ const files = {
     'VAULT_PREVIOUS_ENCRYPTION_KEYS=',
     `CMS_PUBLIC_KEY=${cmsPublic}`,
   ],
-  'cms-api.env': [`CMS_DATABASE_URL=postgres://token_vault_cms:${db.cms}@${host}/token_vault_cms`, `CMS_SIGNING_PRIVATE_KEY=${escape(cms.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString())}`],
+  'cms-api.env': [`CMS_DATABASE_URL=postgres://token_vault_cms:${db.cms}@${host}/token_vault_cms`, `CMS_SIGNING_PRIVATE_KEY=${escape(cms.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString())}`, `CMS_JWT_SECRET=${secret()}`],
 };
 for (const [name, lines] of Object.entries(files)) writeFileSync(resolve(dir, name), lines.join('\n') + '\n', { mode: 0o600 });
 console.log(`[k8s] wrote ${Object.keys(files).join(', ')} to ${dir} (mode 600). CMS signing key id ${cmsKeyId}.`);

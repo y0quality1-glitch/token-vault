@@ -100,7 +100,7 @@ Each service's Secret comes from your secrets manager through External Secrets O
 | --- | --- |
 | `token-vault/server` | `DATABASE_URL`, `WEBHOOK_SIGNING_SECRET`, `WEBHOOK_PREVIOUS_SIGNING_SECRETS`, `AUDIT_SIGNING_KEY`, `CMS_PUBLIC_KEY` |
 | `token-vault/webhook` | `WEBHOOK_DATABASE_URL`, `WEBHOOK_SIGNING_SECRET`, `WEBHOOK_PREVIOUS_SIGNING_SECRETS`, `VAULT_ENCRYPTION_KEY`, `VAULT_PREVIOUS_ENCRYPTION_KEYS`, `CMS_PUBLIC_KEY` |
-| `token-vault/cms-api` | `CMS_DATABASE_URL`, `CMS_SIGNING_PRIVATE_KEY` |
+| `token-vault/cms-api` | `CMS_DATABASE_URL`, `CMS_SIGNING_PRIVATE_KEY`, `CMS_JWT_SECRET` |
 
 `node deploy/compose/generate-env.mjs` produces suitable values. Only the webhook's Secret ever holds `VAULT_ENCRYPTION_KEY`, and only the CMS's holds its signing key; `check-manifests.py` enforces this. The webhook's ExternalSecret uses `deletionPolicy: Retain`, so deleting the resource never deletes the key to the stored credentials.
 

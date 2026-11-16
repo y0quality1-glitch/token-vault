@@ -62,11 +62,11 @@ test.describe.serial('OAuth 2.0 connection (simulated provider)', () => {
 
   test('CalendarX is published in the CMS with an OAuth 2.0 auth method', async ({ playwright }) => {
     const editor = await session(playwright, CMS_API, 'editor@cms.test');
-    await editor.post('/api/v1/applications', { data: { key: 'calendarx', name: 'CalendarX' } });
-    expect((await (await editor.put('/api/v1/applications/calendarx/versions/1', { data: { definition: calendarx } })).json()).issues).toEqual([]);
-    await editor.post('/api/v1/applications/calendarx/versions/1/submit');
+    await editor.post('/api/v1/application/save', { data: { key: 'calendarx', name: 'CalendarX' } });
+    expect((await (await editor.post('/api/v1/version/save', { data: { key: 'calendarx', version: 1, definition: calendarx } })).json()).details.issues).toEqual([]);
+    await editor.post('/api/v1/version/submit', { data: { key: 'calendarx', version: 1 } });
     const publisher = await session(playwright, CMS_API, 'publisher@cms.test');
-    expect((await (await publisher.post('/api/v1/applications/calendarx/versions/1/approve', { data: { acknowledgeHostChange: true } })).json()).status).toBe('PUBLISHED');
+    expect((await (await publisher.post('/api/v1/version/approve', { data: { key: 'calendarx', version: 1, acknowledgeHostChange: true } })).json()).details.status).toBe('PUBLISHED');
     await Promise.all([editor.dispose(), publisher.dispose()]);
     await expect.poll(async () => ((await (await owner.get('/api/v1/providers')).json()).providers as { key: string }[]).some((p) => p.key === 'calendarx'), { timeout: 15_000 }).toBe(true);
   });

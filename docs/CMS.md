@@ -5,7 +5,7 @@ The provider CMS (`cms/`) is where the platform team defines the applications th
 | Service | URL | |
 | --- | --- | --- |
 | CMS UI (React) | http://localhost:5174 | Same component library as the console |
-| CMS API (Express + Drizzle) | http://localhost:4200 | Own database `token_vault_cms` and role `token_vault_cms` |
+| CMS API (Express + TypeORM, see [fileStructure.md](fileStructure.md)) | http://localhost:4200 (API docs at `/api-docs/`) | Own database `token_vault_cms` and role `token_vault_cms` |
 
 ## Roles
 
@@ -81,24 +81,40 @@ Each step is audited (`signing.key_activated`, `signing.versions_signed`). A com
 
 ## API
 
-Admin API (`/api/v1`, httpOnly session cookie):
+The CMS API follows the service template in [fileStructure.md](fileStructure.md): controllers and services built on a `BaseController` / `BaseServices` pair, TypeORM entities, class-validator DTOs, and one response envelope. Browse it at `http://localhost:4200/api-docs/` (OpenAPI at `/api-docs.json`).
 
-| Method | Path | Role | |
+**Response envelope** (every admin route):
+
+```json
+{ "status": "10000", "msg": "Application Fetched Successfully", "error": null, "details": [ … ], "totalRecords": 4 }
+```
+
+A failure has `status: "10001"`, the message in `error`, a stable `code` (`VALIDATION_ERROR`, `KEY_TAKEN`, `SEPARATION_OF_DUTIES`, `HOST_CHANGE_UNACKNOWLEDGED`, …) and extra data in `details` (`{ fields: { key: "…" } }` for field errors, `{ issues: [...] }` for definition problems). The HTTP status comes from the error catalogue in `cms/api/src/core/ErrorCodes.ts`. A known path with the wrong method answers 405.
+
+**Signing in.** `POST /auth/login` sets the session token (a JWT, 8 hours) as an httpOnly, SameSite=Strict cookie; the token is never in a response body. Other clients may send the same token as `Authorization: Bearer <token>`. Only its SHA-256 is stored, so logging out ends the session even before the token expires. Five failed attempts lock an email for a minute.
+
+Admin API (`/api/v1`):
+
+| Method | Path | Role | Body / result |
 | --- | --- | --- | --- |
 | POST | `/auth/login` · `/auth/logout` · GET `/auth/me` | any | |
-| GET | `/applications` | any | summaries |
-| POST | `/applications` | editor, admin | `{key, name, description}` → creates v1 draft from a template |
-| GET | `/applications/:key` | any | with versions |
-| POST | `/applications/:key/versions` | editor, admin | `{from?}` new draft from the latest (or given) version |
-| GET | `/applications/:key/versions/:v` | any | definition, validation issues, diff, allowed actions |
-| PUT | `/applications/:key/versions/:v` | editor, admin | `{definition}` (drafts only) |
-| POST | `…/submit` · `…/withdraw` | editor, admin | |
-| POST | `…/approve` | publisher, admin | `{note?, acknowledgeHostChange?}`; separation of duties |
-| POST | `…/publish` | admin | `{note?, acknowledgeHostChange?}`; draft or in review → published in one step (`DIRECT_PUBLISH_DISABLED` when `CMS_ADMIN_DIRECT_PUBLISH=false`) |
-| POST | `…/reject` | publisher, admin | `{note}`; back to draft |
-| POST | `…/preview` | any | `{operation, resource, input}` → request preview + mock response |
-| POST | `/applications/:key/archive` | admin | `{reason}` |
-| GET | `/audit?application=` | any | |
+| GET | `/apiHealthCheck/apihealth` | none | liveness and a database check |
+| POST | `/application/getall` | any | `{pageNumber?, pageSize? (max 200), search?}` → summaries, `totalRecords` |
+| GET | `/application/getbyid/:key` | any | the application with every version |
+| POST | `/application/save` | editor, admin | `{key, name, description?}` → creates v1 draft from a template (201) |
+| POST | `/application/newversion` | editor, admin | `{key, from?}` new draft from the latest (or given) version (201) |
+| POST | `/application/availability` | admin | `{key, availability, note?}` one-click availability |
+| POST | `/application/archive` | admin | `{key, reason}` |
+| POST | `/version/getdatabyid` | any | `{key, version}` → definition, validation issues, diff, allowed actions |
+| POST | `/version/save` | editor, admin | `{key, version, definition}` (drafts only) |
+| POST | `/version/submit` · `/version/withdraw` | editor, admin | `{key, version}` |
+| POST | `/version/approve` | publisher, admin | `{key, version, note?, acknowledgeHostChange?}`; separation of duties |
+| POST | `/version/publish` | admin | as approve; draft or in review → published in one step (`DIRECT_PUBLISH_DISABLED` when `CMS_ADMIN_DIRECT_PUBLISH=false`) |
+| POST | `/version/reject` | publisher, admin | `{key, version, note}`; back to draft |
+| POST | `/version/preview` | any | `{key, version, operation, resource, input}` → request preview + mock response |
+| POST | `/audit/getall` | any | `{application?, search?, pageNumber?, pageSize?}`, newest first |
+
+**Adding a module** (template, section 6): an entity in `src/entities/`, a model and DTO in `src/databases/repository/<module>/`, a service extending `BaseServices` in `src/services/<module>Service/`, a controller extending `BaseController` in `src/controllers/<module>Controller/`, a prefix in `APP_ROUTES`, and the controller in `src/controllers/index.ts`. Schema changes are TypeORM migrations in `src/databases/migrations/`, listed in `dataSource.ts`; they run at start-up (`npm run db:migrate -w cms/api` runs them alone). The first one, `Baseline`, creates the schema on an empty database and records itself on databases created before TypeORM.
 
 Public catalog (`/catalog/v1`, no authentication: definitions are not secret, they are trusted because they are signed):
 

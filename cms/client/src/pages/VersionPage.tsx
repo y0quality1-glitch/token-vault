@@ -11,7 +11,8 @@ import { Checkbox, Field, Input, Select, Textarea } from '@ui/form';
 import { PageHeader, Tabs } from '@ui/navigation';
 import { JsonView } from '@ui/secret';
 import { useToast } from '@ui/toast';
-import { useApi, useMutation } from '@tv-hooks/useApi';
+import { useMutation } from '@tv-hooks/useApi';
+import { useQuery } from '@/lib/hooks';
 import { DefinitionForm } from '@/components/DefinitionForm';
 import { AvailabilityBadge } from '@/components/AvailabilityBadge';
 import { VersionBadge } from '@/components/VersionBadge';
@@ -30,6 +31,9 @@ interface DefShape {
 }
 
 /** Readable key order for the editor (PostgreSQL jsonb does not preserve the authored order). */
+/** Identifies one version in CMS API calls. */
+type VersionRef = { key: string; version: number };
+
 const ORDER = ['key', 'version', 'id', 'name', 'label', 'description', 'risk', 'kind', 'header', 'prefix', 'plugin', 'type', 'required', 'baseUrl', 'allowedHosts', 'headers', 'timeoutMs', 'method', 'path', 'query', 'body', 'pattern', 'example', 'caseInsensitive', 'secretPattern', 'secretHint', 'requiresResource', 'providerPermissions', 'input', 'request', 'response', 'fields', 'limit', 'mock', 'status', 'test', 'api', 'resource', 'resourceFields', 'auth', 'credentialTest', 'operations'];
 const rank = (k: string) => (ORDER.includes(k) ? ORDER.indexOf(k) : ORDER.length);
 function ordered(v: unknown): unknown {
@@ -47,10 +51,12 @@ const pretty = (v: unknown) => JSON.stringify(ordered(v), null, 2);
 
 export function VersionPage() {
   const { key, version } = useParams() as { key: string; version: string };
-  const path = `/applications/${key}/versions/${version}`;
+  /** Which version every call is about (the CMS API takes it in the body). */
+  const ref = { key: key!, version: Number(version) };
+  const path = `${ref.key}@${ref.version}`;
   const toast = useToast();
   const navigate = useNavigate();
-  const v = useApi<CmsVersionDetail>(path);
+  const v = useQuery(path, () => api.post<CmsVersionDetail>('/version/getdatabyid', ref));
   const [tab, setTab] = useState<Tab>('definition');
   const [text, setText] = useState('');
   const [view, setView] = useState<'form' | 'json'>('form');
@@ -79,9 +85,9 @@ export function VersionPage() {
     }
   }, [parsed]);
 
-  const save = useMutation(() => api.put<CmsVersionDetail>(path, { definition: parsed.value }));
-  const action = useMutation((name: 'submit' | 'withdraw') => api.post<CmsVersionDetail>(`${path}/${name}`, {}));
-  const startEdit = useMutation((from: number) => api.post<{ version: number }>(`/applications/${key}/versions`, { from }));
+  const save = useMutation(() => api.post<CmsVersionDetail>('/version/save', { ...ref, definition: parsed.value }));
+  const action = useMutation((name: 'submit' | 'withdraw') => api.post<CmsVersionDetail>(`/version/${name}`, ref));
+  const startEdit = useMutation((from: number) => api.post<{ version: number }>('/application/newversion', { key: ref.key, from }));
 
   if (v.error) return <ErrorState error={v.error} onRetry={v.reload} />;
   if (!v.data) return <PageSkeleton />;
@@ -297,7 +303,7 @@ export function VersionPage() {
           </div>
         )}
         {tab === 'changes' && <Changes d={d} />}
-        {tab === 'preview' && <Preview path={path} def={def} valid={d.issues.length === 0} />}
+        {tab === 'preview' && <Preview vref={ref} def={def} valid={d.issues.length === 0} />}
         {tab === 'signature' && d.digest && (
           <Card>
             <CardHeader title="Signature" description="Ed25519 over token-vault/provider-definition/v1:<digest>, where digest = sha256(canonical JSON)." />
@@ -328,8 +334,8 @@ export function VersionPage() {
         )}
       </div>
 
-      <ApproveDialog open={dialog === 'approve' || dialog === 'publish'} direct={dialog === 'publish'} path={path} d={d} onClose={() => setDialog(null)} onDone={(r) => (update(r), setDialog(null), toast.success(`Published v${r.version}`, 'Signed and now served in the catalog.'))} />
-      <RejectDialog open={dialog === 'reject'} path={path} onClose={() => setDialog(null)} onDone={(r) => (update(r), setDialog(null), toast.info('Changes requested', 'The version is back in draft.'))} />
+      <ApproveDialog open={dialog === 'approve' || dialog === 'publish'} direct={dialog === 'publish'} vref={ref} d={d} onClose={() => setDialog(null)} onDone={(r) => (update(r), setDialog(null), toast.success(`Published v${r.version}`, 'Signed and now served in the catalog.'))} />
+      <RejectDialog open={dialog === 'reject'} vref={ref} onClose={() => setDialog(null)} onDone={(r) => (update(r), setDialog(null), toast.info('Changes requested', 'The version is back in draft.'))} />
     </>
   );
 }
@@ -396,14 +402,14 @@ function Changes({ d }: { d: CmsVersionDetail }) {
   );
 }
 
-function Preview({ path, def, valid }: { path: string; def: DefShape; valid: boolean }) {
+function Preview({ vref, def, valid }: { vref: VersionRef; def: DefShape; valid: boolean }) {
   const ops = def.operations ?? [];
   const [operation, setOperation] = useState(ops[0]?.id ?? '');
   const fields = [def.resource?.name, ...Object.keys(def.resourceFields ?? {})].filter(Boolean) as string[];
   const [resource, setResource] = useState<Record<string, string>>(() => (def.resource?.name && def.resource.example ? { [def.resource.name]: def.resource.example } : {}));
   const [input, setInput] = useState('{}');
   const [result, setResult] = useState<CmsPreviewResult | null>(null);
-  const run = useMutation(() => api.post<CmsPreviewResult>(`${path}/preview`, { operation, resource, input: JSON.parse(input || '{}') }));
+  const run = useMutation(() => api.post<CmsPreviewResult>('/version/preview', { ...vref, operation, resource, input: JSON.parse(input || '{}') }));
   if (!valid) return <Callout tone="warning">Fix the validation problems to preview requests.</Callout>;
   return (
     <div className="grid gap-6 lg:grid-cols-2">
@@ -466,10 +472,10 @@ function Preview({ path, def, valid }: { path: string; def: DefShape; valid: boo
   );
 }
 
-function ApproveDialog({ open, direct, path, d, onClose, onDone }: { open: boolean; direct: boolean; path: string; d: CmsVersionDetail; onClose: () => void; onDone: (r: CmsVersionDetail) => void }) {
+function ApproveDialog({ open, direct, vref, d, onClose, onDone }: { open: boolean; direct: boolean; vref: VersionRef; d: CmsVersionDetail; onClose: () => void; onDone: (r: CmsVersionDetail) => void }) {
   const [note, setNote] = useState('');
   const [ack, setAck] = useState(false);
-  const approve = useMutation(() => api.post<CmsVersionDetail>(`${path}/${direct ? 'publish' : 'approve'}`, { note, acknowledgeHostChange: ack }));
+  const approve = useMutation(() => api.post<CmsVersionDetail>(`/version/${direct ? 'publish' : 'approve'}`, { ...vref, note, acknowledgeHostChange: ack }));
   const label = direct ? 'Publish now' : 'Approve & publish';
   const def = d.definition as DefShape;
   return (
@@ -511,9 +517,9 @@ function ApproveDialog({ open, direct, path, d, onClose, onDone }: { open: boole
   );
 }
 
-function RejectDialog({ open, path, onClose, onDone }: { open: boolean; path: string; onClose: () => void; onDone: (r: CmsVersionDetail) => void }) {
+function RejectDialog({ open, vref, onClose, onDone }: { open: boolean; vref: VersionRef; onClose: () => void; onDone: (r: CmsVersionDetail) => void }) {
   const [note, setNote] = useState('');
-  const reject = useMutation(() => api.post<CmsVersionDetail>(`${path}/reject`, { note }));
+  const reject = useMutation(() => api.post<CmsVersionDetail>('/version/reject', { ...vref, note }));
   return (
     <Dialog
       open={open}

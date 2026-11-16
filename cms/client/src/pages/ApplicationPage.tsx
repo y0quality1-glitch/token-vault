@@ -23,8 +23,8 @@ export function ApplicationPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const toast = useToast();
-  const app = useApi<CmsApplicationDetail>(`/applications/${key}`);
-  const newVersion = useMutation(() => api.post<{ version: number }>(`/applications/${key}/versions`, {}));
+  const app = useApi<CmsApplicationDetail>(`/application/getbyid/${key}`);
+  const newVersion = useMutation(() => api.post<{ version: number }>('/application/newversion', { key }));
   const [archiving, setArchiving] = useState(false);
   const [availabilityTarget, setAvailabilityTarget] = useState<'available' | 'coming_soon' | null>(null);
 
@@ -158,7 +158,7 @@ export function ApplicationPage() {
 
 function ArchiveDialog({ open, appKey, onClose, onDone }: { open: boolean; appKey: string; onClose: () => void; onDone: () => void }) {
   const [reason, setReason] = useState('');
-  const archive = useMutation(() => api.post(`/applications/${appKey}/archive`, { reason }));
+  const archive = useMutation(() => api.post('/application/archive', { key: appKey, reason }));
   return (
     <Dialog
       open={open}
@@ -188,7 +188,7 @@ function ArchiveDialog({ open, appKey, onClose, onDone }: { open: boolean; appKe
 
 function AvailabilityDialog({ appKey, name, nextVersion, target, onClose, onDone }: { appKey: string; name: string; nextVersion: number; target: 'available' | 'coming_soon'; onClose: () => void; onDone: (r: { version: number; availability: string }) => void }) {
   const [note, setNote] = useState('');
-  const change = useMutation(() => api.post<{ version: number; availability: string }>(`/applications/${appKey}/availability`, { availability: target, note }));
+  const change = useMutation(() => api.post<{ version: number; availability: string }>('/application/availability', { key: appKey, availability: target, note }));
   const available = target === 'available';
   return (
     <Dialog
