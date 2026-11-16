@@ -30,7 +30,7 @@ Also shipped: operation selectors that cover operations published later (`github
 
 **Left over from Phase 1**
 
-- Approving and rejecting from Slack.
+- ~~Approving and rejecting from Slack.~~ Done: Settings → Slack approvals posts held requests with Approve / Reject buttons; clicks are signature-checked and mapped to members by email, with the console's rules.
 - Budgets in money (for example $100 of spend), which needs a cost per operation in the provider definitions.
 - One policy naming several agents or integrations (today: one agent or agent type, one application or integration).
 
@@ -65,7 +65,7 @@ These don't set Token Vault apart from HashiCorp, but enterprise customers won't
 
 ## Recommended next step
 
-Phase 2 is complete. Next: the Slack approvals left over from Phase 1, then Phase 3, starting with the **gateway for any MCP server**.
+Phase 2 is complete, and so are the Slack approvals left over from Phase 1. Next: Phase 3, starting with the **gateway for any MCP server**.
 
 Session tracing shipped: agents send a `session_id` and the W3C `traceparent` header; Token Vault records the session and trace on every access record (denials too), adds its own span, passes the trace to the webhook, and shows **Audit → Sessions** with each session's timeline, linked from the access log and from approvals. The SDK has `session()` and a `traceparent` option; the MCP server makes each client session one session and each tool call a span. Left open: exporting spans to an OpenTelemetry collector.
 

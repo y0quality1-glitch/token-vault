@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "slack_settings_team_uq" ON "slack_settings" USING btree ("team_id");

@@ -99,6 +99,8 @@ export default defineConfig({
         SEED_MODE: 'reset',
         HEARTBEAT_INTERVAL_MS: '30000',
         VAULT_ENCRYPTION_KEY: '',
+        // Slack approvals talk to a stand-in Slack started by 28-slack-approvals.spec.ts.
+        SLACK_API_URL: 'http://127.0.0.1:4900',
         ...cmsCatalog,
       },
     },

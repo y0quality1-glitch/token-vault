@@ -16,6 +16,8 @@ import { approvalsRouter } from './modules/approvals/approvals.routes';
 import { userIssuersRouter } from './modules/user-issuers/user-issuers.routes';
 import { delegationsRouter } from './modules/delegations/delegations.routes';
 import { sessionsRouter } from './modules/audit/sessions.routes';
+import { registerSlackApprovals } from './modules/slack/slack.service';
+import { slackInteractionsRouter, slackSettingsRouter } from './modules/slack/slack.routes';
 import { accessReviewsRouter } from './modules/access-reviews/access-reviews.routes';
 import { agentRouter } from './modules/broker/agent.routes';
 import { providersRouter } from './modules/providers/providers.routes';
@@ -52,6 +54,7 @@ export function createApp() {
   orgScoped.use(userIssuersRouter);
   orgScoped.use(delegationsRouter);
   orgScoped.use(sessionsRouter);
+  orgScoped.use(slackSettingsRouter);
   orgScoped.use(auditRouter);
   orgScoped.use(demoRouter);
   api.use(orgScoped);
@@ -60,6 +63,9 @@ export function createApp() {
 
   // ---- Agent execution API (agent credential only)
   app.use('/agent/v1', agentRouter);
+  // Slack button clicks (signed by Slack; no session).
+  app.use('/slack', slackInteractionsRouter);
+  registerSlackApprovals();
 
   app.use(notFoundHandler);
   app.use(errorHandler);

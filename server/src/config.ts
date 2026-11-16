@@ -90,4 +90,13 @@ export const config = {
   cmsCatalogUrl,
   cmsPublicKey,
   cmsPollIntervalMs: Number(process.env.CMS_POLL_INTERVAL_MS ?? 30_000),
+  /** Slack Web API base (tests and air-gapped setups point it elsewhere). */
+  slackApiUrl: (process.env.SLACK_API_URL ?? 'https://slack.com/api').replace(/\/$/, ''),
+  /** Where Slack sends button clicks: <this>/slack/interactions (shown in the console when configuring Slack). */
+  apiPublicUrl: (process.env.API_PUBLIC_URL ?? 'http://localhost:4000').replace(/\/$/, ''),
+  /**
+   * Key for secrets Token Vault itself stores in its database (Slack bot token and signing
+   * secret). Optional: derived from AUDIT_SIGNING_KEY when unset; set it to rotate independently.
+   */
+  settingsEncryptionKey: process.env.SETTINGS_ENCRYPTION_KEY ?? '',
 };

@@ -11,7 +11,7 @@ export interface Actor {
   name: string;
 }
 
-export function userActor(ctx: AdminContext): Actor {
+export function userActor(ctx: Pick<AdminContext, 'user'>): Actor {
   return { type: 'USER', id: ctx.user.id, name: ctx.user.fullName };
 }
 
