@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Ban, Github, Pencil, Play, Power, RefreshCw, Trash2 } from 'lucide-react';
-import { PERMISSIONS, ROTATION_INTERVAL_OPTIONS, rotationState, type IntegrationDetail } from '@token-vault/shared';
+import { PERMISSIONS, ROTATION_INTERVAL_OPTIONS, rotationState, type AccessMode, type IntegrationDetail } from '@token-vault/shared';
 import { getProvider, operationLabel } from '@/lib/providers';
 import { useApi, useMutation } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
@@ -9,7 +9,7 @@ import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardBody, CardHeader, DetailList } from '@/components/ui/card';
 import { Badge, EnvBadge, StatusBadge } from '@/components/ui/badge';
-import { Field, Input, Select, Textarea } from '@/components/ui/form';
+import { Field, Input, RadioCard, Select, Textarea } from '@/components/ui/form';
 import { Callout, EmptyState, ErrorState, FormError, PageSkeleton } from '@/components/ui/feedback';
 import { ConfirmDialog, Dialog } from '@/components/ui/dialog';
 import { DataTable } from '@/components/ui/table';
@@ -152,6 +152,8 @@ export function IntegrationDetailPage() {
           </CardBody>
         </Card>
       </div>
+
+      <AccessModeCard i={i} manage={manage} onSaved={setData} />
 
       <Card>
         <CardHeader
@@ -387,5 +389,78 @@ function RotationReminder({ i, manage, oauth, onSaved }: { i: IntegrationDetail;
       </p>
       <FormError error={save.error} />
     </div>
+  );
+}
+
+const ACCESS_MODE_TEXT: Record<AccessMode, { title: string; description: string }> = {
+  BROKERED: {
+    title: 'Brokered',
+    description: 'Your webhook calls the application and returns the result. The agent never sees a credential, and Filter responses policies apply.',
+  },
+  DECISION_ONLY: {
+    title: 'Decision only',
+    description: 'Token Vault checks every policy and returns a signed decision token. The caller calls the application with its own credentials; your services can verify the token.',
+  },
+  SHORT_LIVED_CREDENTIAL: {
+    title: 'Short-lived credential',
+    description: 'Your webhook issues a token for the allowed request (a GitHub App token for one repository, or the OAuth access token) and the caller makes the call with it.',
+  },
+};
+
+/** How allowed requests are carried out: by the webhook, or by the caller (decision only, short-lived credential). */
+function AccessModeCard({ i, manage, onSaved }: { i: IntegrationDetail; manage: boolean; onSaved: (next: IntegrationDetail) => void }) {
+  const toast = useToast();
+  const [pick, setPick] = useState<AccessMode | null>(null);
+  const save = useMutation((accessMode: AccessMode) => api.put<IntegrationDetail>(`/integrations/${i.id}/access-mode`, { accessMode }));
+  const method = getProvider(i.provider)?.auth.find((a) => a.id === i.authType);
+  const issuable = method?.kind === 'oauth2' || (method?.kind === 'plugin' && method.plugin === 'github_app');
+  const apply = async (mode: AccessMode) => {
+    const next = await save.run(mode);
+    if (next) {
+      onSaved(next);
+      setPick(null);
+      toast.success(`Access mode: ${ACCESS_MODE_TEXT[mode].title}`);
+    }
+  };
+  return (
+    <Card>
+      <CardHeader title="Access mode" description="What happens after Token Vault allows a request for this integration." />
+      <CardBody className="space-y-3">
+        <div className="grid gap-3 lg:grid-cols-3" role="radiogroup" aria-label="Access mode">
+          {(Object.keys(ACCESS_MODE_TEXT) as AccessMode[]).map((mode) => (
+            <RadioCard
+              key={mode}
+              checked={i.accessMode === mode}
+              disabled={!manage || save.pending || (mode === 'SHORT_LIVED_CREDENTIAL' && !issuable)}
+              onChange={() => mode !== i.accessMode && (mode === 'BROKERED' ? void apply(mode) : setPick(mode))}
+              title={ACCESS_MODE_TEXT[mode].title}
+              badge={mode === 'BROKERED' ? <Badge tone="green">Most secure</Badge> : undefined}
+              description={mode === 'SHORT_LIVED_CREDENTIAL' && !issuable ? 'Needs a GitHub App or OAuth connection: a stored key or token cannot be narrowed or made to expire.' : ACCESS_MODE_TEXT[mode].description}
+            />
+          ))}
+        </div>
+        {i.accessMode !== 'BROKERED' && (
+          <Callout tone="warning">
+            Token Vault does not see the application's response in this mode, so Filter responses policies cannot apply: requests they cover are refused.
+            {i.accessMode === 'SHORT_LIVED_CREDENTIAL' && ' The webhook must allow it with WEBHOOK_ALLOW_CREDENTIAL_ISSUE=true.'}
+          </Callout>
+        )}
+        <FormError error={save.error} />
+      </CardBody>
+      <ConfirmDialog
+        open={!!pick}
+        onClose={() => setPick(null)}
+        tone="primary"
+        title={`Switch to ${pick ? ACCESS_MODE_TEXT[pick].title.toLowerCase() : ''}?`}
+        description={
+          pick === 'DECISION_ONLY'
+            ? 'Agents using this integration get a signed decision instead of a result, and call the application with credentials of their own. Every policy still applies to the decision.'
+            : 'Agents using this integration receive a real, short-lived token and call the application themselves. They can use it for anything it allows until it expires (GitHub App tokens: 1 hour, this repository and permissions only).'
+        }
+        confirmLabel="Switch"
+        loading={save.pending}
+        onConfirm={() => pick && void apply(pick)}
+      />
+    </Card>
   );
 }

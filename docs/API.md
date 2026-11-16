@@ -30,6 +30,7 @@ Errors use one shape: `{ "error": { "code": "…", "message": "…", "details": 
 | GET | `/integrations/:id` | any role | includes granted agents |
 | PATCH | `/integrations/:id` | `integration:manage` | metadata only |
 | POST | `/integrations/:id/test` | `integration:manage` | webhook decrypts the credential and calls the provider |
+| PUT | `/integrations/:id/access-mode` | `integration:manage` | `{accessMode}`: `BROKERED` (default), `DECISION_ONLY` or `SHORT_LIVED_CREDENTIAL` (GitHub App and OAuth integrations only, else 400). Audited; leaving Brokered is a warning |
 | PUT | `/integrations/:id/rotation-policy` | `integration:manage` | `{intervalDays}` (7–730, or `null` to remove): rotation reminder; the detail returns `rotationIntervalDays`; audited |
 | POST | `/integrations/check-credentials` | `integration:manage` | re-tests every credential of the organization now (the scheduled check): returns `{valid, rejected, unknown, skipped}`; rejected → Invalid, recovered → Connected, both audited |
 | POST | `/integrations/:id/rotate` | `integration:manage` | PAT: `{secret}`. GitHub App: `{privateKey}` (400 `KEY_MANAGED_BY_WEBHOOK` if the key lives in the webhook's environment). OAuth: 400 `RECONNECT_REQUIRED` |
@@ -123,6 +124,18 @@ Response (the same shape for allow and deny):
 }
 ```
 
+**Access modes.** When the integration is not brokered, an allowed request is not run. The response has `execution.status: "HANDED_OFF"`, `result: null` and:
+
+```json
+"authorization": {
+  "mode": "DECISION_ONLY",
+  "decision_token": "eyJhbGciOiJFZERTQSIs…",
+  "expires_at": "2026-11-12T10:02:00.000Z"
+}
+```
+
+In `SHORT_LIVED_CREDENTIAL` mode, `authorization.credential` adds the token the customer webhook issued: `{type, token, token_type: "Bearer", expires_at, repositories?, permissions?, scopes?}`. The audit records what was issued (`execution.credential`), never the token. The decision token is a compact JWS (`alg: EdDSA`, `typ: tv-decision+jwt`) with the claims `iss`, `sub` (agent), `jti` (request id), `iat`, `exp`, `org_id`, `integration_id`, `provider`, `operation`, `resource`, `input_sha256` (SHA-256 of the input as canonical JSON, keys sorted), `mode`, and when they apply `on_behalf_of`, `delegation_id`, `approval_id`. Verify it with the keys at `GET /.well-known/jwks.json` (public, cached 5 minutes), or with the SDK's `verifyDecisionToken`. A Filter responses policy can't apply outside Brokered mode, so a request it covers is denied with `FILTER_NEEDS_BROKERED` (403).
+
 HTTP status codes: 200 allowed · 202 waiting for human approval · 400 malformed or unknown operation · 401 unauthenticated · 403 denied (including `APPROVAL_REJECTED`, `EMERGENCY_STOP` and the `USER_*` codes) · 404 unknown integration · 409 `APPROVAL_INVALID` · 429 rate limited or `BUDGET_EXCEEDED` · 502 upstream error · 503 webhook unavailable.
 
 **Human approval.** When a `REQUIRE_APPROVAL` policy matches a request that every other check allows, nothing runs. The response is HTTP 202 with `decision: "DENY"`, `decision_code: "APPROVAL_REQUIRED"` and:
@@ -181,6 +194,7 @@ Every endpoint requires a valid control-plane signature: the `x-tv-timestamp`, `
 | POST | `/internal/v1/credentials/:ref/test` | decrypt and call the provider; returns validity only |
 | POST | `/internal/v1/credentials/:ref/delete` | crypto-shred |
 | POST | `/internal/v1/execute` | validate `aud`, `exp`, TTL and org, then inject the credential and return a sanitized result |
+| POST | `/internal/v1/credentials/issue` | short-lived credential mode: the same checks as `execute`, then return a GitHub App token minted for the request's repository and the operation's permissions (not revoked), or the current OAuth access token (refreshed if about to expire). 403 `CREDENTIAL_ISSUE_DISABLED` unless `WEBHOOK_ALLOW_CREDENTIAL_ISSUE=true`; 409 `CREDENTIAL_NOT_ISSUABLE` for stored keys and tokens |
 
 For a GitHub App integration, `execution.credential` describes the token the webhook minted for this one request (the token itself is never returned):
 

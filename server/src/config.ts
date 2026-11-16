@@ -99,4 +99,12 @@ export const config = {
    * secret). Optional: derived from AUDIT_SIGNING_KEY when unset; set it to rotate independently.
    */
   settingsEncryptionKey: process.env.SETTINGS_ENCRYPTION_KEY ?? '',
+  /**
+   * Seed for the Ed25519 key that signs decision tokens (integrations not in brokered mode).
+   * Optional: derived from AUDIT_SIGNING_KEY when unset. The public key is published at
+   * /.well-known/jwks.json, so verifiers pick up a new key without configuration.
+   */
+  decisionSigningKey: process.env.DECISION_SIGNING_KEY ?? '',
+  /** How long a decision token (and the decision it carries) is valid. */
+  decisionTokenTtlS: Math.min(Math.max(Number(process.env.DECISION_TOKEN_TTL_S ?? 120) || 120, 10), 900),
 };

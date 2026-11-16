@@ -142,6 +142,7 @@ export function buildSeed(): SeedData {
     lastValidatedAt: iso(-2 * HOUR),
     rotatedAt: null,
     rotationIntervalDays: null,
+    accessMode: 'BROKERED',
     deletedAt: null,
   });
   db.integrations = [

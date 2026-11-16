@@ -1,0 +1,1 @@
+ALTER TABLE "integrations" ADD COLUMN "access_mode" text DEFAULT 'BROKERED' NOT NULL;

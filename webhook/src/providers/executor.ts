@@ -40,7 +40,7 @@ export type AuthInjection = { kind: 'bearer'; secret: string } | { kind: 'header
 
 export class ExecutionError extends Error {
   constructor(
-    public code: 'UNSUPPORTED_OPERATION' | 'INVALID_REQUEST' | 'HOST_NOT_ALLOWED' | 'REDIRECT_REFUSED' | 'RESPONSE_TOO_LARGE',
+    public code: 'UNSUPPORTED_OPERATION' | 'INVALID_REQUEST' | 'HOST_NOT_ALLOWED' | 'REDIRECT_REFUSED' | 'RESPONSE_TOO_LARGE' | 'CREDENTIAL_NOT_ISSUABLE',
     message: string,
   ) {
     super(message);
