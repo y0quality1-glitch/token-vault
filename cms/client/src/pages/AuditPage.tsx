@@ -5,7 +5,8 @@ import { Card } from '@ui/card';
 import { ErrorState } from '@ui/feedback';
 import { PageHeader } from '@ui/navigation';
 import { DataTable } from '@ui/table';
-import { useApi } from '@tv-hooks/useApi';
+import { api } from '@/lib/api';
+import { useQuery } from '@/lib/hooks';
 import { formatDateTime } from '@/lib/utils';
 
 const TONE: Record<string, 'green' | 'amber' | 'red' | 'blue' | 'gray'> = {
@@ -17,7 +18,7 @@ const TONE: Record<string, 'green' | 'amber' | 'red' | 'blue' | 'gray'> = {
 };
 
 export function AuditPage() {
-  const log = useApi<{ items: CmsAuditEvent[] }>('/audit');
+  const log = useQuery('audit', () => api.page<CmsAuditEvent>('/audit/getall', { pageSize: 200 }));
   return (
     <>
       <PageHeader title="Audit log" description="Every change to applications and versions. Append-only: the database rejects updates and deletes." />
