@@ -9,7 +9,7 @@
 # requests (HMAC, nonce, expiry, audience) still apply on top.
 #
 # An existing stack keeps its webhook URL (http://webhook:4100) in the database: change it to
-# https://webhook:4100 under Webhook / Vault Agent (or PATCH /api/v1/webhooks/:id), or start with
+# https://webhook:4100 under Webhook / Vault Agent (or POST /api/v1/webhook/save with its id), or start with
 # an empty volume. Can be combined with vault-transit.yml.
 services:
   webhook:

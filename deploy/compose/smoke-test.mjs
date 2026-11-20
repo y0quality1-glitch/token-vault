@@ -46,7 +46,9 @@ function session(base) {
     } catch {
       /* not JSON */
     }
-    return { status: res.status, json, text };
+    // Both APIs answer with the template envelope { status, msg, details, ... }; `json` is its details.
+    const details = json && typeof json === 'object' && 'details' in json ? json.details : json;
+    return { status: res.status, json: details, envelope: json, text };
   };
 }
 
@@ -68,14 +70,14 @@ try {
   await step('sign in to the console', async () => {
     const login = await api('POST', '/api/v1/auth/login', { email: 'owner@demo.test', password: PASSWORD });
     expect(login.status === 200, `login answered ${login.status}`);
-    const org = await api('POST', '/api/v1/auth/select-organization', { organizationId: 'org_demo0000000001' });
+    const org = await api('POST', '/api/v1/auth/selectOrganization', { organizationId: 'org_demo0000000001' });
     expect(org.status === 200, `organization selection answered ${org.status}`);
   });
 
   await step('control plane has the signed CMS catalog', async () => {
     let providers = [];
     for (let i = 0; i < 20; i++) {
-      providers = (await api('GET', '/api/v1/providers')).json?.providers ?? [];
+      providers = (await api('POST', '/api/v1/provider/getall')).json?.providers ?? [];
       if (providers.some((p) => p.source === 'catalog')) break;
       await new Promise((r) => setTimeout(r, 1000));
     }
@@ -85,30 +87,31 @@ try {
   });
 
   await step('customer webhook answers a signed health challenge', async () => {
-    const webhooks = (await api('GET', '/api/v1/webhooks')).json?.items ?? [];
+    const webhooks = (await api('POST', '/api/v1/webhook/getall')).json?.items ?? [];
     expect(webhooks.length > 0, 'no webhook registered');
-    const r = await api('POST', `/api/v1/webhooks/${webhooks[0].id}/test`);
+    const r = await api('POST', '/api/v1/webhook/test', { id: webhooks[0].id });
     expect(r.json?.result?.ok === true, `health check failed: ${r.json?.result?.detail ?? r.status}`);
     return r.json.result.detail;
   });
 
   await step('an agent request goes through the whole path', async () => {
-    const integrations = (await api('GET', '/api/v1/integrations')).json?.items ?? [];
+    const integrations = (await api('POST', '/api/v1/integration/getall')).json?.items ?? [];
     const github = integrations.find((i) => i.provider === 'github' && i.credentialStatus === 'CONNECTED' && i.allowedResources.includes('demo-org/demo-repo'));
     expect(github, 'no connected GitHub integration for demo-org/demo-repo (demo data missing?)');
-    const agent = await api('POST', '/api/v1/agents', { name: `smoke-test-${Date.now()}`, environment: github.environment, ownerTeam: 'Operations', agentType: 'SERVICE' });
+    const agent = await api('POST', '/api/v1/agent/save', { name: `smoke-test-${Date.now()}`, environment: github.environment, ownerTeam: 'Operations', agentType: 'SERVICE' });
     expect(agent.status === 201, `agent registration answered ${agent.status}`);
     agentId = agent.json.agent.id;
     const now = Date.now();
-    const grant = await api('POST', '/api/v1/grants', { name: `Smoke test ${now}`, agentId, integrationId: github.id, environment: github.environment, scopes: ['github.repositories.read'], repositories: ['demo-org/demo-repo'], validFrom: new Date(now - 60_000).toISOString(), expiresAt: new Date(now + 3_600_000).toISOString(), rateLimitPerMinute: 10 });
+    const grant = await api('POST', '/api/v1/grant/save', { name: `Smoke test ${now}`, agentId, integrationId: github.id, environment: github.environment, scopes: ['github.repositories.read'], repositories: ['demo-org/demo-repo'], validFrom: new Date(now - 60_000).toISOString(), expiresAt: new Date(now + 3_600_000).toISOString(), rateLimitPerMinute: 10 });
     expect(grant.status === 201, `grant creation answered ${grant.status}: ${grant.text.slice(0, 200)}`);
     grantId = grant.json.id;
-    const r = await fetch(CONSOLE + '/agent/v1/execute', {
+    const r = await fetch(CONSOLE + '/agent/v1/request/execute', {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${agent.json.credential.apiKey}` },
       body: JSON.stringify({ integration_id: github.id, operation: 'github.repositories.read', resource: { repository: 'demo-org/demo-repo' }, idempotency_key: `smoke-${now}` }),
     });
-    const body = await r.json();
+    const raw = await r.json();
+    const body = raw?.details ?? raw;
     expect(r.status === 200 && body.decision === 'ALLOW', `execute answered ${r.status} ${body.decision_code}: ${body.reason}`);
     return `${body.decision_code}, upstream ${body.execution.upstream_status}${body.execution.simulated ? ' (simulated)' : ''}`;
   });
@@ -116,7 +119,7 @@ try {
   await step('sign in to the CMS; its catalog is served', async () => {
     const login = await cms('POST', '/api/v1/auth/login', { email: 'admin@cms.test', password: PASSWORD });
     expect(login.status === 200, `CMS login answered ${login.status}`);
-    const apps = (await cms('POST', '/api/v1/application/getall', { pageSize: 200 })).json?.details ?? [];
+    const apps = (await cms('POST', '/api/v1/application/getall', { pageSize: 200 })).json ?? [];
     expect(apps.length > 0, 'the CMS lists no applications');
     const catalog = await cms('GET', '/catalog/v1/definitions');
     expect(catalog.status === 200 && catalog.json?.definitions?.length > 0, `catalog answered ${catalog.status}`);
@@ -126,8 +129,8 @@ try {
   /* reported by step() */
 } finally {
   // Leave nothing usable behind.
-  if (grantId) await api('POST', `/api/v1/grants/${grantId}/revoke`, { reason: 'smoke test finished' }).catch(() => {});
-  if (agentId) await api('POST', `/api/v1/agents/${agentId}/disable`).catch(() => {});
+  if (grantId) await api('POST', '/api/v1/grant/revoke', { id: grantId, reason: 'smoke test finished' }).catch(() => {});
+  if (agentId) await api('POST', '/api/v1/agent/disable', { id: agentId }).catch(() => {});
 }
 if (failed) process.exit(1);
 console.log('smoke test passed');
