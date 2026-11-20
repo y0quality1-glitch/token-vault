@@ -3,8 +3,8 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { Activity, CheckCircle2, CircleDashed, Download, Search, UserRound, XCircle } from 'lucide-react';
 import { DECISION_LABELS, actingUserLabel, sessionDisplayName, type AccessRequest, type Agent, type AuditEvent, type Integration } from '@token-vault/shared';
 import { operationLabel, useProviders } from '@/lib/providers';
-import { useApi } from '@/hooks/useApi';
-import { qs } from '@/lib/api';
+import { useApi, usePost } from '@/hooks/useApi';
+import { compact } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Card, DetailList } from '@/components/ui/card';
 import { Badge, DecisionBadge, StatusBadge } from '@/components/ui/badge';
@@ -32,10 +32,10 @@ export function AccessLogsPage() {
     user: params.get('user') ?? '',
     sessionId: params.get('sessionId') ?? '',
   });
-  const query = qs({ ...filters, from: fromLocalInput(filters.from), to: fromLocalInput(filters.to) });
-  const { data, error, loading, reload } = useApi<{ items: AccessRequest[]; total: number }>(`/access-requests${query}`);
-  const agents = useApi<{ items: Agent[] }>('/agents');
-  const integrations = useApi<{ items: Integration[] }>('/integrations');
+  const query = compact({ ...filters, from: fromLocalInput(filters.from), to: fromLocalInput(filters.to) });
+  const { data, error, loading, reload } = usePost<{ items: AccessRequest[]; total: number }>('/accessRequest/getall', query);
+  const agents = usePost<{ items: Agent[] }>('/agent/getall');
+  const integrations = usePost<{ items: Integration[] }>('/integration/getall');
   const selectedId = params.get('request');
 
   const set = (k: keyof typeof filters) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setFilters((f) => ({ ...f, [k]: e.target.value }));
@@ -193,7 +193,7 @@ export function AccessLogsPage() {
 }
 
 function AccessDetailDrawer({ id, onClose }: { id: string | null; onClose: () => void }) {
-  const { data, error, loading } = useApi<AccessRequest & { auditEvents: AuditEvent[] }>(id ? `/access-requests/${id}` : null);
+  const { data, error, loading } = useApi<AccessRequest & { auditEvents: AuditEvent[] }>(id ? `/accessRequest/getbyid/${id}` : null);
   const [shown, setShown] = useState<typeof data>(null);
   useEffect(() => {
     if (data && data.id === id) setShown(data);

@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { KeyRound, Plus } from 'lucide-react';
 import { PERMISSIONS, type Grant, type GrantStatus } from '@token-vault/shared';
 import { operationLabel } from '@/lib/providers';
-import { useApi } from '@/hooks/useApi';
+import { usePost } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -18,7 +18,7 @@ type Filter = 'all' | 'ACTIVE' | 'PENDING_APPROVAL' | 'EXPIRED' | 'REVOKED';
 export function GrantsPage() {
   const navigate = useNavigate();
   const { can } = useAuth();
-  const { data, error, loading, reload } = useApi<{ items: Grant[] }>('/grants');
+  const { data, error, loading, reload } = usePost<{ items: Grant[] }>('/grant/getall');
   const [filter, setFilter] = useState<Filter>('all');
   const visible = useMemo(() => (data?.items ?? []).filter((g) => g.status !== 'SUPERSEDED'), [data]);
   const count = (s: GrantStatus) => visible.filter((g) => g.status === s).length;

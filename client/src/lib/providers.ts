@@ -19,7 +19,7 @@ const listeners = new Set<() => void>();
 const emit = () => listeners.forEach((fn) => fn());
 
 export async function loadProviders(): Promise<void> {
-  const r = await api.get<ProvidersResponse>('/providers');
+  const r = await api.post<ProvidersResponse>('/provider/getall');
   state = { providers: r.providers, operations: r.providers.flatMap((p) => p.operations), catalog: r.catalog, loaded: true };
   emit();
 }

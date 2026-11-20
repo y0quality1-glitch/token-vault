@@ -2,7 +2,7 @@ import { expect, test, type APIRequestContext, type Page } from '@playwright/tes
 import { resolve } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { DEMO_PASSWORD, login } from './helpers';
+import { DEMO_PASSWORD, details, login } from './helpers';
 
 /**
  * Human approval of risky operations, end to end: a REQUIRE_APPROVAL policy holds a real
@@ -28,10 +28,10 @@ test.describe.serial('human approval of risky operations (Demo Organization)', (
     // The owner registers the agent, so only another administrator may approve its requests.
     admin = await playwright.request.newContext({ baseURL: API });
     await admin.post('/api/v1/auth/login', { data: { email: 'owner@demo.test', password: DEMO_PASSWORD } });
-    await admin.post('/api/v1/auth/select-organization', { data: { organizationId: 'org_demo0000000001' } });
-    const agent = await (await admin.post('/api/v1/agents', { data: { name: 'Approval Agent', environment: 'development', ownerTeam: 'Platform AI', agentType: 'AI_AGENT' } })).json();
+    await admin.post('/api/v1/auth/selectOrganization', { data: { organizationId: 'org_demo0000000001' } });
+    const agent = await details(await admin.post('/api/v1/agent/save', { data: { name: 'Approval Agent', environment: 'development', ownerTeam: 'Platform AI', agentType: 'AI_AGENT' } }));
     const now = Date.now();
-    const grant = await admin.post('/api/v1/grants', {
+    const grant = await admin.post('/api/v1/grant/save', {
       data: {
         name: 'Approval agent issues',
         agentId: agent.agent.id,
@@ -45,7 +45,7 @@ test.describe.serial('human approval of risky operations (Demo Organization)', (
       },
     });
     expect(grant.ok(), await grant.text()).toBe(true);
-    const policy = await admin.post('/api/v1/policies', {
+    const policy = await admin.post('/api/v1/policy/save', {
       data: {
         name: 'Approve issues from Approval Agent',
         description: 'A human checks every issue this agent files.',

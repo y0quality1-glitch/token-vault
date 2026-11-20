@@ -67,6 +67,8 @@ These don't set Token Vault apart from HashiCorp, but enterprise customers won't
 
 Phase 2 is complete, and so are the Slack approvals left over from Phase 1. Next: Phase 3, starting with the **gateway for any MCP server**.
 
+Access modes shipped: each integration is Brokered (the webhook makes the call), Decision only (Token Vault returns a signed decision token, verifiable at `/.well-known/jwks.json`, and the caller makes the call) or Short-lived credential (the webhook issues a GitHub App or OAuth token to the caller). Left open: single-use enforcement of decision tokens on the application side, and an outbound-only connection from the webhook to the control plane.
+
 Session tracing shipped: agents send a `session_id` and the W3C `traceparent` header; Token Vault records the session and trace on every access record (denials too), adds its own span, passes the trace to the webhook, and shows **Audit → Sessions** with each session's timeline, linked from the access log and from approvals. The SDK has `session()` and a `traceparent` option; the MCP server makes each client session one session and each tool call a span. Left open: exporting spans to an OpenTelemetry collector.
 
 Response filtering shipped: a *Filter responses* policy masks emails, phone numbers, card numbers, IP addresses, secrets and custom patterns, removes fields, and flags or withholds results that look like prompt injection. The customer webhook applies it, so masked values never leave the customer side; the control plane applies it when a webhook did not. The access log records what was filtered, never the values. Left open: a model-based injection classifier as an option, and filtering request inputs (not only results).

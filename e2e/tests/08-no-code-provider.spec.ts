@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
-import { DEMO_PASSWORD, expectNoSecretsInBrowser, login } from './helpers';
+import { DEMO_PASSWORD, details, expectNoSecretsInBrowser, login } from './helpers';
 
 /**
  * The point of the CMS: a new application becomes usable in Token Vault without any code
@@ -47,7 +47,7 @@ test.describe.serial('no-code provider: published in the CMS, used through Token
   test.beforeAll(async ({ playwright, browser }) => {
     admin = await playwright.request.newContext({ baseURL: API });
     await admin.post('/api/v1/auth/login', { data: { email: 'owner@demo.test', password: DEMO_PASSWORD } });
-    await admin.post('/api/v1/auth/select-organization', { data: { organizationId: 'org_demo0000000001' } });
+    await admin.post('/api/v1/auth/selectOrganization', { data: { organizationId: 'org_demo0000000001' } });
     page = await browser.newPage();
   });
   test.afterAll(async () => {
@@ -70,9 +70,9 @@ test.describe.serial('no-code provider: published in the CMS, used through Token
 
   test('Token Vault picks up the signed definition without a deploy', async () => {
     await expect
-      .poll(async () => ((await (await admin.get('/api/v1/providers')).json()).providers as { key: string; source: string }[]).find((p) => p.key === 'ticketdesk')?.source, { timeout: 15_000 })
+      .poll(async () => ((await details(await admin.post('/api/v1/provider/getall'))).providers as { key: string; source: string }[]).find((p) => p.key === 'ticketdesk')?.source, { timeout: 15_000 })
       .toBe('catalog');
-    const catalog = (await (await admin.get('/api/v1/providers')).json()).catalog;
+    const catalog = (await details(await admin.post('/api/v1/provider/getall'))).catalog;
     expect(catalog).toMatchObject({ url: 'http://localhost:4200/catalog/v1', lastError: null });
   });
 
@@ -96,32 +96,32 @@ test.describe.serial('no-code provider: published in the CMS, used through Token
     await expect(page.getByText('Support Desk is connected')).toBeVisible();
     await expectNoSecretsInBrowser(page, [API_KEY]);
 
-    const list = await (await admin.get('/api/v1/integrations')).json();
+    const list = await details(await admin.post('/api/v1/integration/getall'));
     const created = list.items.find((i: { displayName: string }) => i.displayName === 'Support Desk');
     expect(created).toMatchObject({ provider: 'ticketdesk', authType: 'API_KEY', credentialStatus: 'CONNECTED', allowedResources: ['OPS', 'SALES'] });
     integrationId = created.id;
 
     // Resource values are checked against the definition's pattern.
-    const bad = await admin.patch(`/api/v1/integrations/${integrationId}`, { data: { displayName: 'Support Desk', accountLabel: '', description: '', allowedResources: ['ops-lowercase'] } });
-    expect((await bad.json()).error.details.fields.allowedResources).toMatch(/Not a valid queue for Ticket Desk/);
+    const bad = await admin.post('/api/v1/integration/save', { data: { id: integrationId, displayName: 'Support Desk', accountLabel: '', description: '', allowedResources: ['ops-lowercase'] } });
+    expect((await bad.json()).details.fields.allowedResources).toMatch(/Not a valid queue for Ticket Desk/);
   });
 
   test('an agent calls it under a queue-scoped grant', async () => {
-    const agent = await (await admin.post('/api/v1/agents', { data: { name: 'Support Agent', environment: 'development', ownerTeam: 'Support', agentType: 'AI_AGENT' } })).json();
+    const agent = await details(await admin.post('/api/v1/agent/save', { data: { name: 'Support Agent', environment: 'development', ownerTeam: 'Support', agentType: 'AI_AGENT' } }));
     agentKey = agent.credential.apiKey;
     const now = Date.now();
-    const crossProvider = await admin.post('/api/v1/grants', {
+    const crossProvider = await admin.post('/api/v1/grant/save', {
       data: { name: 'Mixed', agentId: agent.agent.id, integrationId, environment: 'development', scopes: ['github.issues.list'], repositories: [], validFrom: new Date(now - 60_000).toISOString(), expiresAt: new Date(now + 86_400_000).toISOString(), rateLimitPerMinute: 30 },
     });
-    expect((await crossProvider.json()).error.details.fields.scopes).toMatch(/Not operations of this integration's provider/);
-    const grant = await admin.post('/api/v1/grants', {
+    expect((await crossProvider.json()).details.fields.scopes).toMatch(/Not operations of this integration's provider/);
+    const grant = await admin.post('/api/v1/grant/save', {
       data: { name: 'Support reads OPS', agentId: agent.agent.id, integrationId, environment: 'development', scopes: ['ticketdesk.tickets.list'], repositories: ['OPS'], validFrom: new Date(now - 60_000).toISOString(), expiresAt: new Date(now + 86_400_000).toISOString(), rateLimitPerMinute: 30 },
     });
     expect(grant.ok(), await grant.text()).toBe(true);
 
     const call = async (operation: string, queue: string, resource: Record<string, string> = { queue }) => {
-      const r = await admin.post('/agent/v1/execute', { headers: { authorization: `Bearer ${agentKey}` }, data: { integration_id: integrationId, operation, resource, idempotency_key: `e2e-td-${operation}-${queue}-${Date.now()}` } });
-      return { status: r.status(), body: await r.json() };
+      const r = await admin.post('/agent/v1/request/execute', { headers: { authorization: `Bearer ${agentKey}` }, data: { integration_id: integrationId, operation, resource, idempotency_key: `e2e-td-${operation}-${queue}-${Date.now()}` } });
+      return { status: r.status(), body: await details(r) };
     };
 
     const ok = await call('ticketdesk.tickets.list', 'OPS');

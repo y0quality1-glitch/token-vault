@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Bot, Plus, Search } from 'lucide-react';
 import { PERMISSIONS, type Agent, type IssuedCredential } from '@token-vault/shared';
-import { useApi, useMutation } from '@/hooks/useApi';
+import { useMutation, usePost } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
 import { usePlayground } from '@/context/PlaygroundContext';
 import { api } from '@/lib/api';
@@ -23,7 +23,7 @@ export function AgentRegistryPage() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const { can } = useAuth();
-  const { data, error, loading, reload } = useApi<{ items: Agent[] }>('/agents');
+  const { data, error, loading, reload } = usePost<{ items: Agent[] }>('/agent/getall');
   const [q, setQ] = useState('');
   const [status, setStatus] = useState('');
   const [env, setEnv] = useState('');
@@ -118,7 +118,7 @@ function RegisterAgentDialog({ open, onClose, onRegistered }: { open: boolean; o
   const [form, setForm] = useState<AgentFormValues>(emptyAgentForm);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [issued, setIssued] = useState<{ agent: Agent; credential: IssuedCredential } | null>(null);
-  const submit = useMutation((body: unknown) => api.post<{ agent: Agent; credential: IssuedCredential }>('/agents', body));
+  const submit = useMutation((body: unknown) => api.post<{ agent: Agent; credential: IssuedCredential }>('/agent/save', body));
 
   useEffect(() => {
     if (open) {

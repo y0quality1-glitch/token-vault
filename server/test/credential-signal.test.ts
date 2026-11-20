@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isCredentialRejection } from '../src/modules/integrations/credential-signal';
+import { isCredentialRejection } from '../src/services/integrationService/credentialSignal';
 
 describe('credential rejection signals', () => {
   it('treats a 401 from the provider as a rejected credential', () => {

@@ -10,11 +10,11 @@ const suite = url ? describe : describe.skip;
 
 suite('just-in-time access requests', () => {
   let m: {
-    client: typeof import('../src/db/client');
+    client: typeof import('../src/databases/client');
     seed: typeof import('../src/store/seed');
     repos: typeof import('../src/store/repos');
-    jit: typeof import('../src/modules/grant-requests/grant-requests.service');
-    broker: typeof import('../src/modules/broker/broker.service');
+    jit: typeof import('../src/services/grantRequestService/grantRequestService.service');
+    broker: typeof import('../src/services/brokerService/brokerService.service');
     crypto: typeof import('../src/lib/crypto');
   };
   let apiKey = '';
@@ -47,11 +47,11 @@ suite('just-in-time access requests', () => {
     process.env.AUDIT_SIGNING_KEY ??= randomBytes(32).toString('base64url');
     process.env.DB_POOL_MAX = '4';
     m = {
-      client: await import('../src/db/client'),
+      client: await import('../src/databases/client'),
       seed: await import('../src/store/seed'),
       repos: await import('../src/store/repos'),
-      jit: await import('../src/modules/grant-requests/grant-requests.service'),
-      broker: await import('../src/modules/broker/broker.service'),
+      jit: await import('../src/services/grantRequestService/grantRequestService.service'),
+      broker: await import('../src/services/brokerService/brokerService.service'),
       crypto: await import('../src/lib/crypto'),
     };
     await m.client.runMigrations();
@@ -115,13 +115,12 @@ suite('just-in-time access requests', () => {
     expect(await m.jit.reject(await ctxFor(m.seed.IDS.owner), pending.id, { note: 'not needed' })).toMatchObject({ status: 'REJECTED', decisionNote: 'not needed' });
 
     const lapsed = (await m.repos.grantRequestRepo.pendingForAgent(m.seed.IDS.agtAssistant)).find((r) => r.operations[0] === 'github.contents.read')!;
-    const { grantRequests } = await import('../src/db/schema');
-    const { eq } = await import('drizzle-orm');
-    await m.client.db.update(grantRequests).set({ expiresAt: new Date(Date.now() - 1000).toISOString() }).where(eq(grantRequests.id, lapsed.id));
+    const { GrantRequestEntity } = await import('../src/entities');
+    await m.client.db.update(GrantRequestEntity, { id: lapsed.id }, { expiresAt: new Date(Date.now() - 1000).toISOString() });
     expect((await m.jit.toViews(m.seed.IDS.demoOrg, [(await m.repos.grantRequestRepo.getGrantRequest(m.seed.IDS.demoOrg, lapsed.id))!]))[0]!.status).toBe('EXPIRED');
     expect(await error(m.jit.approve(await ctxFor(m.seed.IDS.securityAdmin), lapsed.id, { durationMinutes: 30 }))).toMatchObject({ status: 409 });
 
-    const events = await m.repos.auditRepo.listAuditEvents(m.seed.IDS.demoOrg, { eventType: 'grant_request.' }, 50);
+    const events = await new (await import('../src/services/auditEventService/auditEventService.service')).default().list(m.seed.IDS.demoOrg, { eventType: 'grant_request.', limit: 50 });
     expect(events.items.map((e) => e.eventType)).toEqual(expect.arrayContaining(['grant_request.created', 'grant_request.approved', 'grant_request.rejected']));
   });
 });

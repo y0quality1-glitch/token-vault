@@ -124,7 +124,20 @@ export interface Integration {
   rotatedAt: ISODate | null;
   /** Rotation reminder: the credential is due this many days after its last rotation (null = no reminder). */
   rotationIntervalDays: number | null;
+  /** How an allowed request is carried out: Token Vault calls the application, or the caller does. */
+  accessMode: AccessMode;
 }
+
+/**
+ * How an allowed request is carried out.
+ *  - BROKERED: the customer webhook calls the application; the caller never sees a credential.
+ *  - DECISION_ONLY: Token Vault only decides. The caller gets a signed decision token and calls
+ *    the application with credentials of its own.
+ *  - SHORT_LIVED_CREDENTIAL: the webhook issues a narrow, short-lived token (GitHub App, OAuth)
+ *    and the caller calls the application with it.
+ */
+export type AccessMode = 'BROKERED' | 'DECISION_ONLY' | 'SHORT_LIVED_CREDENTIAL';
+export const ACCESS_MODES: AccessMode[] = ['BROKERED', 'DECISION_ONLY', 'SHORT_LIVED_CREDENTIAL'];
 
 export interface IntegrationDetail extends Integration {
   grantedAgents: { agentId: string; agentName: string; grantId: string; grantName: string; status: GrantStatus; scopes: string[] }[];
@@ -448,7 +461,8 @@ export interface Policy {
 
 // ---------------------------------------------------------------- Access decisions & audit
 export type Decision = 'ALLOW' | 'DENY';
-export type ExecutionStatus = 'SUCCEEDED' | 'FAILED' | 'NOT_EXECUTED';
+/** HANDED_OFF: allowed, and the caller makes the call itself (decision only, or with an issued credential). */
+export type ExecutionStatus = 'SUCCEEDED' | 'FAILED' | 'NOT_EXECUTED' | 'HANDED_OFF';
 
 export interface DecisionCheck {
   step: number;
@@ -591,6 +605,17 @@ export interface ExecuteResponseBody {
   checks: DecisionCheck[];
   /** Set when a REQUIRE_APPROVAL policy applies: the approval this request waits for, or the one it used. */
   approval?: { approval_id: string; status: OperationApprovalStatus; expires_at: ISODate } | null;
+  /**
+   * Set when the integration is not brokered: Token Vault decided, and the caller makes the call.
+   * `decision_token` is a signed JWT (EdDSA; keys at /.well-known/jwks.json) the application side
+   * can verify. `credential` is present in SHORT_LIVED_CREDENTIAL mode only.
+   */
+  authorization?: {
+    mode: Exclude<AccessMode, 'BROKERED'>;
+    decision_token: string;
+    expires_at: ISODate;
+    credential?: HandedOffCredential;
+  } | null;
   /** The verified user the request was made for (absent: the agent acted for itself). */
   acting_for?: { sub: string; email: string | null; name: string | null; issuer: string } | null;
   /** The delegation the request came through, when a sub-agent sent it. */
@@ -861,6 +886,42 @@ export interface AccessReviewSummary {
 }
 
 /** Non-secret description of a per-request credential minted by the customer webhook. */
+/** A credential the webhook issued to the caller (SHORT_LIVED_CREDENTIAL mode). */
+export interface HandedOffCredential {
+  type: 'github_app_installation_token' | 'oauth2_access_token';
+  token: string;
+  /** Use it as "Authorization: Bearer <token>". */
+  token_type: 'Bearer';
+  expires_at: ISODate | null;
+  /** GitHub App tokens: limited to these repositories and permissions. */
+  repositories?: string[];
+  permissions?: Record<string, string>;
+  /** OAuth tokens: the scopes of the connection (the token is not narrowed per request). */
+  scopes?: string[];
+}
+
+/** The claims of a decision token (DECISION_ONLY and SHORT_LIVED_CREDENTIAL modes). */
+export interface DecisionTokenClaims {
+  iss: string;
+  /** The agent the decision was made for. */
+  sub: string;
+  /** The access request id. */
+  jti: string;
+  iat: number;
+  exp: number;
+  org_id: string;
+  integration_id: string;
+  provider: string;
+  operation: string;
+  resource: Record<string, string>;
+  /** SHA-256 (hex) of the canonical JSON of the request input; the call must carry exactly this input. */
+  input_sha256: string;
+  mode: Exclude<AccessMode, 'BROKERED'>;
+  on_behalf_of?: { sub: string; issuer: string };
+  delegation_id?: string;
+  approval_id?: string;
+}
+
 export type CredentialUseInfo =
   | {
       type: 'github_app_installation_token';

@@ -3,7 +3,7 @@ import { Link, Navigate, useNavigate, useParams } from 'react-router-dom';
 import { ArrowRight, CheckCircle2, ExternalLink, Lock, ShieldCheck } from 'lucide-react';
 import { ProviderIcon } from '@/components/ui/provider-icon';
 import { PERMISSIONS, type Environment, type IntegrationDetail, type Webhook } from '@token-vault/shared';
-import { useApi, useMutation } from '@/hooks/useApi';
+import { useMutation, usePost } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -24,7 +24,7 @@ export function ConnectIntegrationPage() {
   const { can } = useAuth();
   const navigate = useNavigate();
   const toast = useToast();
-  const webhooks = useApi<{ items: Webhook[] }>('/webhooks');
+  const webhooks = usePost<{ items: Webhook[] }>('/webhook/getall');
   const connected = webhooks.data?.items.filter((w) => w.status === 'CONNECTED') ?? [];
 
   const [form, setForm] = useState({ displayName: '', environment: 'development' as Environment, accountLabel: '', webhookId: '', description: '', allowedResources: '' });
@@ -36,8 +36,8 @@ export function ConnectIntegrationPage() {
   const [privateKey, setPrivateKey] = useState('');
   const [localErrors, setLocalErrors] = useState<Record<string, string>>({});
   const [created, setCreated] = useState<IntegrationDetail | null>(null);
-  const submit = useMutation((body: unknown) => api.post<IntegrationDetail>('/integrations', body));
-  const oauthStart = useMutation((body: unknown) => api.post<{ authorizeUrl: string }>('/integrations/oauth/start', body));
+  const submit = useMutation((body: unknown) => api.post<IntegrationDetail>('/integration/save', body));
+  const oauthStart = useMutation((body: unknown) => api.post<{ authorizeUrl: string }>('/integration/oauthStart', body));
   const [oauthClient, setOauthClient] = useState({ clientId: '', clientSecret: '' });
 
   if (!loaded) return <Spinner />;

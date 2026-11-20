@@ -22,8 +22,23 @@ function body(overrides: Partial<ExecuteResponseBody> & { status?: ExecuteRespon
   };
 }
 
+/** The agent API envelope around a route's payload; a decision's code and reason on 4xx/5xx. */
+function envelope(details: unknown, httpStatus = 200) {
+  const decision = details as Partial<ExecuteResponseBody> | null;
+  if (httpStatus < 400) return { status: '10000', msg: 'Request Execute Successfully', error: null, details, totalRecords: 1 };
+  return { status: '10001', msg: '', error: decision?.reason ?? 'failed', code: decision?.decision_code ?? 'ERROR', details, totalRecords: 0 };
+}
+
+/** A failure that is not a decision (validation, not found, unauthenticated). */
+function failure(code: string, error: string, details: unknown = null) {
+  return { status: '10001', msg: '', error, code, details, totalRecords: 0 };
+}
+
+const isEnvelope = (r: unknown) => !!r && typeof r === 'object' && ((r as { status?: unknown }).status === '10000' || (r as { status?: unknown }).status === '10001');
+
 function client(response: unknown, status = 200) {
-  const fetchMock = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify(response), { status, headers: { 'content-type': 'application/json' } }));
+  const payload = isEnvelope(response) ? response : envelope(response, status);
+  const fetchMock = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify(payload), { status, headers: { 'content-type': 'application/json' } }));
   return { tv: new TokenVault({ apiKey: KEY, baseUrl: 'http://tv.test/', fetch: fetchMock as unknown as typeof fetch }), fetchMock };
 }
 
@@ -33,7 +48,7 @@ describe('TokenVault SDK', () => {
     const r = await tv.execute({ integrationId: 'int_1', operation: 'github.issues.create', resource: { repository: 'a/b' }, input: { title: 't' } });
     expect(r).toMatchObject({ data: { number: 44 }, requestId: 'req_1', upstreamStatus: 201 });
     const [url, init] = fetchMock.mock.calls[0]!;
-    expect(url).toBe('http://tv.test/agent/v1/execute');
+    expect(url).toBe('http://tv.test/agent/v1/request/execute');
     expect((init!.headers as Record<string, string>).authorization).toBe(`Bearer ${KEY}`);
     const sent = JSON.parse(init!.body as string);
     expect(sent).toMatchObject({ integration_id: 'int_1', operation: 'github.issues.create', resource: { repository: 'a/b' } });
@@ -83,8 +98,8 @@ describe('TokenVault SDK', () => {
 
     const approval = { approval_id: 'apv_1', status: 'APPROVED', integration_id: 'int_1', operation: 'github.issues.create', resource: { repository: 'a/b' }, input: { title: 't' } };
     const fetchMock = vi.fn(async (url: string | URL | Request, _init?: RequestInit) => {
-      const payload = String(url).endsWith('/agent/v1/approvals/apv_1') ? approval : body({ approval: { approval_id: 'apv_1', status: 'EXECUTED', expires_at: '' } });
-      return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } });
+      const payload = String(url).endsWith('/agent/v1/approval/getbyid/apv_1') ? approval : body({ approval: { approval_id: 'apv_1', status: 'EXECUTED', expires_at: '' } });
+      return new Response(JSON.stringify(envelope(payload)), { status: 200, headers: { 'content-type': 'application/json' } });
     });
     const tv = new TokenVault({ apiKey: KEY, baseUrl: 'http://tv.test', fetch: fetchMock as unknown as typeof fetch });
     expect(await tv.waitForApproval('apv_1')).toMatchObject({ status: 'APPROVED' });
@@ -128,7 +143,7 @@ describe('TokenVault SDK', () => {
     const d = await tv.forUser('jwt.ada').delegate({ grantId: 'grt_1', label: 'Triage helper', operations: ['github.issues.create'], maxRequests: 5 });
     expect(d.token).toMatch(/^tvdt_/);
     const [url, init] = fetchMock.mock.calls[0]!;
-    expect(url).toBe('http://tv.test/agent/v1/delegations');
+    expect(url).toBe('http://tv.test/agent/v1/delegation/save');
     expect(JSON.parse(init!.body as string)).toEqual({ grant_id: 'grt_1', label: 'Triage helper', operations: ['github.issues.create'], resources: [], max_requests: 5, on_behalf_of: 'jwt.ada' });
 
     const sub = new TokenVault({ apiKey: d.token, baseUrl: 'http://tv.test', fetch: fetchMock as unknown as typeof fetch });
@@ -136,7 +151,7 @@ describe('TokenVault SDK', () => {
     expect(tv.isDelegated).toBe(false);
     expect(inspect(sub)).not.toContain(d.token);
 
-    const refused = client({ error: { code: 'VALIDATION_ERROR', message: 'Request validation failed', details: { fields: { operations: 'github.contents.read is not granted' } } } }, 400);
+    const refused = client(failure('VALIDATION_ERROR', 'Request validation failed', { fields: { operations: 'github.contents.read is not granted' } }), 400);
     await expect(refused.tv.delegate({ grantId: 'grt_1', label: 'x', operations: ['github.contents.read'] })).rejects.toThrow(/not granted/);
   });
 
@@ -174,14 +189,48 @@ describe('TokenVault SDK', () => {
     const ok = client({ access_request_id: 'arq_1', status: 'PENDING', operations: ['github.issues.list'] }, 201);
     expect(await ok.tv.requestAccess({ integrationId: 'int_1', operations: ['github.issues.list'], justification: 'Need to triage open issues.' })).toMatchObject({ access_request_id: 'arq_1', status: 'PENDING' });
     expect(JSON.parse(ok.fetchMock.mock.calls[0]![1]!.body as string)).toMatchObject({ integration_id: 'int_1', operations: ['github.issues.list'], duration_minutes: 60 });
-    const bad = client({ error: { code: 'VALIDATION_ERROR', message: 'Destructive operations cannot be requested: github.repositories.delete' } }, 400);
-    await expect(bad.tv.requestAccess({ integrationId: 'int_1', operations: ['github.repositories.delete'], justification: 'Cleanup old repos.' })).rejects.toMatchObject({ code: 'VALIDATION_ERROR', httpStatus: 400 });
+    const bad = client(failure('VALIDATION_ERROR', 'Destructive operations cannot be requested: github.repositories.delete'), 400);
+    await expect(bad.tv.requestAccess({ integrationId: 'int_1', operations: ['github.repositories.delete'], justification: 'Cleanup old repos.' })).rejects.toMatchObject({ code: 'VALIDATION_ERROR', httpStatus: 400, message: 'Destructive operations cannot be requested: github.repositories.delete' });
+    expect(ok.fetchMock.mock.calls[0]![0]).toBe('http://tv.test/agent/v1/accessRequest/save');
+  });
+
+  it('calls the agent API routes and unwraps the envelope', async () => {
+    const caps = { agent_id: 'agt_1', grants: [] };
+    const c = client(caps);
+    expect(await c.tv.capabilities()).toEqual(caps);
+    expect(c.fetchMock.mock.calls[0]![0]).toBe('http://tv.test/agent/v1/capability/getdata');
+    expect(c.fetchMock.mock.calls[0]![1]!.method).toBe('POST');
+    await c.tv.operations();
+    expect(c.fetchMock.mock.calls[1]![0]).toBe('http://tv.test/agent/v1/operation/getall');
+    await c.tv.getRequest('req 1');
+    expect(c.fetchMock.mock.calls[2]![0]).toBe('http://tv.test/agent/v1/request/getbyid/req%201');
+    expect(c.fetchMock.mock.calls[2]![1]!.method).toBe('GET');
+    await c.tv.getAccessRequest('arq_1');
+    expect(c.fetchMock.mock.calls[3]![0]).toBe('http://tv.test/agent/v1/accessRequest/getbyid/arq_1');
+
+    const list = client({ items: [{ delegation_id: 'dlg_1' }] });
+    expect(await list.tv.listDelegations()).toEqual([{ delegation_id: 'dlg_1' }]);
+    expect(list.fetchMock.mock.calls[0]![0]).toBe('http://tv.test/agent/v1/delegation/getall');
+    expect(list.fetchMock.mock.calls[0]![1]!.method).toBe('POST');
+
+    const revoked = client({ delegation_id: 'dlg_1', status: 'REVOKED' });
+    expect(await revoked.tv.revokeDelegation('dlg_1', 'done')).toMatchObject({ status: 'REVOKED' });
+    expect(revoked.fetchMock.mock.calls[0]![0]).toBe('http://tv.test/agent/v1/delegation/revoke');
+    expect(JSON.parse(revoked.fetchMock.mock.calls[0]![1]!.body as string)).toEqual({ id: 'dlg_1', reason: 'done' });
+
+    const missing = client(failure('NOT_FOUND', 'Approval not found'), 404);
+    await expect(missing.tv.getApproval('apv_9')).rejects.toMatchObject({ code: 'NOT_FOUND', httpStatus: 404 });
+    const unauth = client(failure('AGENT_UNAUTHENTICATED', 'Invalid agent credential'), 401);
+    await expect(unauth.tv.capabilities()).rejects.toBeInstanceOf(AuthenticationError);
+    const garbage = client({ decision: 'ALLOW' }, 200);
+    garbage.fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(body()), { status: 200 })); // a bare body, not an envelope
+    await expect(garbage.tv.execute({ integrationId: 'i', operation: 'github.issues.list' })).rejects.toMatchObject({ code: 'UNEXPECTED_RESPONSE' });
   });
 
   it('reports a rotated key in its grace period once, and clears it after the switch', async () => {
     const expiry = '2026-11-06T12:00:00.000Z';
     let header: string | null = expiry;
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify(body()), { status: 200, headers: { 'content-type': 'application/json', ...(header ? { 'token-vault-key-expires': header } : {}) } }));
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(envelope(body())), { status: 200, headers: { 'content-type': 'application/json', ...(header ? { 'token-vault-key-expires': header } : {}) } }));
     const seen: string[] = [];
     const tv = new TokenVault({ apiKey: KEY, baseUrl: 'http://tv.test', fetch: fetchMock as unknown as typeof fetch, onKeyExpiry: (at) => seen.push(at) });
     expect(tv.keyExpiresAt).toBeNull();

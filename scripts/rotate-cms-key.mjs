@@ -5,7 +5,7 @@
 //
 // After the first step, restart everything: the CMS signs every published version with the
 // new key on start-up, and consumers accept either key in the meantime. Run --retire once
-// every consumer has synced (their /api/v1/providers or webhook health shows a recent sync).
+// every consumer has synced (their POST /api/v1/provider/getall or webhook health shows a recent sync).
 // In other environments, follow the same order with your secret manager (docs/CMS.md).
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';

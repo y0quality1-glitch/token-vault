@@ -97,6 +97,21 @@ export function createServer(tv: TokenVault): TokenVaultMcpServer {
           structuredContent: { request_id: body.request_id, upstream_status: body.execution.upstream_status, simulated: body.execution.simulated, result: body.result },
         };
       }
+      if (body.decision === 'ALLOW' && body.execution.status === 'HANDED_OFF' && body.authorization) {
+        // The issued credential (short-lived credential mode) is never put in the model's context.
+        const how = body.authorization.mode === 'DECISION_ONLY' ? 'decision only: the calling application makes the call with its own credentials' : 'short-lived credential: the calling application makes the call with a token Token Vault issued';
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                `Token Vault allowed ${labelOf(operation)}, but did not run it: the ${providerName} integration is set to ${how}. This tool cannot make that call, so nothing was done. Token Vault request ${body.request_id}.\n` +
+                'Tell the user. To use this operation through this tool, an administrator can switch the integration to Brokered.',
+            },
+          ],
+          structuredContent: { request_id: body.request_id, decision: 'ALLOW', handed_off: true, mode: body.authorization.mode, decision_token: body.authorization.decision_token, expires_at: body.authorization.expires_at },
+        };
+      }
       if (body.decision_code === 'APPROVAL_REQUIRED' && body.approval) {
         return {
           content: [

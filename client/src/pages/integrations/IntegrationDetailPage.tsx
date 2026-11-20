@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Ban, Github, Pencil, Play, Power, RefreshCw, Trash2 } from 'lucide-react';
-import { PERMISSIONS, ROTATION_INTERVAL_OPTIONS, rotationState, type IntegrationDetail } from '@token-vault/shared';
+import { PERMISSIONS, ROTATION_INTERVAL_OPTIONS, rotationState, type AccessMode, type IntegrationDetail } from '@token-vault/shared';
 import { getProvider, operationLabel } from '@/lib/providers';
 import { useApi, useMutation } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
@@ -9,7 +9,7 @@ import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardBody, CardHeader, DetailList } from '@/components/ui/card';
 import { Badge, EnvBadge, StatusBadge } from '@/components/ui/badge';
-import { Field, Input, Select, Textarea } from '@/components/ui/form';
+import { Field, Input, RadioCard, Select, Textarea } from '@/components/ui/form';
 import { Callout, EmptyState, ErrorState, FormError, PageSkeleton } from '@/components/ui/feedback';
 import { ConfirmDialog, Dialog } from '@/components/ui/dialog';
 import { DataTable } from '@/components/ui/table';
@@ -23,7 +23,7 @@ export function IntegrationDetailPage() {
   const navigate = useNavigate();
   const toast = useToast();
   const { can } = useAuth();
-  const { data: i, error, loading, reload, setData } = useApi<IntegrationDetail>(`/integrations/${id}`);
+  const { data: i, error, loading, reload, setData } = useApi<IntegrationDetail>(`/integration/getbyid/${id}`);
   const [dialog, setDialog] = useState<null | 'edit' | 'rotate' | 'disable' | 'delete'>(null);
   const [busy, setBusy] = useState(false);
   const manage = can(PERMISSIONS.INTEGRATION_MANAGE);
@@ -62,7 +62,7 @@ export function IntegrationDetailPage() {
                 loading={busy}
                 onClick={() =>
                   action(async () => {
-                    const r = await api.post<{ valid: boolean; upstreamStatus: number | null; integration: IntegrationDetail }>(`/integrations/${i.id}/test`);
+                    const r = await api.post<{ valid: boolean; upstreamStatus: number | null; integration: IntegrationDetail }>('/integration/test', { id: i.id });
                     setData(r.integration);
                     if (r.valid) toast.success('Connection test passed', `Webhook decrypted the credential; upstream responded ${r.upstreamStatus} (simulated).`);
                     else toast.error('Connection test failed', `Upstream responded ${r.upstreamStatus ?? 'n/a'}. Rotate the credential.`);
@@ -84,7 +84,7 @@ export function IntegrationDetailPage() {
                   variant="outline"
                   onClick={() =>
                     action(async () => {
-                      setData(await api.post<IntegrationDetail>(`/integrations/${i.id}/enable`));
+                      setData(await api.post<IntegrationDetail>('/integration/enable', { id: i.id }));
                       toast.success('Integration enabled');
                     })
                   }
@@ -153,6 +153,8 @@ export function IntegrationDetailPage() {
         </Card>
       </div>
 
+      <AccessModeCard i={i} manage={manage} onSaved={setData} />
+
       <Card>
         <CardHeader
           title="Granted agents & allowed scopes"
@@ -203,7 +205,7 @@ export function IntegrationDetailPage() {
         loading={busy}
         onConfirm={() =>
           action(async () => {
-            setData(await api.post<IntegrationDetail>(`/integrations/${i.id}/disable`));
+            setData(await api.post<IntegrationDetail>('/integration/disable', { id: i.id }));
             setDialog(null);
             toast.success('Integration disabled');
           })
@@ -219,7 +221,7 @@ export function IntegrationDetailPage() {
         loading={busy}
         onConfirm={() =>
           action(async () => {
-            const r = await api.del<{ credentialShredded: boolean; grantsRevoked: number }>(`/integrations/${i.id}`);
+            const r = await api.del<{ credentialShredded: boolean; grantsRevoked: number }>(`/integration/delete/${i.id}`);
             toast.success('Integration deleted', `${r.grantsRevoked} grant(s) revoked. Credential ${r.credentialShredded ? 'shredded by webhook' : 'could not be reached for shredding'}.`);
             navigate('/integrations/connected');
           })
@@ -235,7 +237,7 @@ function EditMetadataDialog({ open, integration, onClose, onSaved }: { open: boo
   useEffect(() => {
     if (open) setForm({ displayName: integration.displayName, accountLabel: integration.accountLabel, description: integration.description, allowedResources: integration.allowedResources.join('\n') });
   }, [open, integration]);
-  const save = useMutation((body: unknown) => api.patch<IntegrationDetail>(`/integrations/${integration.id}`, body));
+  const save = useMutation((body: unknown) => api.post<IntegrationDetail>('/integration/save', { ...(body as object), id: integration.id }));
   const fe = save.fieldErrors;
   return (
     <Dialog
@@ -287,7 +289,7 @@ function RotateDialog({ open, integration, onClose, onSaved }: { open: boolean; 
   const toast = useToast();
   const isApp = integration.authType === 'GITHUB_APP';
   const [secret, setSecret] = useState('');
-  const rotate = useMutation((s: string) => api.post<IntegrationDetail>(`/integrations/${integration.id}/rotate`, isApp ? { privateKey: s } : { secret: s }));
+  const rotate = useMutation((s: string) => api.post<IntegrationDetail>('/integration/rotate', isApp ? { id: integration.id, privateKey: s } : { id: integration.id, secret: s }));
   useEffect(() => {
     if (!open) setSecret('');
   }, [open]);
@@ -346,7 +348,7 @@ function RotateDialog({ open, integration, onClose, onSaved }: { open: boolean; 
 /** Rotation reminder: how often this credential should be rotated, and when it is next due. */
 function RotationReminder({ i, manage, oauth, onSaved }: { i: IntegrationDetail; manage: boolean; oauth: boolean; onSaved: (next: IntegrationDetail) => void }) {
   const toast = useToast();
-  const save = useMutation((intervalDays: number | null) => api.put<IntegrationDetail>(`/integrations/${i.id}/rotation-policy`, { intervalDays }));
+  const save = useMutation((intervalDays: number | null) => api.post<IntegrationDetail>('/integration/setRotationPolicy', { id: i.id, intervalDays }));
   const r = rotationState(i);
   const options = ROTATION_INTERVAL_OPTIONS.includes(i.rotationIntervalDays as (typeof ROTATION_INTERVAL_OPTIONS)[number]) || !i.rotationIntervalDays ? ROTATION_INTERVAL_OPTIONS : [...ROTATION_INTERVAL_OPTIONS, i.rotationIntervalDays];
   const tone = r.state === 'overdue' ? 'border-amber-300 bg-amber-50 text-amber-900' : r.state === 'due_soon' ? 'border-sky-200 bg-sky-50 text-sky-900' : 'border-slate-200 bg-slate-50 text-slate-700';
@@ -387,5 +389,78 @@ function RotationReminder({ i, manage, oauth, onSaved }: { i: IntegrationDetail;
       </p>
       <FormError error={save.error} />
     </div>
+  );
+}
+
+const ACCESS_MODE_TEXT: Record<AccessMode, { title: string; description: string }> = {
+  BROKERED: {
+    title: 'Brokered',
+    description: 'Your webhook calls the application and returns the result. The agent never sees a credential, and Filter responses policies apply.',
+  },
+  DECISION_ONLY: {
+    title: 'Decision only',
+    description: 'Token Vault checks every policy and returns a signed decision token. The caller calls the application with its own credentials; your services can verify the token.',
+  },
+  SHORT_LIVED_CREDENTIAL: {
+    title: 'Short-lived credential',
+    description: 'Your webhook issues a token for the allowed request (a GitHub App token for one repository, or the OAuth access token) and the caller makes the call with it.',
+  },
+};
+
+/** How allowed requests are carried out: by the webhook, or by the caller (decision only, short-lived credential). */
+function AccessModeCard({ i, manage, onSaved }: { i: IntegrationDetail; manage: boolean; onSaved: (next: IntegrationDetail) => void }) {
+  const toast = useToast();
+  const [pick, setPick] = useState<AccessMode | null>(null);
+  const save = useMutation((accessMode: AccessMode) => api.post<IntegrationDetail>('/integration/setAccessMode', { id: i.id, accessMode }));
+  const method = getProvider(i.provider)?.auth.find((a) => a.id === i.authType);
+  const issuable = method?.kind === 'oauth2' || (method?.kind === 'plugin' && method.plugin === 'github_app');
+  const apply = async (mode: AccessMode) => {
+    const next = await save.run(mode);
+    if (next) {
+      onSaved(next);
+      setPick(null);
+      toast.success(`Access mode: ${ACCESS_MODE_TEXT[mode].title}`);
+    }
+  };
+  return (
+    <Card>
+      <CardHeader title="Access mode" description="What happens after Token Vault allows a request for this integration." />
+      <CardBody className="space-y-3">
+        <div className="grid gap-3 lg:grid-cols-3" role="radiogroup" aria-label="Access mode">
+          {(Object.keys(ACCESS_MODE_TEXT) as AccessMode[]).map((mode) => (
+            <RadioCard
+              key={mode}
+              checked={i.accessMode === mode}
+              disabled={!manage || save.pending || (mode === 'SHORT_LIVED_CREDENTIAL' && !issuable)}
+              onChange={() => mode !== i.accessMode && (mode === 'BROKERED' ? void apply(mode) : setPick(mode))}
+              title={ACCESS_MODE_TEXT[mode].title}
+              badge={mode === 'BROKERED' ? <Badge tone="green">Most secure</Badge> : undefined}
+              description={mode === 'SHORT_LIVED_CREDENTIAL' && !issuable ? 'Needs a GitHub App or OAuth connection: a stored key or token cannot be narrowed or made to expire.' : ACCESS_MODE_TEXT[mode].description}
+            />
+          ))}
+        </div>
+        {i.accessMode !== 'BROKERED' && (
+          <Callout tone="warning">
+            Token Vault does not see the application's response in this mode, so Filter responses policies cannot apply: requests they cover are refused.
+            {i.accessMode === 'SHORT_LIVED_CREDENTIAL' && ' The webhook must allow it with WEBHOOK_ALLOW_CREDENTIAL_ISSUE=true.'}
+          </Callout>
+        )}
+        <FormError error={save.error} />
+      </CardBody>
+      <ConfirmDialog
+        open={!!pick}
+        onClose={() => setPick(null)}
+        tone="primary"
+        title={`Switch to ${pick ? ACCESS_MODE_TEXT[pick].title.toLowerCase() : ''}?`}
+        description={
+          pick === 'DECISION_ONLY'
+            ? 'Agents using this integration get a signed decision instead of a result, and call the application with credentials of their own. Every policy still applies to the decision.'
+            : 'Agents using this integration receive a real, short-lived token and call the application themselves. They can use it for anything it allows until it expires (GitHub App tokens: 1 hour, this repository and permissions only).'
+        }
+        confirmLabel="Switch"
+        loading={save.pending}
+        onConfirm={() => pick && void apply(pick)}
+      />
+    </Card>
   );
 }

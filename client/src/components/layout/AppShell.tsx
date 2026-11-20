@@ -93,7 +93,11 @@ function useNavCounts(pathname: string): { pendingRequests: number; reviewsDue: 
   useEffect(() => {
     let cancelled = false;
     const load = () =>
-      Promise.all([api.get<{ pending: number }>('/grant-requests?status=PENDING'), api.get<{ due: number }>('/access-reviews?summary=1'), api.get<{ pending: number }>('/approvals?status=PENDING')])
+      Promise.all([
+        api.post<{ pending: number }>('/grantRequest/getall', { status: 'PENDING' }),
+        api.post<{ due: number }>('/accessReview/getdata', { summary: '1' }),
+        api.post<{ pending: number }>('/approval/getall', { status: 'PENDING' }),
+      ])
         .then(([r, v, a]) => !cancelled && setCounts({ pendingRequests: r.pending, reviewsDue: v.due, pendingApprovals: a.pending }))
         .catch(() => undefined);
     void load();

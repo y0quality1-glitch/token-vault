@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
-import { DEMO_PASSWORD, login } from './helpers';
+import { DEMO_PASSWORD, details, login } from './helpers';
 
 /**
  * Response filtering, end to end with the real customer webhook:
@@ -23,15 +23,15 @@ test.describe.serial('response filtering (Demo Organization)', () => {
   const token = `ghp_${'a'.repeat(30)}${String(run).padStart(6, '0')}`;
 
   const call = (operation: string, input: Record<string, unknown> = {}) =>
-    agentApi.post('/agent/v1/execute', { data: { integration_id: 'int_github_001', operation, resource: { repository: REPO }, input } }).then(async (r) => ({ status: r.status(), body: await r.json() }));
+    agentApi.post('/agent/v1/request/execute', { data: { integration_id: 'int_github_001', operation, resource: { repository: REPO }, input } }).then(async (r) => ({ status: r.status(), body: await details(r) }));
   const listIssues = () => call('github.issues.list');
 
   test.beforeAll(async ({ playwright, browser }) => {
     admin = await playwright.request.newContext({ baseURL: API });
     await admin.post('/api/v1/auth/login', { data: { email: 'owner@demo.test', password: DEMO_PASSWORD } });
-    await admin.post('/api/v1/auth/select-organization', { data: { organizationId: 'org_demo0000000001' } });
-    const agent = await (await admin.post('/api/v1/agents', { data: { name: agentName, environment: 'development', ownerTeam: 'Support', agentType: 'AI_AGENT' } })).json();
-    const grant = await admin.post('/api/v1/grants', {
+    await admin.post('/api/v1/auth/selectOrganization', { data: { organizationId: 'org_demo0000000001' } });
+    const agent = await details(await admin.post('/api/v1/agent/save', { data: { name: agentName, environment: 'development', ownerTeam: 'Support', agentType: 'AI_AGENT' } }));
+    const grant = await admin.post('/api/v1/grant/save', {
       data: { name: `${agentName} docs`, agentId: agent.agent.id, integrationId: 'int_github_001', environment: 'development', scopes: ['github.issues.list', 'github.issues.create'], repositories: [REPO], validFrom: new Date(Date.now() - 60_000).toISOString(), expiresAt: new Date(Date.now() + 86_400_000).toISOString(), rateLimitPerMinute: 60 },
     });
     expect(grant.ok(), await grant.text()).toBe(true);
@@ -81,7 +81,7 @@ test.describe.serial('response filtering (Demo Organization)', () => {
     expect(text).toContain('[REDACTED:secret]');
     expect(r.body.result[0]).not.toHaveProperty('user');
     expect(r.body.filtering.masked).toEqual(expect.arrayContaining([{ kind: 'email', count: 1 }, { kind: 'secret', count: 1 }]));
-    const record = await (await admin.get(`/api/v1/access-requests/${r.body.request_id}`)).json();
+    const record = await details(await admin.get(`/api/v1/accessRequest/getbyid/${r.body.request_id}`));
     expect(record.filtering).toMatchObject({ appliedBy: 'webhook', policyNames: [policyName] });
     expect(JSON.stringify(record)).not.toContain(email);
   });

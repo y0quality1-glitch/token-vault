@@ -30,7 +30,7 @@ export function AgentDetailPage() {
   const toast = useToast();
   const { can, session } = useAuth();
   const { setCredential } = usePlayground();
-  const { data: a, error, loading, reload } = useApi<AgentDetail>(`/agents/${id}`);
+  const { data: a, error, loading, reload } = useApi<AgentDetail>(`/agent/getbyid/${id}`);
   const [tab, setTab] = useState<Tab>('overview');
   const [confirm, setConfirm] = useState<null | 'rotate' | 'disable' | 'revoke' | 'revokePrevious'>(null);
   const [graceMinutes, setGraceMinutes] = useState(15);
@@ -80,7 +80,7 @@ export function AgentDetailPage() {
                     loading={busy}
                     onClick={() =>
                       act(async () => {
-                        await api.post(`/agents/${a.id}/enable`);
+                        await api.post('/agent/enable', { id: a.id });
                         toast.success('Agent enabled');
                       })
                     }
@@ -245,7 +245,7 @@ export function AgentDetailPage() {
         loading={busy}
         onConfirm={() =>
           act(async () => {
-            const r = await api.post<{ credential: IssuedCredential }>(`/agents/${a.id}/rotate-credential`, { graceMinutes });
+            const r = await api.post<{ credential: IssuedCredential }>('/agent/rotateCredential', { id: a.id, graceMinutes });
             setIssued(r.credential);
           })
         }
@@ -273,7 +273,7 @@ export function AgentDetailPage() {
         loading={busy}
         onConfirm={() =>
           act(async () => {
-            await api.post(`/agents/${a.id}/revoke-previous-credential`);
+            await api.post('/agent/revokePreviousCredential', { id: a.id });
             toast.success('Old key revoked');
           })
         }
@@ -287,7 +287,7 @@ export function AgentDetailPage() {
         loading={busy}
         onConfirm={() =>
           act(async () => {
-            await api.post(`/agents/${a.id}/disable`);
+            await api.post('/agent/disable', { id: a.id });
             toast.success('Agent disabled');
           })
         }
@@ -301,7 +301,7 @@ export function AgentDetailPage() {
         loading={busy}
         onConfirm={() =>
           act(async () => {
-            const r = await api.post<{ revoked: number }>(`/agents/${a.id}/revoke-grants`);
+            const r = await api.post<{ revoked: number }>('/agent/revokeGrants', { id: a.id });
             toast.success(`${r.revoked} grant(s) revoked`);
           })
         }
@@ -331,7 +331,7 @@ function ConfigurationTab({ agent, canManage, onSaved }: { agent: Agent; canMana
   const toast = useToast();
   const [form, setForm] = useState<AgentFormValues>(agentToForm(agent));
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const save = useMutation((body: unknown) => api.patch<Agent>(`/agents/${agent.id}`, body));
+  const save = useMutation((body: unknown) => api.post<Agent>('/agent/save', { ...(body as object), id: agent.id }));
   useEffect(() => setForm(agentToForm(agent)), [agent]);
   return (
     <Card>

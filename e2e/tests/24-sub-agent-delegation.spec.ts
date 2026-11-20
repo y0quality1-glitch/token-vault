@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
-import { DEMO_PASSWORD, login } from './helpers';
+import { DEMO_PASSWORD, details, login } from './helpers';
 
 /**
  * Delegation to sub-agents, end to end:
@@ -31,18 +31,18 @@ test.describe.serial('delegation to sub-agents (Demo Organization)', () => {
     return c;
   }
   const execute = async (token: string, operation: string) => {
-    const r = await (await as(token)).post('/agent/v1/execute', { data: { integration_id: 'int_github_001', operation, resource: { repository: 'demo-org/demo-repo' }, input: { title: 'From a sub-agent', body: '' } } });
-    return { status: r.status(), body: await r.json() };
+    const r = await (await as(token)).post('/agent/v1/request/execute', { data: { integration_id: 'int_github_001', operation, resource: { repository: 'demo-org/demo-repo' }, input: { title: 'From a sub-agent', body: '' } } });
+    return { status: r.status(), body: await details(r) };
   };
 
   test.beforeAll(async ({ playwright, browser }) => {
     playwrightRef = playwright;
     admin = await playwright.request.newContext({ baseURL: API });
     await admin.post('/api/v1/auth/login', { data: { email: 'owner@demo.test', password: DEMO_PASSWORD } });
-    await admin.post('/api/v1/auth/select-organization', { data: { organizationId: 'org_demo0000000001' } });
-    const agent = await (await admin.post('/api/v1/agents', { data: { name: agentName, environment: 'development', ownerTeam: 'Platform AI', agentType: 'AI_AGENT' } })).json();
+    await admin.post('/api/v1/auth/selectOrganization', { data: { organizationId: 'org_demo0000000001' } });
+    const agent = await details(await admin.post('/api/v1/agent/save', { data: { name: agentName, environment: 'development', ownerTeam: 'Platform AI', agentType: 'AI_AGENT' } }));
     agentKey = agent.credential.apiKey;
-    const grant = await admin.post('/api/v1/grants', {
+    const grant = await admin.post('/api/v1/grant/save', {
       data: {
         name: `${agentName} issues`,
         agentId: agent.agent.id,
@@ -56,7 +56,7 @@ test.describe.serial('delegation to sub-agents (Demo Organization)', () => {
       },
     });
     expect(grant.ok(), await grant.text()).toBe(true);
-    grantId = (await grant.json()).id;
+    grantId = (await details(grant)).id;
     page = await browser.newPage();
   });
 
@@ -68,13 +68,13 @@ test.describe.serial('delegation to sub-agents (Demo Organization)', () => {
 
   test('the agent delegates a narrower slice of its grant; widening it is refused', async () => {
     const agentApi = await as(agentKey);
-    const wider = await agentApi.post('/agent/v1/delegations', { data: { grant_id: grantId, label, operations: ['github.contents.read'] } });
+    const wider = await agentApi.post('/agent/v1/delegation/save', { data: { grant_id: grantId, label, operations: ['github.contents.read'] } });
     expect(wider.status()).toBe(400);
     expect(JSON.stringify(await wider.json())).toContain('a delegation can only narrow');
 
-    const created = await agentApi.post('/agent/v1/delegations', { data: { grant_id: grantId, label, operations: ['github.issues.list'], max_requests: 5, expires_in_seconds: 1800 } });
+    const created = await agentApi.post('/agent/v1/delegation/save', { data: { grant_id: grantId, label, operations: ['github.issues.list'], max_requests: 5, expires_in_seconds: 1800 } });
     expect(created.status(), await created.text()).toBe(201);
-    const body = await created.json();
+    const body = await details(created);
     expect(body).toMatchObject({ label, operations: ['github.issues.list'], resources: ['demo-org/demo-repo'], max_requests: 5, status: 'ACTIVE', depth: 1 });
     subToken = body.token;
     expect(subToken).toMatch(/^tvdt_/);
@@ -83,12 +83,12 @@ test.describe.serial('delegation to sub-agents (Demo Organization)', () => {
   test('the sub-agent can do only what it was delegated, and cannot ask for more', async () => {
     expect((await execute(subToken, 'github.issues.list')).body).toMatchObject({ decision: 'ALLOW', delegation: { label, used: 1, max_requests: 5 } });
     expect((await execute(subToken, 'github.issues.create')).body).toMatchObject({ decision: 'DENY', decision_code: 'DELEGATION_DENIED' });
-    const ask = await (await as(subToken)).post('/agent/v1/access-requests', { data: { integration_id: 'int_github_001', operations: ['github.issues.create'], justification: 'Need to file the issue myself', duration_minutes: 30 } });
+    const ask = await (await as(subToken)).post('/agent/v1/accessRequest/save', { data: { integration_id: 'int_github_001', operations: ['github.issues.create'], justification: 'Need to file the issue myself', duration_minutes: 30 } });
     expect(ask.status()).toBe(403);
 
-    const nested = await (await as(subToken)).post('/agent/v1/delegations', { data: { label: `Reader ${run}`, operations: ['github.issues.list'], max_requests: 2 } });
+    const nested = await (await as(subToken)).post('/agent/v1/delegation/save', { data: { label: `Reader ${run}`, operations: ['github.issues.list'], max_requests: 2 } });
     expect(nested.status(), await nested.text()).toBe(201);
-    nestedToken = (await nested.json()).token;
+    nestedToken = (await details(nested)).token;
     expect((await execute(nestedToken, 'github.issues.list')).body.decision).toBe('ALLOW');
   });
 

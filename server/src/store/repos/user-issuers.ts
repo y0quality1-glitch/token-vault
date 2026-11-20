@@ -1,28 +1,24 @@
-import { and, asc, eq } from 'drizzle-orm';
 import type { UserIssuer } from '@token-vault/shared';
-import { db, type Executor } from '../../db/client';
-import { userIssuers } from '../../db/schema';
+import { db, type Executor } from '../../databases/client';
+import { UserIssuerEntity } from '../../entities';
+import { deleteBy, insertRow, oneBy, updateBy } from './orm';
 
 export async function listIssuers(organizationId: string, ex: Executor = db): Promise<UserIssuer[]> {
-  return ex.select().from(userIssuers).where(eq(userIssuers.organizationId, organizationId)).orderBy(asc(userIssuers.createdAt));
+  return ex.find(UserIssuerEntity, { where: { organizationId }, order: { createdAt: 'ASC' } });
 }
 
 export async function getIssuer(organizationId: string, id: string, ex: Executor = db): Promise<UserIssuer | null> {
-  const [row] = await ex.select().from(userIssuers).where(and(eq(userIssuers.organizationId, organizationId), eq(userIssuers.id, id)));
-  return row ?? null;
+  return oneBy(ex, UserIssuerEntity, { organizationId, id });
 }
 
 export async function insertIssuer(record: UserIssuer, ex: Executor = db): Promise<UserIssuer> {
-  const [row] = await ex.insert(userIssuers).values(record).returning();
-  return row!;
+  return insertRow(ex, UserIssuerEntity, record, { id: record.id });
 }
 
 export async function updateIssuer(organizationId: string, id: string, patch: Partial<Omit<UserIssuer, 'id' | 'organizationId' | 'createdAt'>>, ex: Executor = db): Promise<UserIssuer | null> {
-  const [row] = await ex.update(userIssuers).set(patch).where(and(eq(userIssuers.organizationId, organizationId), eq(userIssuers.id, id))).returning();
-  return row ?? null;
+  return (await updateBy(ex, UserIssuerEntity, { organizationId, id }, patch)) ? oneBy(ex, UserIssuerEntity, { id }) : null;
 }
 
 export async function deleteIssuer(organizationId: string, id: string, ex: Executor = db): Promise<boolean> {
-  const rows = await ex.delete(userIssuers).where(and(eq(userIssuers.organizationId, organizationId), eq(userIssuers.id, id))).returning({ id: userIssuers.id });
-  return rows.length > 0;
+  return (await deleteBy(ex, UserIssuerEntity, { organizationId, id })) > 0;
 }

@@ -64,6 +64,12 @@ if (!existsSync(serverEnv)) {
   console.log('[setup] created server/.env');
 }
 
+// Upgrade: sessions are JWTs signed with SESSION_JWT_SECRET (optional outside production).
+if (existsSync(serverEnv) && !readVar(serverEnv, 'SESSION_JWT_SECRET')) {
+  writeFileSync(serverEnv, readFileSync(serverEnv, 'utf8').trimEnd() + `\nSESSION_JWT_SECRET=${randomBytes(32).toString('base64url')}\n`);
+  console.log('[setup] added SESSION_JWT_SECRET to server/.env');
+}
+
 // Upgrade: server/.env files created before the audit chain lack AUDIT_SIGNING_KEY.
 if (existsSync(serverEnv) && !readVar(serverEnv, 'AUDIT_SIGNING_KEY')) {
   writeFileSync(serverEnv, readFileSync(serverEnv, 'utf8').trimEnd() + `\nAUDIT_SIGNING_KEY=${randomBytes(32).toString('base64url')}\n`);
