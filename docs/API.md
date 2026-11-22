@@ -35,6 +35,7 @@ Authenticated with the `tv_session` httpOnly cookie, which is set by `POST /auth
 | POST | `/integration/getCatalog` | any role | |
 | POST | `/integration/getall` | any role | |
 | POST | `/provider/getall` · GET `/provider/getbyid/:key` | any role | application definitions and catalog status |
+| POST | `/secretType/getall` · GET `/secretType/getbyid/:key` | any role | secret types (spec 4.9.3) the control plane trusts: `{search?, filters: {category?}}` → `{types, categories, catalog}`; each type carries `categoryLabel`, `digest` and `source` (`catalog` or `bundled`) |
 | POST | `/integration/save` | `integration:manage` | create (no `id`). PAT: `{provider, webhookId, displayName, environment, accountLabel, authType: "PAT", secret, allowedResources, description}`. GitHub App: `{…, authType: "GITHUB_APP", appId, installationId (optional), keySource: "stored" \| "webhook_env", privateKey (PEM, when stored)}`; `accountLabel` is optional and defaults to the installation's account. Secrets are forwarded to the webhook and never stored. An invalid key or unknown installation returns 400 `INVALID_PRIVATE_KEY` / `INSTALLATION_NOT_FOUND` / `APP_KEY_NOT_CONFIGURED` |
 | GET | `/integration/getbyid/:id` | any role | includes granted agents |
 | POST | `/integration/save` | `integration:manage` | with `id`: metadata only |
@@ -199,7 +200,7 @@ Every endpoint requires a valid control-plane signature: the `x-tv-timestamp`, `
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/internal/v1/health?challenge=` | identity proof: `challenge_response = HMAC("health:<challenge>:<instance_id>")` |
+| GET | `/internal/v1/health?challenge=` | identity proof: `challenge_response = HMAC("health:<challenge>:<instance_id>")`; also reports the secret types the webhook verified (`secret_types: {count, source, last_success_at, last_error}`) |
 | POST | `/internal/v1/credentials` | encrypt and store → `{credential_ref, masked_identifier, fingerprint, …}` |
 | POST | `/internal/v1/credentials/:ref/rotate` | re-encrypt with a new secret |
 | POST | `/internal/v1/credentials/:ref/test` | decrypt and call the provider; returns validity only |

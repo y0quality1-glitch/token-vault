@@ -10,6 +10,7 @@ import * as oauth from './providers/oauth';
 import { ExecutionError, executeOperation, getExecutableOperation, injectionFor, testCredential, type ProviderCall, type ProviderResult } from './providers/executor';
 import * as app from './providers/github-app';
 import { catalogSync, registry } from './providers/registry';
+import { secretTypeSync, secretTypes } from './providers/secret-types';
 import type { TLSSocket } from 'node:tls';
 import { checkClient, describeCertificate } from './security/tls';
 
@@ -351,6 +352,8 @@ export function buildRouter() {
       },
       providers: registry.list().map((e) => ({ key: e.definition.key, version: e.definition.version, source: e.source, digest: (e.digest ?? createHash('sha256').update(JSON.stringify(e.definition)).digest('hex')).slice(0, 16) })),
       catalog: catalogSync ? { key_ids: catalogSync.status.keyIds, last_success_at: catalogSync.status.lastSuccessAt, last_error: catalogSync.status.lastError, restored_from: catalogSync.status.restored?.savedAt ?? null } : null,
+      // Secret types this webhook validates values against (verified by the webhook itself).
+      secret_types: { count: secretTypes.list().length, source: secretTypeSync ? 'catalog' : 'bundled', last_success_at: secretTypeSync?.status.lastSuccessAt ?? null, last_error: secretTypeSync?.status.lastError ?? null },
       challenge_response: hmacHex(req.tvSecret ?? config.signingSecret, `health:${challenge}:${config.instanceId}`),
       // Transport security of this link, as the webhook sees it (certificate details are public).
       tls: config.tls

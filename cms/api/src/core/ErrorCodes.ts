@@ -27,8 +27,8 @@ export const ErrorCodes = {
   E30002: { type: 'domain', name: 'TOO_MANY_ATTEMPTS', message: 'Too many failed attempts. Try again in a minute.', status: 429 },
   E30003: { type: 'domain', name: 'SESSION_EXPIRED', message: 'Your session has expired. Please sign in again.', status: 401 },
   E30004: { type: 'domain', name: 'ROLE_REQUIRED', message: 'Your role does not allow this action.', status: 403 },
-  E30010: { type: 'domain', name: 'KEY_TAKEN', message: 'An application with this key already exists.', status: 409 },
-  E30011: { type: 'domain', name: 'ARCHIVED', message: 'This application is archived.', status: 409 },
+  E30010: { type: 'domain', name: 'KEY_TAKEN', message: 'A catalog entry with this key already exists.', status: 409 },
+  E30011: { type: 'domain', name: 'ARCHIVED', message: 'This catalog entry is archived.', status: 409 },
   E30012: { type: 'domain', name: 'OPEN_VERSION_EXISTS', message: 'Another version is still open.', status: 409 },
   E30013: { type: 'domain', name: 'NOT_EDITABLE', message: 'This version cannot be edited.', status: 409 },
   E30014: { type: 'domain', name: 'INVALID_STATE', message: 'The version is not in a state that allows this.', status: 409 },
@@ -38,6 +38,7 @@ export const ErrorCodes = {
   E30018: { type: 'domain', name: 'HOST_CHANGE_UNACKNOWLEDGED', message: 'Confirm the hosts credentials will be sent to.', status: 409 },
   E30019: { type: 'domain', name: 'NOT_PUBLISHED', message: 'Nothing is published yet.', status: 409 },
   E30020: { type: 'domain', name: 'UNCHANGED', message: 'Nothing would change.', status: 409 },
+  E30021: { type: 'domain', name: 'NOT_APPLICABLE', message: 'This action does not apply to this kind of catalog entry.', status: 400 },
 } satisfies Record<string, ErrorCode>;
 
 export type ErrorCodeId = keyof typeof ErrorCodes;

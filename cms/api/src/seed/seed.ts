@@ -1,5 +1,5 @@
 import { In, type EntityManager } from 'typeorm';
-import { githubDefinition, validateProviderDefinition, type ProviderDefinitionInput } from '@token-vault/shared';
+import { BUILTIN_SECRET_TYPES, githubDefinition, validateProviderDefinition, validateSecretTypeDefinition, type CatalogKind, type ProviderDefinitionInput, type SecretTypeDefinitionInput } from '@token-vault/shared';
 import { SEED_MODE } from '../config';
 import { hashPassword, newId, signDefinition } from '../core/Crypto';
 import AppDatabase from '../databases/database';
@@ -34,16 +34,17 @@ export async function seed() {
     );
     await registerActiveKey(m);
     await publishSeeded(m, SEEDED(), t);
+    await publishSeeded(m, BUILTIN_SECRET_TYPES, t, 'secret_type');
   });
 }
 
 /** Publishes seeded definitions as the system (signed with the active key). */
-async function publishSeeded(m: EntityManager, inputs: ProviderDefinitionInput[], t: string) {
+async function publishSeeded(m: EntityManager, inputs: (ProviderDefinitionInput | SecretTypeDefinitionInput)[], t: string, kind: CatalogKind = 'provider') {
   for (const input of inputs) {
-    const def = validateProviderDefinition(input);
-    const app = { id: newId('app'), key: def.key, name: def.name, description: def.description, created_by: 'System', created_at: t, updated_at: t, archived_at: null };
+    const def = kind === 'provider' ? validateProviderDefinition(input) : validateSecretTypeDefinition(input);
+    const app = { id: newId('app'), key: def.key, kind, name: def.name, description: def.description, created_by: 'System', created_at: t, updated_at: t, archived_at: null };
     await m.insert(ApplicationEntity, app);
-    const signed = signDefinition(def);
+    const signed = signDefinition(def, kind);
     await m.insert(VersionEntity, {
       id: newId('ver'),
       application_id: app.id,
@@ -59,11 +60,11 @@ async function publishSeeded(m: EntityManager, inputs: ProviderDefinitionInput[]
       authors: [],
       reviewed_by: 'system',
       reviewed_at: t,
-      review_note: def.key === 'github' ? 'Imported from the bundled GitHub definition' : 'Seeded catalog entry (coming soon)',
+      review_note: kind === 'secret_type' ? 'Predefined secret type (spec 4.9.3)' : def.key === 'github' ? 'Imported from the bundled GitHub definition' : 'Seeded catalog entry (coming soon)',
       published_at: t,
       host_change_acknowledged: true,
     });
-    await audit(m, SYSTEM_ACTOR, 'version.published', { key: def.key, version: def.version }, { digest: signed.digest, keyId: signed.keyId, seeded: true });
+    await audit(m, SYSTEM_ACTOR, 'version.published', { key: def.key, version: def.version }, { kind, digest: signed.digest, keyId: signed.keyId, seeded: true });
   }
   await signPublishedWithActiveKey(m);
 }
@@ -80,6 +81,13 @@ async function seedMissingCatalogEntries() {
       await registerActiveKey(m);
       await publishSeeded(m, missing, new Date().toISOString());
       console.log(`[cms] added catalog entries: ${missing.map((d) => d.key).join(', ')}`);
+    }
+    // Predefined secret types (an archived or edited one keeps its key, so it is never re-added).
+    const missingTypes = BUILTIN_SECRET_TYPES.filter((d) => !existing.has(d.key));
+    if (missingTypes.length) {
+      await registerActiveKey(m);
+      await publishSeeded(m, missingTypes, new Date().toISOString(), 'secret_type');
+      console.log(`[cms] added ${missingTypes.length} predefined secret type(s)`);
     }
     await addGithubCatalogListing(m);
   });
@@ -98,7 +106,7 @@ async function addGithubCatalogListing(m: EntityManager) {
   if (await m.existsBy(VersionEntity, { application_id: app.id, status: In(['DRAFT', 'IN_REVIEW']) })) return;
   const t = new Date().toISOString();
   const def = validateProviderDefinition({ ...(row.definition as object), version: row.version + 1, catalog: githubDefinition.catalog });
-  const signed = signDefinition(def);
+  const signed = signDefinition(def, 'provider');
   await m.update(VersionEntity, { id: row.id }, { status: 'SUPERSEDED', updated_at: t });
   await m.insert(VersionEntity, {
     id: newId('ver'),
@@ -140,7 +148,7 @@ export async function initData() {
   const count = await db().manager.count(UserEntity);
   if (count === 0) {
     await seed();
-    console.log('[cms] seeded demo users, the GitHub definition and the coming-soon catalog entries');
+    console.log('[cms] seeded demo users, the GitHub definition, the coming-soon catalog entries and the predefined secret types');
   } else {
     await seedMissingCatalogEntries();
   }

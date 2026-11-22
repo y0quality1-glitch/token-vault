@@ -3,6 +3,7 @@ export enum APP_ROUTES {
   APIHEALTHCHECK = '/apiHealthCheck',
   AUTH = '/auth',
   APPLICATION = '/application',
+  SECRET_TYPE = '/secretType',
   VERSION = '/version',
   AUDIT = '/audit',
 }

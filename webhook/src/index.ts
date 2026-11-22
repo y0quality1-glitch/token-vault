@@ -7,12 +7,14 @@ import { closeDatabase, describeError, runMigrations } from './db/client';
 import { buildRouter } from './routes';
 import { initStore } from './store/credential-store';
 import { catalogSync } from './providers/registry';
+import { secretTypeSync } from './providers/secret-types';
 
 async function main() {
   await runMigrations();
   await initStore();
   // Never blocks startup: if the CMS is unreachable, the bundled definitions apply until the next poll.
   await catalogSync?.start();
+  await secretTypeSync?.start();
 
   const app = express();
   app.disable('x-powered-by');

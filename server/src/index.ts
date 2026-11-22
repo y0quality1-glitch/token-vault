@@ -9,6 +9,7 @@ import { sessionRepo } from './store/repos';
 import { startHeartbeat } from './services/webhookService/webhookService.service';
 import { startCredentialChecks } from './services/integrationService/credentialHealth';
 import { catalogSync } from './services/providerService/registry';
+import { secretTypeSync } from './services/secretTypeService/registry';
 
 async function main() {
   await runMigrations();
@@ -21,12 +22,14 @@ async function main() {
   await sessionRepo.purgeExpiredSessions();
   // Never blocks startup: if the CMS is unreachable, the bundled definitions apply until the next poll.
   await catalogSync?.start();
+  await secretTypeSync?.start();
 
   const app = createApp();
   const server = app.listen(config.port, () => {
     console.log(`[api] Token Vault control plane listening on http://localhost:${config.port}`);
     console.log(`[api] Customer webhook expected at ${config.defaultWebhookUrl}`);
     console.log(catalogSync ? `[api] Provider catalog ${config.cmsCatalogUrl} (pinned keys ${catalogSync.status.keyIds.join(', ')})` : '[api] Provider catalog: bundled definitions only (CMS_CATALOG_URL not set)');
+    console.log(secretTypeSync ? `[api] Secret types from ${config.cmsCatalogUrl}: ${secretTypeSync.registry.list().length}` : '[api] Secret types: predefined only (CMS_CATALOG_URL not set)');
     console.log(`[api] Demo sign-in: owner@demo.test / ${DEMO_PASSWORD} (mock account, development only)`);
   });
   const heartbeat = startHeartbeat();

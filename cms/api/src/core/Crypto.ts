@@ -1,7 +1,7 @@
 import { createHash, randomBytes, scryptSync, sign, timingSafeEqual } from 'node:crypto';
 
 /** Password hashing (scrypt), ids, digests and definition signing (template: core/Encryption&Decryption.ts). */
-import { signaturePayload } from '@token-vault/shared';
+import { signaturePayloadFor, type CatalogKind } from '@token-vault/shared';
 import { definitionDigest } from '@token-vault/shared/signing';
 import { SIGNING } from '../config';
 
@@ -25,9 +25,9 @@ export const randomToken = (bytes = 32) => randomBytes(bytes).toString('base64ur
 export const sha256Hex = (data: string) => createHash('sha256').update(data).digest('hex');
 export const newId = (prefix: string) => `${prefix}_${randomBytes(8).toString('hex')}`;
 
-/** Signs a definition: Ed25519 over the domain-separated sha256 of its canonical JSON. */
-export function signDefinition(definition: unknown): { digest: string; signature: string; keyId: string } {
+/** Signs a catalog entry: Ed25519 over the sha256 of its canonical JSON, under its kind's context. */
+export function signDefinition(definition: unknown, kind: CatalogKind = 'provider'): { digest: string; signature: string; keyId: string } {
   const digest = definitionDigest(definition);
-  const signature = sign(null, Buffer.from(signaturePayload(digest)), SIGNING.key).toString('base64');
+  const signature = sign(null, Buffer.from(signaturePayloadFor(kind, digest)), SIGNING.key).toString('base64');
   return { digest, signature, keyId: SIGNING.keyId };
 }

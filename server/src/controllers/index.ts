@@ -18,6 +18,7 @@ import { MemberController } from './memberController/memberController.controller
 import { OrganizationController } from './organizationController/organizationController.controller';
 import { PolicyController } from './policyController/policyController.controller';
 import { ProviderController } from './providerController/providerController.controller';
+import { SecretTypeController } from './secretTypeController/secretTypeController.controller';
 import { SessionController } from './sessionController/sessionController.controller';
 import { SlackSettingsController } from './slackSettingsController/slackSettingsController.controller';
 import { UserIssuerController } from './userIssuerController/userIssuerController.controller';
@@ -32,6 +33,7 @@ export const adminControllers = (): BaseController[] => [
   new DashboardController(),
   new WebhookController(),
   new ProviderController(),
+  new SecretTypeController(),
   new IntegrationController(),
   new AgentController(),
   new ApiClientController(),

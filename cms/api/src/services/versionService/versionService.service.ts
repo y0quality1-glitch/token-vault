@@ -9,7 +9,7 @@ import { VersionEntity } from '../../entities/versionEntity';
 import { directPublishBlock, getApp, getVersion, now, publishedOf, reviewBlock, versionDetail } from '../applicationService/application.queries';
 import { audit } from '../auditService/auditService.service';
 import { BaseServices } from '../baseService';
-import { check, diffDefinitions, preview } from '../definitionService/definitionService.service';
+import { check, checkKind, diffKind, preview } from '../definitionService/definitionService.service';
 import { addSignature, registerActiveKey } from '../signingService/signingService.service';
 import { SETTINGS } from '../../config';
 
@@ -50,7 +50,7 @@ export default class VersionService extends BaseServices<VersionEntity, CmsVersi
       const definition = { ...model.definition, key: app.key, version: v.version };
       const authors = v.authors.includes(user.id) ? v.authors : [...v.authors, user.id];
       await m.update(VersionEntity, { id: v.id }, { definition, updated_at: now(), authors });
-      await audit(m, user, 'version.edited', { key: app.key, version: v.version }, { valid: check(definition).issues.length === 0 });
+      await audit(m, user, 'version.edited', { key: app.key, version: v.version }, { valid: checkKind(app.kind, definition).issues.length === 0 });
       return versionDetail(m, user, app, Object.assign(v, { definition, authors }));
     });
   }
@@ -67,7 +67,7 @@ export default class VersionService extends BaseServices<VersionEntity, CmsVersi
   submit(ref: VersionRefDto, user: CmsUser) {
     return this.inTransaction(ref, async (m, app, v) => {
       if (v.status !== 'DRAFT') throw new ServiceError('E30014', 'Only drafts can be submitted for review');
-      const { normalized, issues } = check(v.definition);
+      const { normalized, issues } = checkKind(app.kind, v.definition);
       if (!normalized) throw new ServiceError('E30015', 'Fix the validation problems before submitting', { issues });
       const t = now();
       const changes = { status: 'IN_REVIEW' as const, definition: normalized, submitted_by: user.id, submitted_at: t, updated_at: t, review_note: null };
@@ -107,7 +107,7 @@ export default class VersionService extends BaseServices<VersionEntity, CmsVersi
    */
   publish(body: ReviewDto, user: CmsUser) {
     return this.inTransaction(body, async (m, app, v) => {
-      const issues = check(v.definition).issues;
+      const issues = checkKind(app.kind, v.definition).issues;
       const block = directPublishBlock(user, app, v, issues);
       if (block) {
         if (!SETTINGS.adminDirectPublish) throw new ServiceError('E30017', block);
@@ -121,21 +121,24 @@ export default class VersionService extends BaseServices<VersionEntity, CmsVersi
 
   /** Signs a version and makes it the published one (superseding the previous). */
   private async publishVersion(m: EntityManager, user: CmsUser, app: ApplicationEntity, v: VersionEntity, opts: { note: string; acknowledgeHostChange: boolean; direct: boolean }) {
-    const { normalized, issues } = check(v.definition);
+    const { normalized, issues } = checkKind(app.kind, v.definition);
     if (!normalized) throw new ServiceError('E30015', 'The definition no longer passes validation', { issues });
     const published = await publishedOf(m, app.id);
-    const diff = diffDefinitions(normalized, published?.definition ?? null, published?.version ?? null);
-    if (diff.hostChange && !opts.acknowledgeHostChange) {
+    const diff = diffKind(app.kind, normalized, published?.definition ?? null, published?.version ?? null);
+    // Only provider definitions send credentials anywhere; secret types have no hosts.
+    const hosts = app.kind === 'provider' ? (normalized as { api: { baseUrl: string; allowedHosts: string[] } }).api : null;
+    if (hosts && diff.hostChange && !opts.acknowledgeHostChange) {
       throw new ServiceError('E30018', published ? 'This version changes where credentials are sent (api.baseUrl or allowedHosts). Confirm the new hosts to publish.' : 'First publication: confirm the hosts credentials will be sent to.', {
-        baseUrl: normalized.api.baseUrl,
-        allowedHosts: normalized.api.allowedHosts,
+        baseUrl: hosts.baseUrl,
+        allowedHosts: hosts.allowedHosts,
       });
     }
+    const named = normalized as { name: string; description: string };
     const t = now();
     const reviewNote = opts.direct ? `Published directly by an administrator (no separate review)${opts.note ? `: ${opts.note}` : ''}` : opts.note || null;
     const submitted = v.submitted_by ? {} : { submitted_by: user.id, submitted_at: t };
     if (published) await m.update(VersionEntity, { id: published.id }, { status: 'SUPERSEDED', updated_at: t });
-    const signed = signDefinition(normalized);
+    const signed = signDefinition(normalized, app.kind);
     const changes = {
       status: 'PUBLISHED' as const,
       definition: normalized,
@@ -153,8 +156,8 @@ export default class VersionService extends BaseServices<VersionEntity, CmsVersi
     await m.update(VersionEntity, { id: v.id }, changes);
     await registerActiveKey(m);
     await addSignature(m, v.id, signed.digest, signed.signature);
-    await m.update(ApplicationEntity, { id: app.id }, { name: normalized.name, description: normalized.description, updated_at: t });
-    await audit(m, user, 'version.published', { key: app.key, version: v.version }, { digest: signed.digest, keyId: signed.keyId, supersedes: published?.version ?? null, hostChange: diff.hostChange, hosts: normalized.api.allowedHosts, ...(opts.direct ? { direct: true } : {}) });
+    await m.update(ApplicationEntity, { id: app.id }, { name: named.name, description: named.description, updated_at: t });
+    await audit(m, user, 'version.published', { key: app.key, version: v.version }, { kind: app.kind, digest: signed.digest, keyId: signed.keyId, supersedes: published?.version ?? null, hostChange: diff.hostChange, ...(hosts ? { hosts: hosts.allowedHosts } : {}), ...(opts.direct ? { direct: true } : {}) });
     return versionDetail(m, user, app, Object.assign(v, changes));
   }
 
@@ -173,7 +176,7 @@ export default class VersionService extends BaseServices<VersionEntity, CmsVersi
   /** What the webhook would send for an operation, without any credential. */
   async preview(body: PreviewDto): Promise<CmsPreviewResult> {
     const m = this.db.manager;
-    const app = await getApp(m, body.key);
+    const app = await getApp(m, body.key, 'provider');
     const v = await getVersion(m, app, body.version);
     const { normalized, issues } = check(v.definition);
     if (!normalized) throw new ServiceError('E30015', 'Fix the validation problems to preview requests', { issues });

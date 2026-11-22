@@ -1,5 +1,5 @@
 import { In, type EntityManager, type SelectQueryBuilder } from 'typeorm';
-import type { CmsApplicationDetail, CmsApplicationSummary, CmsUser } from '@token-vault/shared';
+import type { CatalogKind, CmsApplicationDetail, CmsApplicationSummary, CmsUser } from '@token-vault/shared';
 import { ServiceError, notFound } from '../../core/ApiError';
 import { newId, signDefinition } from '../../core/Crypto';
 import type { Pagination } from '../../core/Y0Params';
@@ -9,13 +9,17 @@ import { ApplicationEntity } from '../../entities/applicationEntity';
 import { VersionEntity } from '../../entities/versionEntity';
 import { audit } from '../auditService/auditService.service';
 import { BaseServices } from '../baseService';
-import { check, starterDefinition } from '../definitionService/definitionService.service';
+import { check, starterFor } from '../definitionService/definitionService.service';
 import { addSignature, registerActiveKey } from '../signingService/signingService.service';
-import { OPEN, getApp, now, summarize, toVersionSummary, versionsOf } from './application.queries';
+import { KIND_LABEL, OPEN, getApp, now, summarize, toVersionSummary, versionsOf } from './application.queries';
 
-/** Applications in the provider catalog: list, detail, create, new versions, availability, archive. */
+/**
+ * Catalog entries of one kind: applications (provider definitions) or secret types. List,
+ * detail, create, new versions, availability (applications only) and archive. Each route
+ * sees only its own kind.
+ */
 export default class ApplicationService extends BaseServices<ApplicationEntity, CmsApplicationSummary> {
-  constructor() {
+  constructor(readonly kind: CatalogKind = 'provider') {
     super(ApplicationEntity);
   }
   getModel() {
@@ -25,7 +29,7 @@ export default class ApplicationService extends BaseServices<ApplicationEntity, 
     return CreateApplicationDto;
   }
   getModuleName() {
-    return 'Application';
+    return KIND_LABEL[this.kind];
   }
   getGlobalSearchColumns() {
     return ['main.key', 'main.name', 'main.description'];
@@ -35,7 +39,19 @@ export default class ApplicationService extends BaseServices<ApplicationEntity, 
   }
 
   protected prepareFilter(qb: SelectQueryBuilder<ApplicationEntity>, param: Pagination) {
-    return qb.orderBy('main.key', param.sortType ?? 'ASC').skip((param.pageNumber - 1) * param.pageSize).take(param.pageSize);
+    return qb
+      .where('main.kind = :kind', { kind: this.kind })
+      .orderBy('main.key', param.sortType ?? 'ASC')
+      .skip((param.pageNumber - 1) * param.pageSize)
+      .take(param.pageSize);
+  }
+
+  /** getbyid: by key, within this route's kind (an entry of the other kind is not found here). */
+  protected async findEntity(m: EntityManager, key: string | null): Promise<ApplicationEntity> {
+    if (!key) throw new ServiceError('E10073');
+    const row = await m.findOneBy(ApplicationEntity, { key, kind: this.kind });
+    if (!row) throw new ServiceError('E10075', `${this.getModuleName()} "${key}" not found`);
+    return row;
   }
 
   /** One query for the versions of every application on the page. */
@@ -51,22 +67,24 @@ export default class ApplicationService extends BaseServices<ApplicationEntity, 
 
   // ── create: a new application with a starter draft as version 1 ──
   protected async createPreProcess(m: EntityManager, model: ApplicationModel) {
-    if (await m.existsBy(ApplicationEntity, { key: model.key })) {
-      throw new ServiceError('E30010', `An application with key "${model.key}" already exists`, { fields: { key: 'This key is already in use' } });
+    // Applications and secret types share one key space.
+    const taken = await m.findOne(ApplicationEntity, { where: { key: model.key }, select: { kind: true } });
+    if (taken) {
+      throw new ServiceError('E30010', `An ${taken.kind === 'provider' ? 'application' : 'secret type'} with key "${model.key}" already exists`, { fields: { key: 'This key is already in use' } });
     }
     return model;
   }
 
   protected async saveData(m: EntityManager, model: ApplicationModel, user: CmsUser) {
     const t = now();
-    const app = m.create(ApplicationEntity, { id: newId('app'), key: model.key, name: model.name, description: model.description, created_by: user.fullName, created_at: t, updated_at: t, archived_at: null });
+    const app = m.create(ApplicationEntity, { id: newId('app'), key: model.key, kind: this.kind, name: model.name, description: model.description, created_by: user.fullName, created_at: t, updated_at: t, archived_at: null });
     await m.insert(ApplicationEntity, app);
-    await m.insert(VersionEntity, { id: newId('ver'), application_id: app.id, version: 1, status: 'DRAFT', definition: starterDefinition(model.key, model.name, model.description), created_by: user.fullName, created_at: t, updated_at: t, authors: [user.id] });
+    await m.insert(VersionEntity, { id: newId('ver'), application_id: app.id, version: 1, status: 'DRAFT', definition: starterFor(this.kind, model.key, model.name, model.description), created_by: user.fullName, created_at: t, updated_at: t, authors: [user.id] });
     return app;
   }
 
   protected async createPostProcess(m: EntityManager, app: ApplicationEntity, _model: ApplicationModel, user: CmsUser) {
-    await audit(m, user, 'application.created', { key: app.key, version: 1 }, { name: app.name });
+    await audit(m, user, this.kind === 'provider' ? 'application.created' : 'secret_type.created', { key: app.key, version: 1 }, { name: app.name });
     return { key: app.key, version: 1 };
   }
 
@@ -75,7 +93,7 @@ export default class ApplicationService extends BaseServices<ApplicationEntity, 
   /** Starts a new draft from the latest version (or a chosen one). Only one open version at a time. */
   async newVersion(body: NewVersionDto, user: CmsUser): Promise<{ key: string; version: number }> {
     return this.db.executeInTransaction(async (m) => {
-      const app = await getApp(m, body.key);
+      const app = await getApp(m, body.key, this.kind);
       if (app.archived_at) throw new ServiceError('E30011');
       const rows = await versionsOf(m, app.id);
       const open = rows.find((v) => OPEN.includes(v.status));
@@ -99,8 +117,9 @@ export default class ApplicationService extends BaseServices<ApplicationEntity, 
    * leave the open version with a lower number, which consumers refuse as a rollback.
    */
   async setAvailability(body: AvailabilityDto, user: CmsUser): Promise<{ key: string; version: number; availability: string }> {
+    if (this.kind !== 'provider') throw new ServiceError('E30021', 'Secret types have no catalog availability');
     return this.db.executeInTransaction(async (m) => {
-      const app = await getApp(m, body.key);
+      const app = await getApp(m, body.key, 'provider');
       if (app.archived_at) throw new ServiceError('E30011');
       const rows = await versionsOf(m, app.id, true);
       const open = rows.find((v) => OPEN.includes(v.status));
@@ -114,7 +133,7 @@ export default class ApplicationService extends BaseServices<ApplicationEntity, 
       const { normalized, issues } = check({ ...(published.definition as object), version, catalog: { ...(current.catalog ?? {}), availability: body.availability } });
       if (!normalized) throw new ServiceError('E30015', 'The published definition no longer passes validation; publish a corrected version through review', { issues });
       const t = now();
-      const signed = signDefinition(normalized);
+      const signed = signDefinition(normalized, 'provider');
       await m.update(VersionEntity, { id: published.id }, { status: 'SUPERSEDED', updated_at: t });
       const id = newId('ver');
       const label = body.availability === 'available' ? 'available' : 'coming soon';
@@ -148,11 +167,11 @@ export default class ApplicationService extends BaseServices<ApplicationEntity, 
   /** Archived applications disappear from the catalog; their versions stay for the record. */
   async archive(body: ArchiveDto, user: CmsUser): Promise<{ ok: true }> {
     await this.db.executeInTransaction(async (m) => {
-      const app = await getApp(m, body.key);
+      const app = await getApp(m, body.key, this.kind);
       if (app.archived_at) throw new ServiceError('E30011', 'Already archived');
       const t = now();
       await m.update(ApplicationEntity, { id: app.id }, { archived_at: t, updated_at: t });
-      await audit(m, user, 'application.archived', { key: app.key }, { reason: body.reason });
+      await audit(m, user, this.kind === 'provider' ? 'application.archived' : 'secret_type.archived', { key: app.key }, { reason: body.reason });
     });
     return { ok: true };
   }

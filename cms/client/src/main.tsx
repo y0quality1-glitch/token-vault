@@ -20,9 +20,12 @@ function App() {
   return (
     <Routes>
       <Route element={<Shell />}>
-        <Route path="/applications" element={<ApplicationsPage />} />
-        <Route path="/applications/:key" element={<ApplicationPage />} />
-        <Route path="/applications/:key/versions/:version" element={<VersionPage />} />
+        <Route path="/applications" element={<ApplicationsPage key="provider" />} />
+        <Route path="/applications/:key" element={<ApplicationPage key="provider" />} />
+        <Route path="/applications/:key/versions/:version" element={<VersionPage key="provider" />} />
+        <Route path="/secret-types" element={<ApplicationsPage key="secret_type" kind="secret_type" />} />
+        <Route path="/secret-types/:key" element={<ApplicationPage key="secret_type" kind="secret_type" />} />
+        <Route path="/secret-types/:key/versions/:version" element={<VersionPage key="secret_type" kind="secret_type" />} />
         <Route path="/audit" element={<AuditPage />} />
         <Route path="/catalog" element={<CatalogPage />} />
         <Route path="*" element={<Navigate to="/applications" replace />} />

@@ -1,11 +1,18 @@
 import { Column, Entity } from 'typeorm';
+import type { CatalogKind } from '@token-vault/shared';
 import { Y0Entity, tsColumn } from './y0Entity';
 
-/** An application in the provider catalog. Archiving is its soft delete (archived_at). */
+/**
+ * A catalog entry: an application (provider definition) or a secret type. Both share the
+ * key space and the draft → review → sign → publish workflow. Archiving is the soft delete.
+ */
 @Entity('applications')
 export class ApplicationEntity extends Y0Entity {
   @Column({ type: 'text', unique: true })
   key!: string;
+
+  @Column({ type: 'text', default: 'provider' })
+  kind!: CatalogKind;
 
   @Column({ type: 'text' })
   name!: string;

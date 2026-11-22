@@ -8,6 +8,7 @@ import { UserLoginsEntity } from '../entities/userLoginsEntity';
 import { VersionEntity } from '../entities/versionEntity';
 import { VersionSignatureEntity } from '../entities/versionSignatureEntity';
 import { Baseline1730000000000 } from './migrations/1730000000000-Baseline';
+import { CatalogKinds1731000000000 } from './migrations/1731000000000-CatalogKinds';
 
 /** Every entity, listed explicitly (template fix B-04: a missing entity fails at start-up, not per request). */
 export const ENTITIES = [UserEntity, UserLoginsEntity, ApplicationEntity, VersionEntity, AuditEventEntity, SigningKeyEntity, VersionSignatureEntity];
@@ -25,7 +26,7 @@ export const getPostgresConnection = () => {
     ...(DB_READ_URL ? { replication: { master: { url: DB_URL }, slaves: [{ url: DB_READ_URL }] } } : { url: DB_URL }),
     ssl,
     entities: ENTITIES,
-    migrations: [Baseline1730000000000],
+    migrations: [Baseline1730000000000, CatalogKinds1731000000000],
     migrationsTableName: 'cms_migrations',
     synchronize: false,
     logging: false,

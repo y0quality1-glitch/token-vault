@@ -1,20 +1,23 @@
 import { In, LessThan, type EntityManager } from 'typeorm';
-import type { CmsApplicationSummary, CmsUser, CmsVersionDetail, CmsVersionSummary } from '@token-vault/shared';
+import { SECRET_CATEGORY_LABELS, type CatalogKind, type CmsApplicationSummary, type CmsUser, type CmsVersionDetail, type CmsVersionSummary, type SecretCategory } from '@token-vault/shared';
 import { SETTINGS, SIGNING } from '../../config';
 import { notFound } from '../../core/ApiError';
 import { ApplicationEntity } from '../../entities/applicationEntity';
 import { VersionEntity } from '../../entities/versionEntity';
 import { VersionSignatureEntity } from '../../entities/versionSignatureEntity';
-import { check, diffDefinitions } from '../definitionService/definitionService.service';
+import { checkKind, diffKind } from '../definitionService/definitionService.service';
 
 /** Reads and views shared by the application and version services. */
 
 export const now = () => new Date().toISOString();
 export const OPEN: VersionEntity['status'][] = ['DRAFT', 'IN_REVIEW'];
 
-export async function getApp(m: EntityManager, key: string): Promise<ApplicationEntity> {
-  const app = await m.findOneBy(ApplicationEntity, { key });
-  if (!app) throw notFound(`Application "${key}"`);
+export const KIND_LABEL: Record<CatalogKind, string> = { provider: 'Application', secret_type: 'Secret type' };
+
+/** A catalog entry by key; with `kind`, an entry of another kind is not found (routes stay separate). */
+export async function getApp(m: EntityManager, key: string, kind?: CatalogKind): Promise<ApplicationEntity> {
+  const app = await m.findOneBy(ApplicationEntity, kind ? { key, kind } : { key });
+  if (!app) throw notFound(`${KIND_LABEL[kind ?? 'provider']} "${key}"`);
   return app;
 }
 
@@ -58,8 +61,28 @@ export function summarize(app: ApplicationEntity, rows: VersionEntity[]): CmsApp
   const open = rows.find((v) => OPEN.includes(v.status));
   const ops = (published?.definition as { operations?: unknown[] } | undefined)?.operations;
   const shown = (published ?? open ?? rows[0])?.definition as Listing;
+  const secretType = (published ?? open ?? rows[0])?.definition as { category?: SecretCategory; fields?: object } | undefined;
+  if (app.kind === 'secret_type') {
+    return {
+      key: app.key,
+      kind: app.kind,
+      name: app.name,
+      description: app.description,
+      archived: !!app.archived_at,
+      publishedVersion: published?.version ?? null,
+      publishedAt: published?.published_at ?? null,
+      openVersion: open ? { version: open.version, status: open.status as 'DRAFT' | 'IN_REVIEW', availability: 'available' } : null,
+      operationCount: 0,
+      fieldCount: Object.keys(secretType?.fields ?? {}).length,
+      icon: 'key',
+      category: SECRET_CATEGORY_LABELS[secretType?.category ?? 'custom'] ?? 'Custom secrets',
+      availability: published ? 'available' : null,
+      updatedAt: app.updated_at,
+    };
+  }
   return {
     key: app.key,
+    kind: app.kind,
     name: app.name,
     description: app.description,
     archived: !!app.archived_at,
@@ -67,6 +90,7 @@ export function summarize(app: ApplicationEntity, rows: VersionEntity[]): CmsApp
     publishedAt: published?.published_at ?? null,
     openVersion: open ? { version: open.version, status: open.status as 'DRAFT' | 'IN_REVIEW', availability: availabilityOf(open) } : null,
     operationCount: Array.isArray(ops) ? ops.length : 0,
+    fieldCount: 0,
     icon: shown?.catalog?.icon ?? 'plug',
     category: shown?.catalog?.category ?? 'Other',
     availability: published ? availabilityOf(published) : null,
@@ -86,7 +110,7 @@ export function reviewBlock(user: CmsUser, v: VersionEntity): string | null {
 export function directPublishBlock(user: CmsUser, app: ApplicationEntity, v: VersionEntity, issues: string[]): string | null {
   if (user.role !== 'ADMIN') return 'Only administrators can publish directly.';
   if (!SETTINGS.adminDirectPublish) return 'Direct publishing is turned off (CMS_ADMIN_DIRECT_PUBLISH=false): submit the version for review.';
-  if (app.archived_at) return 'This application is archived.';
+  if (app.archived_at) return `This ${KIND_LABEL[app.kind].toLowerCase()} is archived.`;
   if (!OPEN.includes(v.status)) return 'Only drafts and versions in review can be published.';
   if (issues.length) return 'Fix the validation problems first.';
   return null;
@@ -104,7 +128,7 @@ async function baselineFor(m: EntityManager, app: ApplicationEntity, v: VersionE
 /** The full view of a version for this user: diff, signatures, and what the user may do with it. */
 export async function versionDetail(m: EntityManager, user: CmsUser, app: ApplicationEntity, v: VersionEntity): Promise<CmsVersionDetail> {
   const baseline = await baselineFor(m, app, v);
-  const { issues } = check(v.definition);
+  const { issues } = checkKind(app.kind, v.definition);
   const sigs = await m.find(VersionSignatureEntity, { where: { version_id: v.id }, order: { signed_at: 'ASC' } });
   const isEditor = user.role === 'EDITOR' || user.role === 'ADMIN';
   const block = reviewBlock(user, v);
@@ -112,10 +136,11 @@ export async function versionDetail(m: EntityManager, user: CmsUser, app: Applic
   return {
     ...toVersionSummary(v),
     key: app.key,
+    kind: app.kind,
     definition: v.definition,
     issues,
     signatures: sigs.map((x) => ({ keyId: x.key_id, signedAt: x.signed_at, active: x.key_id === SIGNING.keyId })),
-    diff: diffDefinitions(v.definition, baseline?.definition ?? null, baseline?.version ?? null),
+    diff: diffKind(app.kind, v.definition, baseline?.definition ?? null, baseline?.version ?? null),
     can: {
       edit: isEditor && v.status === 'DRAFT' && !app.archived_at,
       submit: isEditor && v.status === 'DRAFT' && issues.length === 0 && !app.archived_at,
