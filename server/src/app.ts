@@ -36,6 +36,8 @@ export class App {
     app.use(helmet());
     // Same origin only (the console proxies /api); no cross-origin browser access.
     app.use(cors({ origin: false }));
+    // Secret values can be larger (certificate chains, kubeconfigs: at most 256 KiB); everything else stays small.
+    app.use(`${PATH}/secret`, express.json({ limit: '384kb' }));
     app.use(express.json({ limit: '32kb' }));
     app.use((_req, res, next) => {
       res.setHeader('Cache-Control', 'no-store');

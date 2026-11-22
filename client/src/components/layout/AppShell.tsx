@@ -10,6 +10,7 @@ import {
   FlaskConical,
   KeyRound,
   LayoutDashboard,
+  LockKeyhole,
   LogOut,
   Menu,
   Plug,
@@ -18,7 +19,7 @@ import {
   Webhook,
   X,
 } from 'lucide-react';
-import { ROLE_LABELS } from '@token-vault/shared';
+import { PERMISSIONS, ROLE_LABELS, type Permission } from '@token-vault/shared';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/components/ui/toast';
 import { api } from '@/lib/api';
@@ -31,6 +32,8 @@ interface NavGroup {
   to?: string;
   children?: { label: string; to: string; badge?: 'pendingRequests' | 'reviewsDue' | 'pendingApprovals' }[];
   badge?: string;
+  /** Shown only to roles with this permission. */
+  permission?: Permission;
 }
 
 const NAV: NavGroup[] = [
@@ -44,6 +47,7 @@ const NAV: NavGroup[] = [
       { label: 'Credential Status', to: '/integrations/credentials' },
     ],
   },
+  { label: 'Secrets', icon: LockKeyhole, to: '/secrets', permission: PERMISSIONS.SECRET_READ_METADATA },
   { label: 'Agents', icon: Bot, children: [{ label: 'Agent Registry', to: '/agents' }] },
   {
     label: 'Access Management',
@@ -113,6 +117,7 @@ function useNavCounts(pathname: string): { pendingRequests: number; reviewsDue: 
 function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const { pathname } = useLocation();
   const navCounts = useNavCounts(pathname);
+  const { can } = useAuth();
   return (
     <div className="flex h-full flex-col bg-slate-950 text-slate-300">
       <div className="flex h-14 items-center gap-2.5 border-b border-white/10 px-5">
@@ -125,7 +130,7 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         </div>
       </div>
       <nav className="flex-1 space-y-5 overflow-y-auto px-3 py-4">
-        {NAV.map((g) =>
+        {NAV.filter((g) => !g.permission || can(g.permission)).map((g) =>
           g.to ? (
             <NavLink
               key={g.label}

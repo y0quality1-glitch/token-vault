@@ -28,6 +28,8 @@ The MCP server does **not** get a "read secret" tool. Handing raw secrets to a m
 | `encryption_keys`, `key_versions` | Webhook keyring and KMS key references (existing); key ids recorded on every value |
 | `environments` | Existing environment field (`development`, `staging`, `production`) |
 
+**Phase 2 decisions.** Values live in their own webhook table, `secret_values` (not `credentials`), sealed with the same key and re-encrypted with it after a key rotation; the additional authenticated data binds each value to its organization, secret and version. Masked summaries never show any character of a sensitive field; versions are told apart by a keyed fingerprint. A value is stored on the webhook before the metadata is written; if the write fails, the value is destroyed again. Expiry is enforced on every retrieval even before the phase 4 job records it (`EXPIRED`). `secret:retrieve` is checked inside the service so refusals are audited.
+
 **Projects and workspaces** (§4.9.2 objective 4) have no management module yet (§4.9.20 lists them as dependencies). Secrets get `project` and `workspace` fields now, as validated slugs that can be filtered on and restricted in grants and policies; a later project module can turn them into references without changing the secret APIs.
 
 ### Lifecycle (§4.9.10)
@@ -141,7 +143,7 @@ The classification model of §4.9.3 as signed, published data.
 | Phase | Status |
 | --- | --- |
 | 1. Secret types | Done: schema and payload validation in `shared`, 51 predefined types, CMS workflow and signed `/catalog/v1/secret-types`, verified sync in the control plane (`/api/v1/secretType`) and the webhook, CMS console section ([CMS.md](CMS.md#secret-types)) |
-| 2. Static secrets and versions | Planned |
+| 2. Static secrets and versions | Done: webhook `secret_values` store and signed `/internal/v1/secrets/*`; control plane `secrets` and `secret_versions`, admin API `/api/v1/secret` ([API.md](API.md)), secret permissions per role, lifecycle (activate, revoke, archive, delete), expiry enforced on retrieval, renewal, audit of every change, retrieval and refusal; console Secrets pages |
 | 3. Application access | Planned |
 | 4. Expiration, rotation, notifications | Planned |
 | 5. Dynamic secrets, import/export, custom types | Planned |

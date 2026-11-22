@@ -13,11 +13,13 @@ import { AuditEventEntity } from './auditEventEntity';
 import { GrantRequestEntity } from './grantRequestEntity';
 import { OperationApprovalEntity } from './operationApprovalEntity';
 import { ProviderCatalogStateEntity } from './providerCatalogStateEntity';
+import { SecretEntity } from './secretEntity';
+import { SecretVersionEntity } from './secretVersionEntity';
 import { OauthPendingEntity } from './oauthPendingEntity';
 import { UserIssuerEntity } from './userIssuerEntity';
 import { DelegationEntity } from './delegationEntity';
 import { SlackSettingsEntity } from './slackSettingsEntity';
 
-export const ENTITIES = [OrganizationEntity, UserEntity, OrganizationMemberEntity, UserLoginsEntity, WebhookEntity, IntegrationEntity, AgentEntity, GrantEntity, PolicyEntity, AccessRequestEntity, AuditEventEntity, GrantRequestEntity, OperationApprovalEntity, ProviderCatalogStateEntity, OauthPendingEntity, UserIssuerEntity, DelegationEntity, SlackSettingsEntity];
+export const ENTITIES = [OrganizationEntity, UserEntity, OrganizationMemberEntity, UserLoginsEntity, WebhookEntity, IntegrationEntity, AgentEntity, GrantEntity, PolicyEntity, AccessRequestEntity, AuditEventEntity, GrantRequestEntity, OperationApprovalEntity, ProviderCatalogStateEntity, OauthPendingEntity, UserIssuerEntity, DelegationEntity, SlackSettingsEntity, SecretEntity, SecretVersionEntity];
 
-export { OrganizationEntity, UserEntity, OrganizationMemberEntity, UserLoginsEntity, WebhookEntity, IntegrationEntity, AgentEntity, GrantEntity, PolicyEntity, AccessRequestEntity, AuditEventEntity, GrantRequestEntity, OperationApprovalEntity, ProviderCatalogStateEntity, OauthPendingEntity, UserIssuerEntity, DelegationEntity, SlackSettingsEntity };
+export { OrganizationEntity, UserEntity, OrganizationMemberEntity, UserLoginsEntity, WebhookEntity, IntegrationEntity, AgentEntity, GrantEntity, PolicyEntity, AccessRequestEntity, AuditEventEntity, GrantRequestEntity, OperationApprovalEntity, ProviderCatalogStateEntity, OauthPendingEntity, UserIssuerEntity, DelegationEntity, SlackSettingsEntity, SecretEntity, SecretVersionEntity };

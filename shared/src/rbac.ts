@@ -14,6 +14,17 @@ export const PERMISSIONS = {
   POLICY_MANAGE: 'policy:manage',
   AUDIT_READ: 'audit:read',
   DEMO_RESET: 'demo:reset',
+  // Secret Management (spec 4.9.9). Applications never get these: they need a secret access grant.
+  SECRET_CREATE: 'secret:create',
+  SECRET_READ_METADATA: 'secret:read_metadata',
+  SECRET_RETRIEVE: 'secret:retrieve',
+  SECRET_UPDATE_METADATA: 'secret:update_metadata',
+  SECRET_UPDATE_VALUE: 'secret:update_value',
+  SECRET_DELETE: 'secret:delete',
+  SECRET_ROTATE: 'secret:rotate',
+  SECRET_MANAGE_VERSIONS: 'secret:manage_versions',
+  SECRET_MANAGE_ACCESS: 'secret:manage_access',
+  SECRET_EXPORT: 'secret:export',
 } as const;
 
 export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -23,10 +34,26 @@ const P = PERMISSIONS;
 /** Small fixed RBAC matrix for the POC (spec section 2). */
 export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
   OWNER: Object.values(P),
-  VAULT_ADMIN: [P.ORG_READ, P.WEBHOOK_MANAGE, P.INTEGRATION_MANAGE, P.GRANT_MANAGE, P.GRANT_REVOKE, P.AUDIT_READ],
-  SECURITY_ADMIN: [P.ORG_READ, P.POLICY_MANAGE, P.GRANT_REVOKE, P.GRANT_APPROVE, P.AUDIT_READ],
-  DEVELOPER: [P.ORG_READ, P.AGENT_MANAGE],
-  AUDITOR: [P.ORG_READ, P.AUDIT_READ],
+  VAULT_ADMIN: [
+    P.ORG_READ,
+    P.WEBHOOK_MANAGE,
+    P.INTEGRATION_MANAGE,
+    P.GRANT_MANAGE,
+    P.GRANT_REVOKE,
+    P.AUDIT_READ,
+    P.SECRET_CREATE,
+    P.SECRET_READ_METADATA,
+    P.SECRET_RETRIEVE,
+    P.SECRET_UPDATE_METADATA,
+    P.SECRET_UPDATE_VALUE,
+    P.SECRET_DELETE,
+    P.SECRET_ROTATE,
+    P.SECRET_MANAGE_VERSIONS,
+    P.SECRET_MANAGE_ACCESS,
+  ],
+  SECURITY_ADMIN: [P.ORG_READ, P.POLICY_MANAGE, P.GRANT_REVOKE, P.GRANT_APPROVE, P.AUDIT_READ, P.SECRET_READ_METADATA, P.SECRET_MANAGE_ACCESS, P.SECRET_DELETE],
+  DEVELOPER: [P.ORG_READ, P.AGENT_MANAGE, P.SECRET_READ_METADATA],
+  AUDITOR: [P.ORG_READ, P.AUDIT_READ, P.SECRET_READ_METADATA],
 };
 
 export const ROLE_LABELS: Record<Role, string> = {
