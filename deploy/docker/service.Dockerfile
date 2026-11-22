@@ -24,12 +24,12 @@ RUN --mount=type=secret,id=extra_ca,required=false \
       --external:pg-native --external:swagger-ui-dist \
       --banner:js="import { createRequire as __tvCreateRequire } from 'node:module'; import { fileURLToPath as __tvFileURLToPath } from 'node:url'; import { dirname as __tvDirname } from 'node:path'; const require = __tvCreateRequire(import.meta.url); const __filename = __tvFileURLToPath(import.meta.url); const __dirname = __tvDirname(__filename);" \
       --outfile=/out/service.mjs && \
-    # SQL migrations (server, webhook); the CMS API's TypeORM migrations are bundled.
+    # SQL migrations where a service still has them (the control plane's and the CMS API's TypeORM migrations are bundled).
     if [ -d "$SERVICE/drizzle" ]; then cp -r "$SERVICE/drizzle" /out/drizzle; fi && \
-    # The CMS API serves swagger-ui's static files from disk, so it keeps that package.
-    if [ "$SERVICE" = "cms/api" ]; then \
+    # API docs (control plane, CMS API): swagger-ui's static files are served from disk, so the package stays next to the bundle.
+    if node -e "require.resolve('swagger-ui-dist/package.json', { paths: ['$SERVICE'] })" 2>/dev/null; then \
       mkdir -p /out/node_modules && \
-      for p in swagger-ui-dist; do cp -r "$(node -p "require('path').dirname(require.resolve('$p/package.json', { paths: ['$SERVICE'] }))")" /out/node_modules/; done; \
+      cp -r "$(node -p "require('path').dirname(require.resolve('swagger-ui-dist/package.json', { paths: ['$SERVICE'] }))")" /out/node_modules/; \
     fi
 
 FROM ${NODE_IMAGE}

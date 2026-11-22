@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
-import { DEMO_PASSWORD, expectNoSecretsInBrowser, login, trackPageErrors } from './helpers';
+import { DEMO_PASSWORD, details, expectNoSecretsInBrowser, login, trackPageErrors } from './helpers';
 
 /**
  * Every application in the CMS is editable, not just GitHub: a single administrator opens
@@ -23,7 +23,7 @@ test.describe.serial('edit and publish any application from the CMS', () => {
     errors = [...trackPageErrors(cms), ...trackPageErrors(consolePage)];
     owner = await playwright.request.newContext({ baseURL: API });
     await owner.post('/api/v1/auth/login', { data: { email: 'owner@demo.test', password: DEMO_PASSWORD } });
-    await owner.post('/api/v1/auth/select-organization', { data: { organizationId: 'org_demo0000000001' } });
+    await owner.post('/api/v1/auth/selectOrganization', { data: { organizationId: 'org_demo0000000001' } });
   });
   test.afterAll(async () => {
     expect(errors, 'no uncaught page errors').toEqual([]);
@@ -77,21 +77,21 @@ test.describe.serial('edit and publish any application from the CMS', () => {
     await expect(consolePage.getByRole('heading', { name: 'Team Google' })).toBeVisible();
     await expectNoSecretsInBrowser(consolePage, [CLIENT_SECRET]);
 
-    const list = await (await owner.get('/api/v1/integrations')).json();
+    const list = await details(await owner.post('/api/v1/integration/getall'));
     const integration = list.items.find((i: { displayName: string }) => i.displayName === 'Team Google');
     expect(integration).toMatchObject({ provider: 'google', authType: 'OAUTH', credentialStatus: 'CONNECTED' });
 
-    const agent = await (await owner.post('/api/v1/agents', { data: { name: 'Calendar Bot', environment: 'development', ownerTeam: 'Ops', agentType: 'AI_AGENT' } })).json();
+    const agent = await details(await owner.post('/api/v1/agent/save', { data: { name: 'Calendar Bot', environment: 'development', ownerTeam: 'Ops', agentType: 'AI_AGENT' } }));
     const now = Date.now();
-    const grant = await owner.post('/api/v1/grants', {
+    const grant = await owner.post('/api/v1/grant/save', {
       data: { name: 'Read primary calendar', agentId: agent.agent.id, integrationId: integration.id, environment: 'development', scopes: ['google.events.list'], repositories: ['primary'], validFrom: new Date(now - 60_000).toISOString(), expiresAt: new Date(now + 86_400_000).toISOString(), rateLimitPerMinute: 30 },
     });
     expect(grant.ok(), await grant.text()).toBe(true);
-    const r = await owner.post('/agent/v1/execute', {
+    const r = await owner.post('/agent/v1/request/execute', {
       headers: { authorization: `Bearer ${agent.credential.apiKey}` },
       data: { integration_id: integration.id, operation: 'google.events.list', resource: { calendar: 'primary' }, idempotency_key: `e2e-google-${now}` },
     });
-    const body = await r.json();
+    const body = await details(r);
     expect(r.status(), JSON.stringify(body)).toBe(200);
     expect(body.result).toEqual({ items: [{ id: 'evt1', summary: 'Team standup', start: { dateTime: '2026-01-05T09:00:00Z' } }] });
   });

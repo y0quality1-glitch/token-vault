@@ -2,7 +2,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Activity, AlertTriangle, ArrowRight, Bot, CheckCircle2, Circle, Clock, KeyRound, Plug, ShieldAlert, ShieldX, Webhook } from 'lucide-react';
 import { DECISION_LABELS, PERMISSIONS, type DashboardSummary } from '@token-vault/shared';
 import { operationLabel } from '@/lib/providers';
-import { useApi } from '@/hooks/useApi';
+import { usePost } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Card, CardBody, CardHeader, StatCard } from '@/components/ui/card';
@@ -16,7 +16,7 @@ import { EmergencyStopCard } from '@/components/EmergencyStop';
 export function OverviewPage() {
   const { session, can } = useAuth();
   const navigate = useNavigate();
-  const { data, error, loading, reload } = useApi<DashboardSummary>('/dashboard');
+  const { data, error, loading, reload } = usePost<DashboardSummary>('/dashboard/getdata');
 
   if (error) return <ErrorState error={error} onRetry={reload} />;
   if (loading && !data) return <PageSkeleton />;

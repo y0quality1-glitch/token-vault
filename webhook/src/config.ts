@@ -154,6 +154,13 @@ export const config = {
    * Off by default: the customer decides whether destructive actions can ever run.
    */
   allowDestructive: process.env.WEBHOOK_ALLOW_DESTRUCTIVE === 'true',
+  /**
+   * WEBHOOK_ALLOW_CREDENTIAL_ISSUE=true lets this webhook hand a short-lived credential to the
+   * caller (integrations in "short-lived credential" mode): a GitHub App token for one
+   * repository and the operation's permissions, or the current OAuth access token. Off by
+   * default: the customer decides whether a credential may ever leave this webhook.
+   */
+  allowCredentialIssue: process.env.WEBHOOK_ALLOW_CREDENTIAL_ISSUE === 'true',
   /** Lifetime of access tokens issued by the simulated OAuth server (mock mode only). */
   mockOAuthTokenTtlS: Number(process.env.MOCK_OAUTH_TOKEN_TTL_S ?? 3600),
   /** if-missing: (re)create demo mock credentials only where absent or unreadable. reset: wipe the store first (tests). */

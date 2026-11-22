@@ -1,7 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import { KeyRound } from 'lucide-react';
 import type { ApiClient } from '@token-vault/shared';
-import { useApi } from '@/hooks/useApi';
+import { usePost } from '@/hooks/useApi';
 import { Card } from '@/components/ui/card';
 import { StatusBadge } from '@/components/ui/badge';
 import { Callout, EmptyState, ErrorState } from '@/components/ui/feedback';
@@ -12,7 +12,7 @@ import { formatDateTime, relativeTime } from '@/lib/utils';
 
 export function ApiClientsPage() {
   const navigate = useNavigate();
-  const { data, error, loading, reload } = useApi<{ items: ApiClient[] }>('/api-clients');
+  const { data, error, loading, reload } = usePost<{ items: ApiClient[] }>('/apiClient/getall');
   return (
     <div className="space-y-4">
       <PageHeader title="API Clients" description="Agent API credentials issued by this organization." breadcrumbs={[{ label: 'Settings' }, { label: 'API Clients' }]} />

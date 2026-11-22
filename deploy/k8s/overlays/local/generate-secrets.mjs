@@ -30,7 +30,7 @@ const host = 'postgres.token-vault-data.svc.cluster.local:5432';
 
 const files = {
   'postgres.env': [`POSTGRES_PASSWORD=${secret()}`, `CONTROL_PLANE_DB_PASSWORD=${db.cp}`, `WEBHOOK_DB_PASSWORD=${db.wh}`, `CMS_DB_PASSWORD=${db.cms}`],
-  'server.env': [`DATABASE_URL=postgres://token_vault:${db.cp}@${host}/token_vault`, `WEBHOOK_SIGNING_SECRET=${signing}`, 'WEBHOOK_PREVIOUS_SIGNING_SECRETS=', `AUDIT_SIGNING_KEY=${secret()}`, `CMS_PUBLIC_KEY=${cmsPublic}`],
+  'server.env': [`DATABASE_URL=postgres://token_vault:${db.cp}@${host}/token_vault`, `WEBHOOK_SIGNING_SECRET=${signing}`, 'WEBHOOK_PREVIOUS_SIGNING_SECRETS=', `AUDIT_SIGNING_KEY=${secret()}`, `SESSION_JWT_SECRET=${secret()}`, `CMS_PUBLIC_KEY=${cmsPublic}`],
   'webhook.env': [
     `WEBHOOK_DATABASE_URL=postgres://token_vault_customer:${db.wh}@${host}/token_vault_customer`,
     `WEBHOOK_SIGNING_SECRET=${signing}`,

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowRight, CheckCircle2, Plus, RefreshCw, Server, XCircle } from 'lucide-react';
 import { PERMISSIONS, type Environment, type Webhook } from '@token-vault/shared';
-import { useApi, useMutation } from '@/hooks/useApi';
+import { useMutation, usePost } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -34,7 +34,7 @@ interface Transport {
 
 export function WebhookSetupPage() {
   const { can } = useAuth();
-  const { data, error, loading, reload } = useApi<{ items: Webhook[]; defaultEndpointUrl: string; transport?: Transport }>('/webhooks');
+  const { data, error, loading, reload } = usePost<{ items: Webhook[]; defaultEndpointUrl: string; transport?: Transport }>('/webhook/getall');
   const [wizard, setWizard] = useState(false);
   const [editing, setEditing] = useState<Webhook | null>(null);
   const navigate = useNavigate();
@@ -152,8 +152,8 @@ function TransportDialog({ webhook, transport, onClose, onSaved }: { webhook: We
   const [url, setUrl] = useState(webhook.endpointUrl);
   const [authType, setAuthType] = useState(webhook.authenticationType);
   const save = useMutation(async () => {
-    const w = await api.patch<Webhook>(`/webhooks/${webhook.id}`, { endpointUrl: url, authenticationType: authType });
-    const r = await api.post<{ result: HealthResult }>(`/webhooks/${w.id}/test`);
+    const w = await api.post<Webhook>('/webhook/save', { id: webhook.id, endpointUrl: url, authenticationType: authType });
+    const r = await api.post<{ result: HealthResult }>('/webhook/test', { id: w.id });
     return r.result;
   });
   return (
@@ -209,10 +209,10 @@ function SetupWizard({ defaultUrl, transport, onCancel, onDone }: { defaultUrl: 
   const [form, setForm] = useState({ name: 'Local Customer Vault', endpointUrl: defaultUrl, environment: 'development' as Environment, description: '' });
   const [webhook, setWebhook] = useState<Webhook | null>(null);
   const [result, setResult] = useState<HealthResult | null>(null);
-  const create = useMutation((body: unknown) => api.post<Webhook>('/webhooks', body));
-  const verify = useMutation((id: string) => api.post<{ webhook: Webhook; result: HealthResult }>(`/webhooks/${id}/test`));
+  const create = useMutation((body: unknown) => api.post<Webhook>('/webhook/save', body));
+  const verify = useMutation((id: string) => api.post<{ webhook: Webhook; result: HealthResult }>('/webhook/test', { id }));
   const [authType, setAuthType] = useState<'SHARED_SECRET_HMAC' | 'MTLS'>('SHARED_SECRET_HMAC');
-  const configure = useMutation((id: string) => api.patch<Webhook>(`/webhooks/${id}`, { authenticationType: authType }));
+  const configure = useMutation((id: string) => api.post<Webhook>('/webhook/save', { id, authenticationType: authType }));
   const mtlsPossible = !!transport?.mtlsAvailable && !!webhook?.endpointUrl.startsWith('https://');
   useEffect(() => {
     if (mtlsPossible) setAuthType('MTLS');

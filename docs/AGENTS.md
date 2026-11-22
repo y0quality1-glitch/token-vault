@@ -52,7 +52,7 @@ The one-line `claude mcp add …` command and the Claude Desktop JSON that the h
 
 - The tool name is the operation id with dots replaced, e.g. `slack.messages.post` becomes `slack_messages_post`. Its title is "<Application>: <operation label>".
 - Arguments are typed from the definition. The resource (`channel`, `calendar`, `page`, …) is checked against the definition's pattern, and the inputs carry their types, required flags and maximum lengths. An input whose name is already taken by a resource field becomes `input_<name>`. Every tool also takes an optional `integration`.
-- The definitions come from `GET /agent/v1/operations`, limited to the applications in the agent's own grants. A tool is offered for operations the agent is not granted too: calling it is denied (`SCOPE_DENIED`), and the agent may ask a human with `token_vault_request_access`.
+- The definitions come from `POST /agent/v1/operation/getall`, limited to the applications in the agent's own grants. A tool is offered for operations the agent is not granted too: calling it is denied (`SCOPE_DENIED`), and the agent may ask a human with `token_vault_request_access`.
 - The server re-reads them at start-up, every `TOKEN_VAULT_TOOLS_REFRESH_S` seconds, and when `token_vault_list_access` is called. When something changed (a newly published version, a new grant on another application), it updates its tools and notifies the client with `tools/list_changed`. If the catalog cannot be read, the GitHub and Token Vault tools keep working.
 - Destructive operations become tools only for an agent holding a grant for them, and every call waits for human approval (see *Destructive operations* below).
 
@@ -236,6 +236,35 @@ What an application returns goes straight into the model's context. A **Filter r
 
 Prompt injection detection is a heuristic: it catches common attacks, not every possible one. Combine it with narrow grants, approvals for writes, and agents that treat tool results as data.
 
+## Access modes: when the agent makes the call itself
+
+By default an integration is **Brokered**: the customer webhook calls the application and the agent gets the result, never a credential. An administrator can change that per integration (Integrations → *integration* → **Access mode**):
+
+| Mode | What the agent gets after an allowed request | Use it when |
+| --- | --- | --- |
+| **Brokered** (default) | The result | Always, unless you can't |
+| **Decision only** | A signed decision token, no result. The agent (or your service) calls the application with credentials of its own | The application is your own API, or calls must come from your network |
+| **Short-lived credential** | A decision token and a token the webhook issued: a GitHub App token limited to the repository and the operation's permission (GitHub sets 1 hour), or the OAuth access token. The agent calls the application with it | A tool needs to talk to the application directly (git over HTTPS, a client library) |
+
+Every check still runs first: grants, policies, approvals, budgets, the acting user and the audit. What changes is who makes the call. Keep in mind:
+
+- In the two new modes Token Vault never sees the application's response, so it can't filter it. A request a Filter responses policy covers is denied with `FILTER_NEEDS_BROKERED`.
+- An issued token can be used for anything it allows until it expires, not only for the request that was decided. GitHub App tokens are the narrowest; an OAuth access token has all the scopes of the connection. Stored keys and personal tokens are never handed out.
+- The customer's webhook operator must allow issuing with `WEBHOOK_ALLOW_CREDENTIAL_ISSUE=true`.
+
+The response has `execution.status: "HANDED_OFF"`, `result: null` and `authorization` (see [API.md](API.md#agent-api-agentv1)). With the SDK, `execute()` returns `authorization` and `data: null`. Your application can check a decision before acting on it:
+
+```ts
+import { verifyDecisionToken } from '@token-vault/sdk';
+
+const claims = await verifyDecisionToken(token, {
+  keys: 'https://vault.example.com/.well-known/jwks.json',
+  expect: { operation: 'github.issues.create', resource: { repository: 'demo-org/demo-repo' }, input },
+});
+```
+
+It checks the signature, the expiry, and that the token covers exactly that operation, resource and input. The MCP server does not pass issued tokens to the model: for an integration that isn't brokered, it tells the model the request was allowed but not run.
+
 ## Delegation to sub-agents
 
 Multi-agent systems split work: a coordinator starts helpers, each needing a little of its access for a short time. Instead of sharing its API key, the agent **delegates**: it hands a sub-agent a narrower, short-lived slice of one grant, with its own token.
@@ -264,7 +293,7 @@ const helper = new TokenVault({ apiKey: d.token }); // tvdt_…, shown once
 
 **Users.** A delegation created on behalf of a user (`onBehalfOf`, or a client made with `forUser`) makes every sub-agent request for that user, and never outlives the user's token. A sub-agent cannot send a user token of its own (`DELEGATION_DENIED`). A delegation made for the agent itself cannot be used for a user.
 
-**What a sub-agent can do through the agent API:** `/execute`, `/capabilities` (only its slice, plus a `delegation` block), `/operations`, `/requests/:id` and `/approvals/:id` for its own requests, and `/delegations` to delegate further, list and revoke what it delegated. It cannot request access just in time (403): it may only narrow. Approvals are bound to the sub-agent that asked.
+**What a sub-agent can do through the agent API:** `POST /request/execute`, `POST /capability/getdata` (only its slice, plus a `delegation` block), `POST /operation/getall`, `GET /request/getbyid/:id` and `GET /approval/getbyid/:id` for its own requests, and `POST /delegation/save`, `/delegation/getall` and `/delegation/revoke` to delegate further, list and revoke what it delegated. It cannot request access just in time (`POST /accessRequest/save` answers 403): it may only narrow. Approvals are bound to the sub-agent that asked.
 
 **Seeing and stopping them.** Each agent's **Access Grants** tab and each grant's page list its delegations: what was delegated, how many requests were used, status, and who it acts for. Owners, Vault Administrators and Security Administrators can **Revoke** one with a reason. The access log shows "via sub-agent <label>" on every request a sub-agent made, and the audit has `delegation.created` and `delegation.revoked`.
 

@@ -12,11 +12,11 @@ const suite = url ? describe : describe.skip;
 
 suite('operation approvals', () => {
   let m: {
-    client: typeof import('../src/db/client');
+    client: typeof import('../src/databases/client');
     seed: typeof import('../src/store/seed');
     repos: typeof import('../src/store/repos');
-    approvals: typeof import('../src/modules/approvals/approvals.service');
-    broker: typeof import('../src/modules/broker/broker.service');
+    approvals: typeof import('../src/services/approvalService/approvalService.service');
+    broker: typeof import('../src/services/brokerService/brokerService.service');
     crypto: typeof import('../src/lib/crypto');
   };
   let apiKey = '';
@@ -43,11 +43,11 @@ suite('operation approvals', () => {
     process.env.AUDIT_SIGNING_KEY ??= randomBytes(32).toString('base64url');
     process.env.DB_POOL_MAX = '4';
     m = {
-      client: await import('../src/db/client'),
+      client: await import('../src/databases/client'),
       seed: await import('../src/store/seed'),
       repos: await import('../src/store/repos'),
-      approvals: await import('../src/modules/approvals/approvals.service'),
-      broker: await import('../src/modules/broker/broker.service'),
+      approvals: await import('../src/services/approvalService/approvalService.service'),
+      broker: await import('../src/services/brokerService/brokerService.service'),
       crypto: await import('../src/lib/crypto'),
     };
     await m.client.runMigrations();

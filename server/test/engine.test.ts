@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { argumentHolds, argumentProblem, getOperation, resourcePatternMatches, type ActingUser, operationSelectorProblem, scopeSelectors, selectorApplication, type Policy } from '@token-vault/shared';
-import { approvalPolicyCovering, evaluate, policyMatches } from '../src/modules/policy-engine/engine';
+import { approvalPolicyCovering, evaluate, policyMatches } from '../src/services/policyEngine/engine';
 import type { GrantRecord } from '../src/store/types';
 import { sanitize } from '../src/lib/sanitize';
 import { ipInCidr } from '../src/lib/net';

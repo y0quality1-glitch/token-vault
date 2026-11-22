@@ -105,7 +105,7 @@ sequenceDiagram
     participant P as Policy Engine
     participant W as Customer Webhook
     participant G as GitHub (mock)
-    A->>C: POST /agent/v1/execute (Bearer tvak_…)
+    A->>C: POST /agent/v1/request/execute (Bearer tvak_…)
     C->>C: scrypt-verify credential → agent identity
     C->>P: evaluate(agent, integration, grants, policies)
     P-->>C: ALLOW / DENY + matched rule + decision trace

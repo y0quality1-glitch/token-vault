@@ -1,7 +1,7 @@
 import type { Agent, Grant, Integration, Role, User, Webhook } from '@token-vault/shared';
 
 /**
- * Storage record shapes. Each matches a row of the PostgreSQL schema in src/db/schema.ts
+ * Storage record shapes. Each matches a row of the PostgreSQL schema (TypeORM entities in src/entities)
  * (camelCase in TypeScript, snake_case in SQL). API DTOs are built from these in views.ts.
  *
  * Not present anywhere: provider secrets, encryption keys, plaintext agent keys or session tokens.

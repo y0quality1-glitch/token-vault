@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
-import { DEMO_PASSWORD, login } from './helpers';
+import { DEMO_PASSWORD, details, login } from './helpers';
 
 /**
  * Destructive operations with human approval, end to end:
@@ -22,10 +22,10 @@ test.describe.serial('destructive operations need human approval (Demo Organizat
 
   const writeFile = () =>
     agentApi
-      .post('/agent/v1/execute', {
+      .post('/agent/v1/request/execute', {
         data: { integration_id: 'int_github_001', operation: 'github.contents.write', resource: { repository: 'demo-org/demo-repo', path: 'docs/cleanup.md' }, input: { message: 'Add cleanup notes', content: Buffer.from('# Cleanup\n').toString('base64') } },
       })
-      .then(async (r) => ({ status: r.status(), body: await r.json() }));
+      .then(async (r) => ({ status: r.status(), body: await details(r) }));
   const grantBody = () => ({
     name: `${agentName} files`,
     agentId,
@@ -38,18 +38,18 @@ test.describe.serial('destructive operations need human approval (Demo Organizat
     rateLimitPerMinute: 30,
   });
   async function setSeededDeny(enabled: boolean) {
-    const { items } = await (await admin.get('/api/v1/policies')).json();
+    const { items } = await details(await admin.post('/api/v1/policy/getall'));
     const { id, organizationId: _o, createdAt: _c, updatedAt: _u, ...body } = items.find((p: { id: string }) => p.id === SEEDED_DENY);
-    const r = await admin.put(`/api/v1/policies/${id}`, { data: { ...body, enabled } });
+    const r = await admin.post('/api/v1/policy/save', { data: { id, ...body, enabled } });
     expect(r.ok(), await r.text()).toBe(true);
   }
 
   test.beforeAll(async ({ playwright, browser }) => {
     admin = await playwright.request.newContext({ baseURL: API });
     await admin.post('/api/v1/auth/login', { data: { email: 'owner@demo.test', password: DEMO_PASSWORD } });
-    await admin.post('/api/v1/auth/select-organization', { data: { organizationId: 'org_demo0000000001' } });
+    await admin.post('/api/v1/auth/selectOrganization', { data: { organizationId: 'org_demo0000000001' } });
     agentName = `Cleanup Agent ${Date.now() % 100000}`;
-    const agent = await (await admin.post('/api/v1/agents', { data: { name: agentName, environment: 'development', ownerTeam: 'Platform AI', agentType: 'AI_AGENT' } })).json();
+    const agent = await details(await admin.post('/api/v1/agent/save', { data: { name: agentName, environment: 'development', ownerTeam: 'Platform AI', agentType: 'AI_AGENT' } }));
     agentId = agent.agent.id;
     agentApi = await playwright.request.newContext({ baseURL: API, extraHTTPHeaders: { authorization: `Bearer ${agent.credential.apiKey}` } });
     page = await browser.newPage();
@@ -63,7 +63,7 @@ test.describe.serial('destructive operations need human approval (Demo Organizat
   });
 
   test('a destructive operation cannot be granted until a Require approval policy covers it', async () => {
-    const refused = await admin.post('/api/v1/grants', { data: grantBody() });
+    const refused = await admin.post('/api/v1/grant/save', { data: grantBody() });
     expect(refused.status()).toBe(400);
     expect(JSON.stringify(await refused.json())).toContain('can be granted only with human approval');
   });
@@ -84,7 +84,7 @@ test.describe.serial('destructive operations need human approval (Demo Organizat
     await expect(page.getByText('Policy created')).toBeVisible();
     await expect(page.getByRole('row', { name: new RegExp(`Approve destructive actions of ${agentName}`) }).getByText('All destructive operations')).toBeVisible();
 
-    const granted = await admin.post('/api/v1/grants', { data: grantBody() });
+    const granted = await admin.post('/api/v1/grant/save', { data: grantBody() });
     expect(granted.status(), await granted.text()).toBe(201);
   });
 

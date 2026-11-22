@@ -3,8 +3,8 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { GitBranch, ListTree, Search, UserRound } from 'lucide-react';
 import { DECISION_LABELS, actingUserLabel, sessionDisplayName, type Agent, type SessionDetail, type SessionSummary } from '@token-vault/shared';
 import { operationLabel } from '@/lib/providers';
-import { useApi } from '@/hooks/useApi';
-import { qs } from '@/lib/api';
+import { usePost } from '@/hooks/useApi';
+import { compact } from '@/lib/api';
 import { Card, CardBody, CardHeader, DetailList } from '@/components/ui/card';
 import { Badge, DecisionBadge, StatusBadge } from '@/components/ui/badge';
 import { Input, Select } from '@/components/ui/form';
@@ -26,8 +26,8 @@ export function SessionsPage() {
     const t = setTimeout(() => setDebounced(search.trim()), 250);
     return () => clearTimeout(t);
   }, [search]);
-  const { data, error, loading, reload } = useApi<{ items: SessionSummary[] }>(`/sessions${qs({ search: debounced, agentId })}`);
-  const agents = useApi<{ items: Agent[] }>('/agents');
+  const { data, error, loading, reload } = usePost<{ items: SessionSummary[] }>('/session/getall', compact({ search: debounced, agentId }));
+  const agents = usePost<{ items: Agent[] }>('/agent/getall');
 
   return (
     <div className="space-y-4">
@@ -121,7 +121,7 @@ export function SessionDetailPage() {
   const { sessionId = '' } = useParams();
   const [params] = useSearchParams();
   const agentId = params.get('agentId');
-  const { data: s, error, loading, reload } = useApi<SessionDetail>(`/sessions/${encodeURIComponent(sessionId)}${qs({ agentId })}`);
+  const { data: s, error, loading, reload } = usePost<SessionDetail>('/session/getdatabyid', { id: sessionId, ...compact({ agentId }) });
   if (error) return <ErrorState error={error} onRetry={reload} />;
   if (loading || !s) return <PageSkeleton />;
 

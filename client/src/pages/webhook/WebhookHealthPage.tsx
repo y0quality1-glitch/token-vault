@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Activity, FlaskConical, HeartPulse, RefreshCw, Webhook as WebhookIcon } from 'lucide-react';
 import { PERMISSIONS, type Webhook } from '@token-vault/shared';
-import { useApi } from '@/hooks/useApi';
+import { usePost } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -19,7 +19,7 @@ export function WebhookHealthPage() {
   const { can } = useAuth();
   const navigate = useNavigate();
   const toast = useToast();
-  const { data, error, loading, reload } = useApi<{ items: Webhook[] }>('/webhooks');
+  const { data, error, loading, reload } = usePost<{ items: Webhook[] }>('/webhook/getall');
   const [busy, setBusy] = useState<string | null>(null);
   const manage = can(PERMISSIONS.WEBHOOK_MANAGE);
 
@@ -29,7 +29,7 @@ export function WebhookHealthPage() {
   async function test(w: Webhook) {
     setBusy(w.id);
     try {
-      const r = await api.post<{ result: { ok: boolean; detail: string; latencyMs: number | null } }>(`/webhooks/${w.id}/test`);
+      const r = await api.post<{ result: { ok: boolean; detail: string; latencyMs: number | null } }>('/webhook/test', { id: w.id });
       if (r.result.ok) toast.success('Health check passed', `${r.result.latencyMs} ms · ${r.result.detail}`);
       else toast.error('Health check failed', r.result.detail);
       await reload();
@@ -43,7 +43,7 @@ export function WebhookHealthPage() {
   async function outage(w: Webhook, enabled: boolean) {
     setBusy(w.id);
     try {
-      await api.post(`/webhooks/${w.id}/simulate-outage`, { enabled });
+      await api.post('/webhook/simulateOutage', { id: w.id, enabled });
       toast.info(enabled ? 'Simulated outage enabled' : 'Simulated outage cleared', enabled ? 'Brokered requests will now fail safely with WEBHOOK_UNAVAILABLE.' : 'Health re-checked against the real webhook.');
       await reload();
     } catch (e) {

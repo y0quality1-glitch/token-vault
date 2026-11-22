@@ -2,7 +2,7 @@ import { expect, test, type APIRequestContext, type Page } from '@playwright/tes
 import { resolve } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { DEMO_PASSWORD, login } from './helpers';
+import { DEMO_PASSWORD, details, login } from './helpers';
 
 /**
  * Just-in-time access, end to end: a real MCP agent is denied, asks for access with
@@ -27,10 +27,10 @@ test.describe.serial('just-in-time access requests (Demo Organization)', () => {
     // The owner registers the agent, so the owner may NOT approve its requests (separation of duties).
     admin = await playwright.request.newContext({ baseURL: API });
     await admin.post('/api/v1/auth/login', { data: { email: 'owner@demo.test', password: DEMO_PASSWORD } });
-    await admin.post('/api/v1/auth/select-organization', { data: { organizationId: 'org_demo0000000001' } });
-    const agent = await (await admin.post('/api/v1/agents', { data: { name: 'JIT Agent', environment: 'development', ownerTeam: 'Platform AI', agentType: 'AI_AGENT' } })).json();
+    await admin.post('/api/v1/auth/selectOrganization', { data: { organizationId: 'org_demo0000000001' } });
+    const agent = await details(await admin.post('/api/v1/agent/save', { data: { name: 'JIT Agent', environment: 'development', ownerTeam: 'Platform AI', agentType: 'AI_AGENT' } }));
     const now = Date.now();
-    const grant = await admin.post('/api/v1/grants', {
+    const grant = await admin.post('/api/v1/grant/save', {
       data: {
         name: 'JIT agent read-only',
         agentId: agent.agent.id,
@@ -122,7 +122,7 @@ test.describe.serial('just-in-time access requests (Demo Organization)', () => {
     const asked = await call('token_vault_request_access', { operations: ['github.issues.create'], repository: 'demo-org/demo-repo', justification: 'Would like to file a summary issue.' });
     const id = /(arq_[0-9a-f]+)/.exec(asked.text)![1]!;
     // Rejected by the Security Administrator's browser session (through the console's API proxy).
-    const sec = await page.context().request.post(`http://localhost:5173/api/v1/grant-requests/${id}/reject`, { data: { note: 'Not needed for read-only summaries.' } });
+    const sec = await page.context().request.post('http://localhost:5173/api/v1/grantRequest/reject', { data: { id, note: 'Not needed for read-only summaries.' } });
     expect(sec.ok(), await sec.text()).toBe(true);
     const status = await call('token_vault_check_access_request', { access_request_id: id });
     expect(status.text).toContain('REJECTED');

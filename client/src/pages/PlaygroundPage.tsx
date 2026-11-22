@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Ban, CheckCircle2, CircleDashed, Eraser, ExternalLink, FlaskConical, KeyRound, Loader2, Send, ShieldX, XCircle } from 'lucide-react';
 import { DECISION_LABELS, PERMISSIONS, roleHas, type Agent, type ExecuteResponseBody, type Integration, type Webhook } from '@token-vault/shared';
 import { getOperation, getProvider, useProviders } from '@/lib/providers';
-import { useApi } from '@/hooks/useApi';
+import { usePost } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
 import { usePlayground } from '@/context/PlaygroundContext';
 import { api, executeAsAgent } from '@/lib/api';
@@ -77,8 +77,8 @@ export function PlaygroundPage() {
   const navigate = useNavigate();
   const toast = useToast();
   const { credential, setCredential } = usePlayground();
-  const integrations = useApi<{ items: Integration[] }>('/integrations');
-  const webhooks = useApi<{ items: Webhook[] }>('/webhooks');
+  const integrations = usePost<{ items: Integration[] }>('/integration/getall');
+  const webhooks = usePost<{ items: Webhook[] }>('/webhook/getall');
 
   const [integrationId, setIntegrationId] = useState('');
   const [operation, setOperation] = useState('github.issues.create');
@@ -188,7 +188,7 @@ export function PlaygroundPage() {
   async function toggleOutage(enabled: boolean) {
     if (!webhook) return;
     try {
-      await api.post(`/webhooks/${webhook.id}/simulate-outage`, { enabled });
+      await api.post('/webhook/simulateOutage', { id: webhook.id, enabled });
       await webhooks.reload();
       toast.info(enabled ? 'Simulated webhook outage enabled' : 'Simulated outage cleared');
     } catch (e) {
@@ -405,11 +405,12 @@ function ResultPanel({ item, sending, canAudit }: { item: HistoryItem | null; se
     );
   }
   const r = item.body;
-  const allowedOk = r.decision === 'ALLOW' && r.execution.status === 'SUCCEEDED';
+  const handedOff = r.decision === 'ALLOW' && r.execution.status === 'HANDED_OFF';
+  const allowedOk = r.decision === 'ALLOW' && (r.execution.status === 'SUCCEEDED' || handedOff);
   const allowedFailed = r.decision === 'ALLOW' && r.execution.status === 'FAILED';
   const tone = allowedOk ? 'border-emerald-200 bg-emerald-50' : allowedFailed ? 'border-amber-200 bg-amber-50' : 'border-red-200 bg-red-50';
   const Icon = allowedOk ? CheckCircle2 : allowedFailed ? XCircle : r.decision_code === 'AGENT_UNAUTHENTICATED' ? Ban : ShieldX;
-  const title = allowedOk ? 'Authorized and successful' : allowedFailed ? `Authorized, execution failed: ${DECISION_LABELS[r.decision_code] ?? r.decision_code}` : `Access denied: ${DECISION_LABELS[r.decision_code] ?? r.decision_code}`;
+  const title = handedOff ? 'Authorized: handed to the caller' : allowedOk ? 'Authorized and successful' : allowedFailed ? `Authorized, execution failed: ${DECISION_LABELS[r.decision_code] ?? r.decision_code}` : `Access denied: ${DECISION_LABELS[r.decision_code] ?? r.decision_code}`;
 
   return (
     <Card>
@@ -446,7 +447,7 @@ function ResultPanel({ item, sending, canAudit }: { item: HistoryItem | null; se
                 .map(([k, v]) => `${k}:${v}`)
                 .join(', ')}
             </span>
-            {r.execution.credential.revoked ? ', revoked right after use.' : `, expiring ${formatDateTime(r.execution.credential.expires_at)}.`}
+            {r.execution.credential.revoked ? ', revoked right after use.' : handedOff ? `, handed to the caller, expiring ${formatDateTime(r.execution.credential.expires_at)}.` : `, expiring ${formatDateTime(r.execution.credential.expires_at)}.`}
           </Callout>
         )}
         {r.execution.credential?.type === 'oauth2_access_token' && (
@@ -455,6 +456,21 @@ function ResultPanel({ item, sending, canAudit }: { item: HistoryItem | null; se
             {r.execution.credential.refreshed ? ', refreshed for this request' : ''}
             {r.execution.credential.expires_at ? `, valid until ${formatDateTime(r.execution.credential.expires_at)}` : ''}.
           </Callout>
+        )}
+
+        {r.authorization && (
+          <div className="space-y-2 rounded-lg border border-slate-200 p-3 text-sm" data-testid="handed-off">
+            <p className="font-medium text-slate-800">{r.authorization.mode === 'DECISION_ONLY' ? 'Decision only: the caller makes the call with its own credentials' : 'Short-lived credential: the caller makes the call with the issued token'}</p>
+            <DetailList
+              columns={2}
+              items={[
+                { label: 'Decision token', value: <Mono className="break-all">{`${r.authorization.decision_token.slice(0, 32)}…`}</Mono> },
+                { label: 'Valid until', value: formatDateTime(r.authorization.expires_at) },
+                ...(r.authorization.credential ? [{ label: 'Issued token', value: <Mono>{`${r.authorization.credential.token.slice(0, 6)}••••••••`}</Mono> }, { label: 'Token expires', value: r.authorization.credential.expires_at ? formatDateTime(r.authorization.credential.expires_at) : 'Set by the provider' }] : []),
+              ]}
+            />
+            <p className="text-xs text-slate-500">Verify the decision token with the public keys at /.well-known/jwks.json. The playground does not show the issued token in full.</p>
+          </div>
         )}
 
         <div>
@@ -477,7 +493,7 @@ function ResultPanel({ item, sending, canAudit }: { item: HistoryItem | null; se
             Sanitized response
             <span className="font-normal normal-case text-slate-400">No credentials appear in requests or responses</span>
           </p>
-          <JsonView value={r.result ?? { message: 'No upstream call was made.' }} />
+          <JsonView value={r.result ?? { message: handedOff ? 'Token Vault did not call the application; the caller does.' : 'No upstream call was made.' }} />
         </div>
 
         {canAudit && (
@@ -494,7 +510,7 @@ function ResultPanel({ item, sending, canAudit }: { item: HistoryItem | null; se
 function CredentialDialog({ open, onClose, onIssued }: { open: boolean; onClose: () => void; onIssued: (c: { apiKey: string; agentId: string; agentName: string }) => void }) {
   const { session } = useAuth();
   const toast = useToast();
-  const agents = useApi<{ items: Agent[] }>(open ? '/agents' : null);
+  const agents = usePost<{ items: Agent[] }>(open ? '/agent/getall' : null);
   const [agentId, setAgentId] = useState('');
   const [pending, setPending] = useState(false);
   const manageable = (agents.data?.items ?? []).filter((a) => roleHas(session?.role, PERMISSIONS.AGENT_MANAGE_ANY) || a.ownerUserId === session?.user.id);
@@ -521,7 +537,7 @@ function CredentialDialog({ open, onClose, onIssued }: { open: boolean; onClose:
             onClick={async () => {
               setPending(true);
               try {
-                const r = await api.post<{ agent: Agent; credential: { apiKey: string } }>(`/agents/${agentId}/rotate-credential`);
+                const r = await api.post<{ agent: Agent; credential: { apiKey: string } }>('/agent/rotateCredential', { id: agentId });
                 onIssued({ apiKey: r.credential.apiKey, agentId: r.agent.id, agentName: r.agent.name });
                 toast.success('Credential loaded', `New credential for ${r.agent.name} is held in memory only.`);
               } catch (e) {

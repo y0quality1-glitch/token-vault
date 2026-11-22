@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
-import { DEMO_PASSWORD, login } from './helpers';
+import { DEMO_PASSWORD, details, login } from './helpers';
 
 /**
  * Session tracing, end to end: an agent tags its calls with a session id and W3C trace
@@ -20,18 +20,18 @@ test.describe.serial('agent sessions (Demo Organization)', () => {
 
   const call = (operation: string, span: string) =>
     agentApi
-      .post('/agent/v1/execute', {
+      .post('/agent/v1/request/execute', {
         headers: { traceparent: `00-${traceId}-${span}-01` },
         data: { integration_id: 'int_github_001', operation, resource: { repository: 'demo-org/demo-repo', path: 'README.md' }, session_id: sessionId, session_label: label },
       })
-      .then(async (r) => ({ status: r.status(), body: await r.json() }));
+      .then(async (r) => ({ status: r.status(), body: await details(r) }));
 
   test.beforeAll(async ({ playwright, browser }) => {
     admin = await playwright.request.newContext({ baseURL: API });
     await admin.post('/api/v1/auth/login', { data: { email: 'owner@demo.test', password: DEMO_PASSWORD } });
-    await admin.post('/api/v1/auth/select-organization', { data: { organizationId: 'org_demo0000000001' } });
-    const agent = await (await admin.post('/api/v1/agents', { data: { name: agentName, environment: 'development', ownerTeam: 'Platform AI', agentType: 'AI_AGENT' } })).json();
-    const grant = await admin.post('/api/v1/grants', {
+    await admin.post('/api/v1/auth/selectOrganization', { data: { organizationId: 'org_demo0000000001' } });
+    const agent = await details(await admin.post('/api/v1/agent/save', { data: { name: agentName, environment: 'development', ownerTeam: 'Platform AI', agentType: 'AI_AGENT' } }));
+    const grant = await admin.post('/api/v1/grant/save', {
       data: { name: `${agentName} read`, agentId: agent.agent.id, integrationId: 'int_github_001', environment: 'development', scopes: ['github.repositories.read'], repositories: ['demo-org/demo-repo'], validFrom: new Date(Date.now() - 60_000).toISOString(), expiresAt: new Date(Date.now() + 86_400_000).toISOString(), rateLimitPerMinute: 60 },
     });
     expect(grant.ok(), await grant.text()).toBe(true);
@@ -51,7 +51,7 @@ test.describe.serial('agent sessions (Demo Organization)', () => {
     const denied = await call('github.contents.read', '2222222222222222'); // not granted
     expect(denied.body).toMatchObject({ decision: 'DENY', decision_code: 'SCOPE_DENIED', trace: { session_id: sessionId, trace_id: traceId } });
 
-    const { items } = await (await admin.get(`/api/v1/sessions?search=${encodeURIComponent(label)}`)).json();
+    const { items } = await details(await admin.post('/api/v1/session/getall', { data: { search: label } }));
     expect(items).toEqual([expect.objectContaining({ sessionId, sessionLabel: label, agentName, requests: 2, allowed: 1, denied: 1 })]);
   });
 

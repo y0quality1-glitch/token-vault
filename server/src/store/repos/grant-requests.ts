@@ -1,39 +1,32 @@
-import { and, desc, eq } from 'drizzle-orm';
-import { db, type Executor } from '../../db/client';
-import { grantRequests } from '../../db/schema';
+import { db, type Executor } from '../../databases/client';
+import { GrantRequestEntity } from '../../entities';
+import { insertRow, oneBy, updateWhere } from './orm';
 
-export type GrantRequestRecord = typeof grantRequests.$inferSelect;
+export type GrantRequestRecord = Omit<GrantRequestEntity, keyof import('typeorm').BaseEntity>;
 
 export async function listGrantRequests(organizationId: string, ex: Executor = db): Promise<GrantRequestRecord[]> {
-  return ex.select().from(grantRequests).where(eq(grantRequests.organizationId, organizationId)).orderBy(desc(grantRequests.createdAt));
+  return ex.find(GrantRequestEntity, { where: { organizationId }, order: { createdAt: 'DESC' } });
 }
 
 export async function getGrantRequest(organizationId: string, id: string, ex: Executor = db): Promise<GrantRequestRecord | null> {
-  const [row] = await ex.select().from(grantRequests).where(and(eq(grantRequests.organizationId, organizationId), eq(grantRequests.id, id)));
-  return row ?? null;
+  return oneBy(ex, GrantRequestEntity, { organizationId, id });
 }
 
 /** An agent may read only its own requests. */
 export async function getGrantRequestForAgent(agentId: string, id: string, ex: Executor = db): Promise<GrantRequestRecord | null> {
-  const [row] = await ex.select().from(grantRequests).where(and(eq(grantRequests.agentId, agentId), eq(grantRequests.id, id)));
-  return row ?? null;
+  return oneBy(ex, GrantRequestEntity, { agentId, id });
 }
 
 export async function pendingForAgent(agentId: string, ex: Executor = db): Promise<GrantRequestRecord[]> {
-  return ex.select().from(grantRequests).where(and(eq(grantRequests.agentId, agentId), eq(grantRequests.status, 'PENDING')));
+  if (!agentId) return [];
+  return ex.findBy(GrantRequestEntity, { agentId, status: 'PENDING' });
 }
 
 export async function insertGrantRequest(record: GrantRequestRecord, ex: Executor = db): Promise<GrantRequestRecord> {
-  const [row] = await ex.insert(grantRequests).values(record).returning();
-  return row!;
+  return insertRow(ex, GrantRequestEntity, record, { id: record.id });
 }
 
 /** Decides a request only if it is still PENDING (guards against double approval). */
 export async function decideGrantRequest(id: string, patch: Partial<Omit<GrantRequestRecord, 'id' | 'organizationId'>>, ex: Executor = db): Promise<GrantRequestRecord | null> {
-  const [row] = await ex
-    .update(grantRequests)
-    .set(patch)
-    .where(and(eq(grantRequests.id, id), eq(grantRequests.status, 'PENDING')))
-    .returning();
-  return row ?? null;
+  return updateWhere(ex, GrantRequestEntity, "id = :id AND status = 'PENDING'", { id }, patch);
 }

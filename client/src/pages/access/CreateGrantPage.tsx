@@ -3,7 +3,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, ArrowRight, Bot, CheckCircle2, FlaskConical, Github, Lock } from 'lucide-react';
 import { PERMISSIONS, type Agent, type GrantDetail, type Integration, type OnBehalfOfMode } from '@token-vault/shared';
 import { getProvider, operationLabel, useProviders } from '@/lib/providers';
-import { useApi, useMutation } from '@/hooks/useApi';
+import { useMutation, usePost } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -33,8 +33,8 @@ export function CreateGrantPage() {
   const navigate = useNavigate();
   const toast = useToast();
   const [params] = useSearchParams();
-  const agents = useApi<{ items: Agent[] }>('/agents');
-  const integrations = useApi<{ items: Integration[] }>('/integrations');
+  const agents = usePost<{ items: Agent[] }>('/agent/getall');
+  const integrations = usePost<{ items: Integration[] }>('/integration/getall');
 
   const [step, setStep] = useState(0);
   const [agentId, setAgentId] = useState(params.get('agentId') ?? '');
@@ -54,8 +54,8 @@ export function CreateGrantPage() {
   }));
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [created, setCreated] = useState<GrantDetail[] | null>(null);
-  const submitOne = useMutation((body: unknown) => api.post<GrantDetail>('/grants', body));
-  const submitMany = useMutation((body: unknown) => api.post<{ items: GrantDetail[] }>('/grants/batch', body));
+  const submitOne = useMutation((body: unknown) => api.post<GrantDetail>('/grant/save', body));
+  const submitMany = useMutation((body: unknown) => api.post<{ items: GrantDetail[] }>('/grant/savemulti', body));
   const submit = integrationIds.length > 1 ? submitMany : submitOne;
 
   const agent = agents.data?.items.find((a) => a.id === agentId);

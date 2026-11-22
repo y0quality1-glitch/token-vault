@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { CalendarClock, ClipboardCheck, ShieldOff, TimerOff } from 'lucide-react';
 import { PERMISSIONS, type AccessReviewItem, type AccessReviewSummary } from '@token-vault/shared';
 import { operationLabel } from '@/lib/providers';
-import { useApi } from '@/hooks/useApi';
+import { usePost } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -33,7 +33,7 @@ function ReviewBadges({ i }: { i: AccessReviewItem }) {
 export function AccessReviewsPage() {
   const { can } = useAuth();
   const toast = useToast();
-  const { data, error, loading, reload, setData } = useApi<AccessReviewSummary>('/access-reviews');
+  const { data, error, loading, reload, setData } = usePost<AccessReviewSummary>('/accessReview/getdata');
   const [filter, setFilter] = useState<Filter>('due');
   const [selected, setSelected] = useState<string[]>([]);
   const [certifyIds, setCertifyIds] = useState<string[] | null>(null);
@@ -49,7 +49,7 @@ export function AccessReviewsPage() {
   async function certify(ids: string[]) {
     setBusy(true);
     try {
-      const r = await api.post<{ certified: number; summary: AccessReviewSummary }>('/access-reviews/certify', { grantIds: ids, note });
+      const r = await api.post<{ certified: number; summary: AccessReviewSummary }>('/accessReview/certify', { grantIds: ids, note });
       setData(r.summary);
       setSelected([]);
       toast.success(`${r.certified} grant${r.certified > 1 ? 's' : ''} certified`, `Next review due in ${r.summary.intervalDays} days.`);
@@ -65,7 +65,7 @@ export function AccessReviewsPage() {
   async function doRevoke(i: AccessReviewItem) {
     setBusy(true);
     try {
-      await api.post(`/grants/${i.grant.id}/revoke`, { reason: note || 'Revoked during access review' });
+      await api.post('/grant/revoke', { id: i.grant.id, reason: note || 'Revoked during access review' });
       toast.success('Grant revoked', `${i.grant.agentName} loses access on its next request.`);
       setRevoke(null);
       setNote('');

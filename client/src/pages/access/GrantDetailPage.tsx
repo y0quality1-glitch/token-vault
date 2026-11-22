@@ -25,7 +25,7 @@ export function GrantDetailPage() {
   const navigate = useNavigate();
   const toast = useToast();
   const { can } = useAuth();
-  const { data: g, error, loading, reload, setData } = useApi<GrantDetail>(`/grants/${id}`);
+  const { data: g, error, loading, reload, setData } = useApi<GrantDetail>(`/grant/getbyid/${id}`);
   const [dialog, setDialog] = useState<null | 'revoke' | 'extend' | 'edit' | 'expire'>(null);
   const [busy, setBusy] = useState(false);
   const [reason, setReason] = useState('');
@@ -64,7 +64,7 @@ export function GrantDetailPage() {
         actions={
           <>
             {g.status === 'PENDING_APPROVAL' && can(PERMISSIONS.GRANT_APPROVE) && (
-              <Button loading={busy} onClick={() => act(() => api.post<GrantDetail>(`/grants/${g.id}/approve`), 'Grant approved (simulated approval)')}>
+              <Button loading={busy} onClick={() => act(() => api.post<GrantDetail>('/grant/approve', { id: g.id }), 'Grant approved (simulated approval)')}>
                 <CheckCircle2 className="h-4 w-4" /> Approve
               </Button>
             )}
@@ -210,7 +210,7 @@ export function GrantDetailPage() {
         description={`${g.agentName} will be denied on its very next request to ${g.integrationName}. Revocation is evaluated on every authorization check; there are no long-lived tokens to wait out.`}
         confirmLabel="Revoke grant"
         loading={busy}
-        onConfirm={() => act(() => api.post<GrantDetail>(`/grants/${g.id}/revoke`, { reason }), 'Grant revoked')}
+        onConfirm={() => act(() => api.post<GrantDetail>('/grant/revoke', { id: g.id, reason }), 'Grant revoked')}
       >
         <Field label="Reason (recorded in audit)">
           <Textarea rows={2} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Demo: revocation test" />
@@ -223,7 +223,7 @@ export function GrantDetailPage() {
         description="Demo control (Scenario E): sets the expiry to the current time so the next request is denied with GRANT_EXPIRED. You can extend it again afterwards."
         confirmLabel="Expire now"
         loading={busy}
-        onConfirm={() => act(() => api.post<GrantDetail>(`/grants/${g.id}/expire-now`), 'Grant expired')}
+        onConfirm={() => act(() => api.post<GrantDetail>('/grant/expireNow', { id: g.id }), 'Grant expired')}
       />
       <ExtendDialog open={dialog === 'extend'} grant={g} onClose={() => setDialog(null)} onSaved={(x) => setData(x)} />
       <EditRestrictionsDialog open={dialog === 'edit'} grant={g} onClose={() => setDialog(null)} onSaved={(x) => navigate(`/access/grants/${x.id}`)} />
@@ -234,7 +234,7 @@ export function GrantDetailPage() {
 function ExtendDialog({ open, grant, onClose, onSaved }: { open: boolean; grant: GrantDetail; onClose: () => void; onSaved: (g: GrantDetail) => void }) {
   const toast = useToast();
   const [value, setValue] = useState('');
-  const save = useMutation((expiresAt: string) => api.post<GrantDetail>(`/grants/${grant.id}/extend`, { expiresAt }));
+  const save = useMutation((expiresAt: string) => api.post<GrantDetail>('/grant/extend', { id: grant.id, expiresAt }));
   useEffect(() => {
     if (open) setValue(toLocalInput(new Date(Math.max(Date.now(), new Date(grant.expiresAt).getTime()) + 7 * 86400e3)));
   }, [open, grant.expiresAt]);
@@ -283,7 +283,7 @@ function EditRestrictionsDialog({ open, grant, onClose, onSaved }: { open: boole
   const grantable = provider ? all.filter((o) => o.provider === provider) : all;
   const toast = useToast();
   const [f, setF] = useState({ scopes: [] as string[], repositories: '', validFrom: '', expiresAt: '', rateLimitPerMinute: '', maxRequestsPerDay: '', maxWritesPerHour: '', allowedCidrs: '', onBehalfOf: 'ALLOWED' as OnBehalfOfMode, allowedUserGroups: '' });
-  const save = useMutation((body: unknown) => api.post<GrantDetail>(`/grants/${grant.id}/versions`, body));
+  const save = useMutation((body: unknown) => api.post<GrantDetail>('/grant/newVersion', { id: grant.id, ...(body as object) }));
   useEffect(() => {
     if (open)
       setF({

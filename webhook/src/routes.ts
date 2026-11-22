@@ -5,7 +5,7 @@ import { PgNonceStore } from './security/nonce-store';
 import { hmacHex, signResponse, verifySignedRequest } from './security/signature';
 import * as store from './store/credential-store';
 import { createHash } from 'node:crypto';
-import { applyResponseFilter, describeFilterReport, filterFingerprint, parseTraceparent, responseFilterProblem, type AuthMethodDefinition, type CredentialUseInfo, type ProviderDefinition, type ResponseFilter } from '@token-vault/shared';
+import { applyResponseFilter, type HandedOffCredential, describeFilterReport, filterFingerprint, parseTraceparent, responseFilterProblem, type AuthMethodDefinition, type CredentialUseInfo, type ProviderDefinition, type ResponseFilter } from '@token-vault/shared';
 import * as oauth from './providers/oauth';
 import { ExecutionError, executeOperation, getExecutableOperation, injectionFor, testCredential, type ProviderCall, type ProviderResult } from './providers/executor';
 import * as app from './providers/github-app';
@@ -170,24 +170,93 @@ async function runWithCredential(rec: store.CredentialRecord, secret: string, ca
  * Refreshes are single-flight per credential and re-read the stored credential first, so
  * concurrent requests never spend a rotated (already used) refresh token.
  */
+/**
+ * The checks every operation request (execute, issue) passes before a secret is touched: short
+ * validity window addressed to this webhook, an active credential of that organization, and an
+ * operation of the credential's own provider. Destructive operations only with a human approval
+ * and WEBHOOK_ALLOW_DESTRUCTIVE. Sends the refusal and returns null when a check fails.
+ */
+async function checkOperationClaims(req: SignedRequest, res: Response, claims: any): Promise<{ rec: store.CredentialRecord; allowDestructive: boolean } | null> {
+  const refuse = (status: number, code: string, message: string) => {
+    signedJson(req, res, status, { error: { code, message } });
+    return null;
+  };
+  // Validate the short-lived claims (defense in depth on top of the HMAC).
+  if (claims.aud !== config.instanceId) return refuse(401, 'AUDIENCE_MISMATCH', 'Execution request not addressed to this webhook');
+  if (typeof claims.exp !== 'number' || claims.exp < Date.now()) return refuse(401, 'EXECUTION_EXPIRED', 'Execution request expired');
+  if (typeof claims.iat !== 'number' || claims.exp - claims.iat > config.maxExecutionTtlMs) return refuse(401, 'EXECUTION_TTL_TOO_LONG', 'Execution request validity window too long');
+
+  const rec = await store.get(str(claims.credential_ref), str(claims.org_id));
+  if (!rec) return refuse(404, 'CREDENTIAL_NOT_FOUND', 'Credential reference cannot be resolved');
+  if (rec.status !== 'ACTIVE') return refuse(409, 'CREDENTIAL_DISABLED', 'Credential is disabled');
+  // The operation must belong to the credential's provider definition (a GitHub token is never used for another provider's call).
+  // Destructive operations run only if this webhook's operator allows them (WEBHOOK_ALLOW_DESTRUCTIVE)
+  // and the signed request carries the human approval the control plane required for it.
+  const allowDestructive = config.allowDestructive && typeof claims.approval_id === 'string' && claims.approval_id.length > 0;
+  const known = () => registry.get(rec.provider)?.operations.some((o) => o.id === claims.operation && (o.risk !== 'destructive' || allowDestructive));
+  // The control plane may have seen a newer catalog: refresh once before refusing.
+  if (typeof claims.operation === 'string' && !known() && catalogSync) await catalogSync.refresh();
+  if (typeof claims.operation !== 'string' || !known()) {
+    return refuse(400, 'UNSUPPORTED_OPERATION', 'This webhook does not execute that operation');
+  }
+  return { rec, allowDestructive };
+}
+
+/** Short-lived credential mode: the token the caller uses for exactly this operation (see /credentials/issue). */
+async function issueCredential(rec: store.CredentialRecord, secret: string, call: ProviderCall): Promise<{ credential: HandedOffCredential; refreshed: boolean }> {
+  const def = definitionFor(rec.provider);
+  if (oauth.isOAuthCredential(secret)) {
+    let cred = JSON.parse(secret) as oauth.OAuthCredential;
+    const method = oauthMethod(def, cred);
+    const refreshed = oauth.needsRefresh(cred);
+    if (refreshed) cred = await refreshOAuth(rec, def, method, cred);
+    return { credential: { type: 'oauth2_access_token', token: cred.accessToken!, token_type: 'Bearer', expires_at: cred.expiresAt ?? null, scopes: cred.scopes ?? [] }, refreshed };
+  }
+  if (app.isGitHubAppCredential(secret)) {
+    if (!def.auth.some((a) => a.kind === 'plugin' && a.plugin === 'github_app')) throw new ExecutionError('UNSUPPORTED_OPERATION', `${def.name} does not support GitHub App credentials`);
+    const permissions = getExecutableOperation(def, call.operation, call.allowDestructive).providerPermissions;
+    const repository = call.resource[def.resource.name];
+    if (!repository) throw new ExecutionError('INVALID_REQUEST', `resource.${def.resource.name} is required to issue a credential limited to it`);
+    const cred = JSON.parse(secret) as app.GitHubAppCredential;
+    // Not revoked here: the caller uses it. It is limited to this repository and these permissions, and expires.
+    const minted = await app.mintInstallationToken(config.modeFor(def.key), cred, app.resolvePrivateKey(cred, config.githubAppPrivateKey), permissions, repository);
+    return { credential: { type: 'github_app_installation_token', token: minted.token, token_type: 'Bearer', expires_at: minted.expiresAt, repositories: minted.repositories, permissions: minted.permissions }, refreshed: false };
+  }
+  // A stored key or personal token cannot be narrowed or made to expire: never handed out.
+  throw new ExecutionError('CREDENTIAL_NOT_ISSUABLE', 'This credential is a stored key or token; only GitHub App and OAuth connections can issue short-lived credentials');
+}
+
+function oauthMethod(def: ProviderDefinition, cred: oauth.OAuthCredential): AuthMethodDefinition {
+  if (cred.pending || !cred.accessToken) throw new oauth.OAuthError('OAUTH_NOT_CONNECTED', 'This OAuth connection was never completed; connect it again');
+  const method = def.auth.find((a) => a.id === cred.authMethod && a.kind === 'oauth2');
+  if (!method) throw new ExecutionError('UNSUPPORTED_OPERATION', `${def.name} no longer offers the OAuth method ${cred.authMethod}`);
+  return method;
+}
+
+/**
+ * Refreshes an OAuth access token, single-flight per credential. The stored credential is
+ * re-read first, so concurrent requests never spend a rotated (already used) refresh token.
+ */
+async function refreshOAuth(rec: store.CredentialRecord, def: ProviderDefinition, method: AuthMethodDefinition, current: oauth.OAuthCredential): Promise<oauth.OAuthCredential> {
+  const used = current.accessToken;
+  return oauth.singleFlight(rec.credentialRef, async () => {
+    const latestRec = await store.get(rec.credentialRef, rec.orgId);
+    const latest = latestRec ? (JSON.parse(await store.withSecret(latestRec, async (s) => s)) as oauth.OAuthCredential) : current;
+    // Another request already refreshed: use its token instead of spending the refresh token again.
+    if (latest.accessToken !== used && !oauth.needsRefresh(latest)) return latest;
+    const next = await oauth.refresh(config.modeFor(def.key), def, method, latest, config.mockOAuthTokenTtlS);
+    await store.replaceSecret(rec.credentialRef, rec.orgId, JSON.stringify(next));
+    console.log(`[vault] refreshed OAuth access token for ${rec.credentialRef}`);
+    return next;
+  });
+}
+
 async function runWithOAuth(rec: store.CredentialRecord, def: ProviderDefinition, initial: oauth.OAuthCredential, call: ProviderCall): Promise<ProviderResult & { credential?: CredentialUse }> {
-  if (initial.pending || !initial.accessToken) throw new oauth.OAuthError('OAUTH_NOT_CONNECTED', 'This OAuth connection was never completed; connect it again');
-  const method = def.auth.find((a) => a.id === initial.authMethod && a.kind === 'oauth2');
-  if (!method) throw new ExecutionError('UNSUPPORTED_OPERATION', `${def.name} no longer offers the OAuth method ${initial.authMethod}`);
+  const method = oauthMethod(def, initial);
   let cred = initial;
   let refreshed = false;
   const doRefresh = async () => {
-    const used = cred.accessToken;
-    cred = await oauth.singleFlight(rec.credentialRef, async () => {
-      const latestRec = await store.get(rec.credentialRef, rec.orgId);
-      const latest = latestRec ? (JSON.parse(await store.withSecret(latestRec, async (s) => s)) as oauth.OAuthCredential) : cred;
-      // Another request already refreshed: use its token instead of spending the refresh token again.
-      if (latest.accessToken !== used && !oauth.needsRefresh(latest)) return latest;
-      const next = await oauth.refresh(config.modeFor(def.key), def, method, latest, config.mockOAuthTokenTtlS);
-      await store.replaceSecret(rec.credentialRef, rec.orgId, JSON.stringify(next));
-      console.log(`[vault] refreshed OAuth access token for ${rec.credentialRef}`);
-      return next;
-    });
+    cred = await refreshOAuth(rec, def, method, cred);
     refreshed = true;
   };
   const run = () => {
@@ -213,7 +282,7 @@ function oauthFailure(req: SignedRequest, res: Response, e: oauth.OAuthError) {
 /** Execution errors raised before or around the upstream call (never contain secrets). */
 function executionFailure(req: SignedRequest, res: Response, e: ExecutionError) {
   console.warn(`[vault] execution refused: ${e.code}`);
-  const status = e.code === 'UNSUPPORTED_OPERATION' || e.code === 'INVALID_REQUEST' ? 400 : 502;
+  const status = e.code === 'UNSUPPORTED_OPERATION' || e.code === 'INVALID_REQUEST' ? 400 : e.code === 'CREDENTIAL_NOT_ISSUABLE' ? 409 : 502;
   return signedJson(req, res, status, { error: { code: e.code, message: e.message } });
 }
 
@@ -445,24 +514,9 @@ export function buildRouter() {
   r.post('/internal/v1/execute', requireSignature, async (req: SignedRequest, res) => {
     const started = Date.now();
     const claims = req.json ?? {};
-    // Validate the short-lived execution claims (defense in depth on top of the HMAC).
-    if (claims.aud !== config.instanceId) return signedJson(req, res, 401, { error: { code: 'AUDIENCE_MISMATCH', message: 'Execution request not addressed to this webhook' } });
-    if (typeof claims.exp !== 'number' || claims.exp < Date.now()) return signedJson(req, res, 401, { error: { code: 'EXECUTION_EXPIRED', message: 'Execution request expired' } });
-    if (typeof claims.iat !== 'number' || claims.exp - claims.iat > config.maxExecutionTtlMs) return signedJson(req, res, 401, { error: { code: 'EXECUTION_TTL_TOO_LONG', message: 'Execution request validity window too long' } });
-
-    const rec = await store.get(str(claims.credential_ref), str(claims.org_id));
-    if (!rec) return signedJson(req, res, 404, { error: { code: 'CREDENTIAL_NOT_FOUND', message: 'Credential reference cannot be resolved' } });
-    if (rec.status !== 'ACTIVE') return signedJson(req, res, 409, { error: { code: 'CREDENTIAL_DISABLED', message: 'Credential is disabled' } });
-    // The operation must belong to the credential's provider definition (a GitHub token is never used for another provider's call).
-    // Destructive operations run only if this webhook's operator allows them (WEBHOOK_ALLOW_DESTRUCTIVE)
-    // and the signed request carries the human approval the control plane required for it.
-    const allowDestructive = config.allowDestructive && typeof claims.approval_id === 'string' && claims.approval_id.length > 0;
-    const known = () => registry.get(rec.provider)?.operations.some((o) => o.id === claims.operation && (o.risk !== 'destructive' || allowDestructive));
-    // The control plane may have seen a newer catalog: refresh once before refusing.
-    if (typeof claims.operation === 'string' && !known() && catalogSync) await catalogSync.refresh();
-    if (typeof claims.operation !== 'string' || !known()) {
-      return signedJson(req, res, 400, { error: { code: 'UNSUPPORTED_OPERATION', message: 'This webhook does not execute that operation' } });
-    }
+    const ok = await checkOperationClaims(req, res, claims);
+    if (!ok) return;
+    const { rec, allowDestructive } = ok;
 
     try {
       const result = await store.withSecret(rec, (secret) =>
@@ -486,6 +540,31 @@ export function buildRouter() {
       if (e instanceof ExecutionError) return executionFailure(req, res, e);
       if (e instanceof oauth.OAuthError) return oauthFailure(req, res, e);
       credentialFailure(req, res, e, `execute ${claims.request_id}`);
+    }
+  });
+
+  /**
+   * Short-lived credential mode: Token Vault allowed the request, and the caller makes the call.
+   * Hands out a GitHub App token minted for this one repository and the operation's permissions,
+   * or the connection's current OAuth access token (refreshed if about to expire). Static keys and
+   * tokens are never handed out, and nothing is issued unless this webhook's operator allows it.
+   */
+  r.post('/internal/v1/credentials/issue', requireSignature, async (req: SignedRequest, res) => {
+    const claims = req.json ?? {};
+    if (!config.allowCredentialIssue) return signedJson(req, res, 403, { error: { code: 'CREDENTIAL_ISSUE_DISABLED', message: 'This webhook does not hand out credentials (WEBHOOK_ALLOW_CREDENTIAL_ISSUE is off)' } });
+    const ok = await checkOperationClaims(req, res, claims);
+    if (!ok) return;
+    const { rec, allowDestructive } = ok;
+    try {
+      const issued = await store.withSecret(rec, (secret) => issueCredential(rec, secret, { operation: claims.operation, resource: stringRecord(claims.resource), input: {}, allowDestructive }));
+      const c = issued.credential;
+      console.log(`[vault] issue ${claims.request_id} op=${claims.operation} ref=${rec.credentialRef}${actingFor(claims.acting_user)}${traced(claims.traceparent)} type=${c.type}${c.repositories ? ` repos=${c.repositories.join(',')}` : ''} expires=${c.expires_at ?? 'unknown'}`);
+      signedJson(req, res, 200, { request_id: claims.request_id, credential: c, refreshed: issued.refreshed, simulated: config.modeFor(rec.provider) === 'mock' });
+    } catch (e) {
+      if (e instanceof app.GitHubAppError) return appFailure(req, res, e);
+      if (e instanceof ExecutionError) return executionFailure(req, res, e);
+      if (e instanceof oauth.OAuthError) return oauthFailure(req, res, e);
+      credentialFailure(req, res, e, `issue ${claims.request_id}`);
     }
   });
 
