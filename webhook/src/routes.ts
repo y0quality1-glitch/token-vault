@@ -11,6 +11,8 @@ import { ExecutionError, executeOperation, getExecutableOperation, injectionFor,
 import * as app from './providers/github-app';
 import { catalogSync, registry } from './providers/registry';
 import { secretTypeSync, secretTypes } from './providers/secret-types';
+import { secretRoutes } from './secret-routes';
+import { countValues } from './store/secret-store';
 import type { TLSSocket } from 'node:tls';
 import { checkClient, describeCertificate } from './security/tls';
 
@@ -325,10 +327,13 @@ function str(v: unknown, max = 200): string {
 
 export function buildRouter() {
   const r = Router();
+  // Secret values can be larger (certificate chains, kubeconfigs: at most 256 KiB as JSON); everything else stays small.
+  r.use('/internal/v1/secrets', express.raw({ type: '*/*', limit: '384kb' }));
   r.use(express.raw({ type: '*/*', limit: '64kb' }), (req: SignedRequest, _res, next) => {
     req.rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
     next();
   });
+  secretRoutes(r, { requireSignature, signedJson });
 
   // Signed health check / identity challenge.
   r.get('/internal/v1/health', requireSignature, async (req: SignedRequest, res) => {
@@ -341,6 +346,7 @@ export function buildRouter() {
       provider_modes: config.providerModes,
       uptime_s: Math.round((Date.now() - startedAt) / 1000),
       credentials_stored: await store.countCredentials(),
+      secret_values_stored: await countValues(),
       // Key ids only (one-way), never key material: tells an operator when a previous key can be removed.
       encryption: {
         provider: config.keyProviderKind,

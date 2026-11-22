@@ -33,6 +33,9 @@ import { SessionDetailPage, SessionsPage } from '@/pages/audit/SessionsPage';
 import { SlackApprovalsPage } from '@/pages/settings/SlackApprovalsPage';
 import { ApiClientsPage } from '@/pages/settings/ApiClientsPage';
 import { OAuthCallbackPage } from '@/pages/integrations/OAuthCallbackPage';
+import { SecretsPage } from '@/pages/secrets/SecretsPage';
+import { CreateSecretPage } from '@/pages/secrets/CreateSecretPage';
+import { SecretDetailPage } from '@/pages/secrets/SecretDetailPage';
 
 export function App() {
   return (
@@ -55,6 +58,31 @@ export function App() {
         <Route path="integrations/connect/:provider" element={<ConnectIntegrationPage />} />
         <Route path="integrations/:id" element={<IntegrationDetailPage />} />
         <Route path="oauth/callback" element={<OAuthCallbackPage />} />
+
+        <Route
+          path="secrets"
+          element={
+            <RequirePermission permission={PERMISSIONS.SECRET_READ_METADATA}>
+              <SecretsPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="secrets/new"
+          element={
+            <RequirePermission permission={PERMISSIONS.SECRET_CREATE}>
+              <CreateSecretPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="secrets/:id"
+          element={
+            <RequirePermission permission={PERMISSIONS.SECRET_READ_METADATA}>
+              <SecretDetailPage />
+            </RequirePermission>
+          }
+        />
 
         <Route path="agents" element={<AgentRegistryPage />} />
         <Route path="agents/:id" element={<AgentDetailPage />} />
