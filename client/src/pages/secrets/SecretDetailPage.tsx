@@ -17,6 +17,7 @@ import { PageHeader } from '@/components/ui/navigation';
 import { CopyButton, Mono } from '@/components/ui/secret';
 import { useToast } from '@/components/ui/toast';
 import { ApiErrorCallout, SecretStatusBadge, TypeFields, VersionStateBadge, categoryLabel, checkMetadata, checkPayload, initialValues, useSecretTypes, type FieldValues } from './secretUi';
+import { SecretAccessCard } from './secretAccess';
 import { LifecycleFields, NameFields, SETTINGS_FIELDS, settingsBody, settingsFromSecret, validateSettings, type SettingsValues } from './secretSettings';
 
 type DialogState =
@@ -289,6 +290,8 @@ export function SecretDetailPage() {
           <DataTable rows={[...s.versions].sort((a, b) => b.version - a.version)} rowKey={(v) => v.id} columns={versionColumns} dense />
         </div>
       </Card>
+
+      <SecretAccessCard key={s.id} secret={s} types={types.data?.types ?? []} />
 
       {/* Dialogs: keyed by secret, so nothing typed or revealed survives a change of page. */}
       {dialog?.kind === 'reveal' && <RevealDialog key={`${s.id}-${dialog.version ?? 'active'}`} secret={s} type={type} version={dialog.version} onClose={close} />}

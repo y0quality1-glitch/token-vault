@@ -13,13 +13,15 @@ import { AuditEventEntity } from './auditEventEntity';
 import { GrantRequestEntity } from './grantRequestEntity';
 import { OperationApprovalEntity } from './operationApprovalEntity';
 import { ProviderCatalogStateEntity } from './providerCatalogStateEntity';
+import { SecretAccessGrantEntity } from './secretAccessGrantEntity';
 import { SecretEntity } from './secretEntity';
+import { SecretRetrievalApprovalEntity } from './secretRetrievalApprovalEntity';
 import { SecretVersionEntity } from './secretVersionEntity';
 import { OauthPendingEntity } from './oauthPendingEntity';
 import { UserIssuerEntity } from './userIssuerEntity';
 import { DelegationEntity } from './delegationEntity';
 import { SlackSettingsEntity } from './slackSettingsEntity';
 
-export const ENTITIES = [OrganizationEntity, UserEntity, OrganizationMemberEntity, UserLoginsEntity, WebhookEntity, IntegrationEntity, AgentEntity, GrantEntity, PolicyEntity, AccessRequestEntity, AuditEventEntity, GrantRequestEntity, OperationApprovalEntity, ProviderCatalogStateEntity, OauthPendingEntity, UserIssuerEntity, DelegationEntity, SlackSettingsEntity, SecretEntity, SecretVersionEntity];
+export const ENTITIES = [OrganizationEntity, UserEntity, OrganizationMemberEntity, UserLoginsEntity, WebhookEntity, IntegrationEntity, AgentEntity, GrantEntity, PolicyEntity, AccessRequestEntity, AuditEventEntity, GrantRequestEntity, OperationApprovalEntity, ProviderCatalogStateEntity, OauthPendingEntity, UserIssuerEntity, DelegationEntity, SlackSettingsEntity, SecretEntity, SecretVersionEntity, SecretAccessGrantEntity, SecretRetrievalApprovalEntity];
 
-export { OrganizationEntity, UserEntity, OrganizationMemberEntity, UserLoginsEntity, WebhookEntity, IntegrationEntity, AgentEntity, GrantEntity, PolicyEntity, AccessRequestEntity, AuditEventEntity, GrantRequestEntity, OperationApprovalEntity, ProviderCatalogStateEntity, OauthPendingEntity, UserIssuerEntity, DelegationEntity, SlackSettingsEntity, SecretEntity, SecretVersionEntity };
+export { OrganizationEntity, UserEntity, OrganizationMemberEntity, UserLoginsEntity, WebhookEntity, IntegrationEntity, AgentEntity, GrantEntity, PolicyEntity, AccessRequestEntity, AuditEventEntity, GrantRequestEntity, OperationApprovalEntity, ProviderCatalogStateEntity, OauthPendingEntity, UserIssuerEntity, DelegationEntity, SlackSettingsEntity, SecretEntity, SecretVersionEntity, SecretAccessGrantEntity, SecretRetrievalApprovalEntity };
