@@ -1,6 +1,6 @@
 import { sign } from 'node:crypto';
 import type { EntityManager } from 'typeorm';
-import { signaturePayload } from '@token-vault/shared';
+import { signaturePayloadFor, type CatalogKind } from '@token-vault/shared';
 import { SIGNING } from '../../config';
 import AppDatabase from '../../databases/database';
 import { SigningKeyEntity } from '../../entities/signingKeyEntity';
@@ -13,8 +13,8 @@ import { SYSTEM_ACTOR, audit } from '../auditService/auditService.service';
  * published version with it; the catalog then serves both signatures, and consumers pinning the
  * old key, the new key or both keep accepting the catalog. The old private key is not needed.
  */
-export function signDigest(digest: string): string {
-  return sign(null, Buffer.from(signaturePayload(digest)), SIGNING.key).toString('base64');
+export function signDigest(digest: string, kind: CatalogKind = 'provider'): string {
+  return sign(null, Buffer.from(signaturePayloadFor(kind, digest)), SIGNING.key).toString('base64');
 }
 
 /** Records the active key (idempotent). Returns true the first time this key is seen. */
@@ -32,19 +32,19 @@ export async function registerActiveKey(m: EntityManager): Promise<boolean> {
   return (inserted.raw as unknown[]).length > 0;
 }
 
-export async function addSignature(m: EntityManager, versionId: string, digest: string, signature = signDigest(digest)) {
+export async function addSignature(m: EntityManager, versionId: string, digest: string, signature: string) {
   await m.createQueryBuilder().insert().into(VersionSignatureEntity).values({ version_id: versionId, key_id: SIGNING.keyId, signature, signed_at: new Date().toISOString() }).orIgnore().execute();
 }
 
 /** Signs every published (or superseded) version that has no signature by the active key yet. Returns how many. */
 export async function signPublishedWithActiveKey(m: EntityManager): Promise<number> {
-  const pending: { id: string; digest: string }[] = await m.query(
-    `SELECT id, digest FROM application_versions
-      WHERE status IN ('PUBLISHED', 'SUPERSEDED') AND digest IS NOT NULL
-        AND id NOT IN (SELECT version_id FROM cms_version_signatures WHERE key_id = $1)`,
+  const pending: { id: string; digest: string; kind: CatalogKind }[] = await m.query(
+    `SELECT v.id, v.digest, a.kind FROM application_versions v JOIN applications a ON a.id = v.application_id
+      WHERE v.status IN ('PUBLISHED', 'SUPERSEDED') AND v.digest IS NOT NULL
+        AND v.id NOT IN (SELECT version_id FROM cms_version_signatures WHERE key_id = $1)`,
     [SIGNING.keyId],
   );
-  for (const v of pending) await addSignature(m, v.id, v.digest);
+  for (const v of pending) await addSignature(m, v.id, v.digest, signDigest(v.digest, v.kind));
   return pending.length;
 }
 

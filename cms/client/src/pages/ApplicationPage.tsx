@@ -16,15 +16,19 @@ import { useAuth } from '@/auth';
 import { AvailabilityBadge } from '@/components/AvailabilityBadge';
 import { VersionBadge } from '@/components/VersionBadge';
 import { api } from '@/lib/api';
+import { KINDS, secretCategoryLabel, type CatalogKind } from '@/lib/kinds';
 import { formatDateTime } from '@/lib/utils';
 
-export function ApplicationPage() {
+/** One catalog entry (an application or a secret type) and its versions. */
+export function ApplicationPage({ kind = 'provider' }: { kind?: CatalogKind }) {
+  const k = KINDS[kind];
+  const secretType = kind === 'secret_type';
   const key = useParams().key!;
   const { user } = useAuth();
   const navigate = useNavigate();
   const toast = useToast();
-  const app = useApi<CmsApplicationDetail>(`/application/getbyid/${key}`);
-  const newVersion = useMutation(() => api.post<{ version: number }>('/application/newversion', { key }));
+  const app = useApi<CmsApplicationDetail>(`${k.apiBase}/getbyid/${key}`);
+  const newVersion = useMutation(() => api.post<{ version: number }>(`${k.apiBase}/newversion`, { key }));
   const [archiving, setArchiving] = useState(false);
   const [availabilityTarget, setAvailabilityTarget] = useState<'available' | 'coming_soon' | null>(null);
 
@@ -36,7 +40,7 @@ export function ApplicationPage() {
   return (
     <>
       <PageHeader
-        breadcrumbs={[{ label: 'Applications', to: '/applications' }, { label: a.name }]}
+        breadcrumbs={[{ label: k.plural, to: k.basePath }, { label: a.name }]}
         title={a.name}
         badge={
           a.archived ? (
@@ -44,7 +48,7 @@ export function ApplicationPage() {
           ) : a.publishedVersion ? (
             <>
               <Badge tone="green">Published v{a.publishedVersion}</Badge>
-              {a.availability && <AvailabilityBadge availability={a.availability} />}
+              {!secretType && a.availability && <AvailabilityBadge availability={a.availability} />}
             </>
           ) : (
             <Badge>Not published</Badge>
@@ -59,18 +63,18 @@ export function ApplicationPage() {
                 title={a.publishedVersion ? `Published versions are frozen: starts a draft copied from v${a.versions[0]?.version}` : undefined}
                 onClick={async () => {
                   const r = await newVersion.run();
-                  if (r) navigate(`/applications/${key}/versions/${r.version}`);
+                  if (r) navigate(`${k.basePath}/${key}/versions/${r.version}`);
                 }}
               >
                 <GitBranchPlus className="h-4 w-4" /> Edit (new version)
               </Button>
             )}
             {a.openVersion && (
-              <Button onClick={() => navigate(`/applications/${key}/versions/${a.openVersion!.version}`)}>
+              <Button onClick={() => navigate(`${k.basePath}/${key}/versions/${a.openVersion!.version}`)}>
                 Continue editing v{a.openVersion.version}
               </Button>
             )}
-            {user?.role === 'ADMIN' && !a.archived && a.availability && (
+            {!secretType && user?.role === 'ADMIN' && !a.archived && a.availability && (
               <Button
                 variant={a.availability === 'coming_soon' ? 'primary' : 'outline'}
                 disabled={!!a.openVersion}
@@ -103,7 +107,7 @@ export function ApplicationPage() {
           <DataTable
             rows={a.versions}
             rowKey={(v) => String(v.version)}
-            onRowClick={(v) => navigate(`/applications/${key}/versions/${v.version}`)}
+            onRowClick={(v) => navigate(`${k.basePath}/${key}/versions/${v.version}`)}
             columns={[
               { key: 'v', header: 'Version', cell: (v) => <span className="font-medium">v{v.version}</span> },
               { key: 'status', header: 'Status', cell: (v) => <VersionBadge status={v.status} /> },
@@ -114,13 +118,18 @@ export function ApplicationPage() {
           />
         </Card>
         <Card>
-          <CardHeader title="Application" />
+          <CardHeader title={k.singular} />
           <CardBody>
             <DetailList
               columns={1}
               items={[
                 { label: 'Key', value: a.key, mono: true },
-                { label: 'Operations (published)', value: a.operationCount },
+                ...(secretType
+                  ? [
+                      { label: 'Category', value: secretCategoryLabel(a.category) },
+                      { label: a.publishedVersion ? 'Fields (published)' : 'Fields (latest)', value: a.fieldCount },
+                    ]
+                  : [{ label: 'Operations (published)', value: a.operationCount }]),
                 { label: 'Created by', value: a.createdBy },
                 { label: 'Created', value: formatDateTime(a.createdAt) },
               ]}
@@ -143,11 +152,12 @@ export function ApplicationPage() {
         />
       )}
       <ArchiveDialog
+        kind={kind}
         open={archiving}
         appKey={key}
         onClose={() => setArchiving(false)}
         onDone={() => {
-          toast.success('Application archived', 'It is no longer served in the catalog.');
+          toast.success(`${k.singular} archived`, 'It is no longer served in the catalog.');
           setArchiving(false);
           void app.reload();
         }}
@@ -156,15 +166,20 @@ export function ApplicationPage() {
   );
 }
 
-function ArchiveDialog({ open, appKey, onClose, onDone }: { open: boolean; appKey: string; onClose: () => void; onDone: () => void }) {
+function ArchiveDialog({ kind, open, appKey, onClose, onDone }: { kind: CatalogKind; open: boolean; appKey: string; onClose: () => void; onDone: () => void }) {
+  const k = KINDS[kind];
   const [reason, setReason] = useState('');
-  const archive = useMutation(() => api.post('/application/archive', { key: appKey, reason }));
+  const archive = useMutation(() => api.post(`${k.apiBase}/archive`, { key: appKey, reason }));
   return (
     <Dialog
       open={open}
       onClose={onClose}
-      title="Archive application"
-      description="It disappears from the signed catalog, so Token Vault stops offering it. Its versions are kept for the record."
+      title={`Archive ${k.noun}`}
+      description={
+        kind === 'secret_type'
+          ? 'It disappears from the signed catalog, so Token Vault stops offering it for new secrets. Its versions are kept for the record.'
+          : 'It disappears from the signed catalog, so Token Vault stops offering it. Its versions are kept for the record.'
+      }
       footer={
         <>
           <Button variant="outline" onClick={onClose}>

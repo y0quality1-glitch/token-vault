@@ -1,5 +1,6 @@
 import { createHash, createPublicKey, verify, type KeyObject } from 'node:crypto';
-import { canonicalJson, signaturePayload, type SignedDefinition } from './canonical';
+import { canonicalJson, signaturePayloadFor, type CatalogKind, type SignedDefinition } from './canonical';
+import { validateSecretTypeDefinition, type SecretTypeDefinition } from '../secrets/schema';
 import { validateProviderDefinition, type ProviderDefinition } from './schema';
 
 /**
@@ -42,12 +43,16 @@ export function signaturesOf(envelope: SignedDefinition): { key_id: string; sign
   return envelope.signatures?.length ? envelope.signatures : [{ key_id: envelope.key_id, signature: envelope.signature }];
 }
 
-export function verifySignedDefinition(envelope: SignedDefinition, pinned: string | PinnedKeys): ProviderDefinition {
+/**
+ * Checks an envelope's digest and signatures under the context of its kind. Returns the raw
+ * definition; callers validate it with the kind's schema.
+ */
+export function verifyEnvelope(envelope: SignedDefinition, pinned: string | PinnedKeys, kind: CatalogKind): unknown {
   const keys = typeof pinned === 'string' ? parsePinnedKeys(pinned) : pinned;
   const candidates = signaturesOf(envelope).filter((s) => keys.has(s.key_id));
   if (candidates.length === 0) throw new SignatureError('signed with an unknown key');
   if (definitionDigest(envelope.definition) !== envelope.digest) throw new SignatureError('digest does not match the definition');
-  const payload = Buffer.from(signaturePayload(envelope.digest));
+  const payload = Buffer.from(signaturePayloadFor(kind, envelope.digest));
   const ok = candidates.some((s) => {
     try {
       return verify(null, payload, keys.get(s.key_id)!, Buffer.from(s.signature, 'base64'));
@@ -56,5 +61,13 @@ export function verifySignedDefinition(envelope: SignedDefinition, pinned: strin
     }
   });
   if (!ok) throw new SignatureError('signature does not verify');
-  return validateProviderDefinition(envelope.definition);
+  return envelope.definition;
+}
+
+export function verifySignedDefinition(envelope: SignedDefinition, pinned: string | PinnedKeys): ProviderDefinition {
+  return validateProviderDefinition(verifyEnvelope(envelope, pinned, 'provider'));
+}
+
+export function verifySignedSecretType(envelope: SignedDefinition, pinned: string | PinnedKeys): SecretTypeDefinition {
+  return validateSecretTypeDefinition(verifyEnvelope(envelope, pinned, 'secret_type'));
 }

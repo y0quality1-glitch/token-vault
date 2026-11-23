@@ -52,6 +52,10 @@ Also shipped: operation selectors that cover operations published later (`github
 | Agent behaviour alerts | Learns each agent's usual operations, volume and resources. Unusual activity raises a security event and can suspend the agent automatically. |
 | Policy test and explain | Answers "what could this agent do?" and "would this request be allowed, and why?" without running it. Also tests a policy change against past traffic. |
 
+## Secret Management
+
+Centralized storage, versioning, rotation and application retrieval of secrets of every kind (spec [4.9](specs/4.9-secret-management.md)), with values kept only in the customer webhook. Planned in six phases in [SECRET_MANAGEMENT.md](SECRET_MANAGEMENT.md); phase 1 (secret types) is done.
+
 ## Basics needed alongside
 
 These don't set Token Vault apart from HashiCorp, but enterprise customers won't trust the features above without them. Work on them in parallel with the phases.

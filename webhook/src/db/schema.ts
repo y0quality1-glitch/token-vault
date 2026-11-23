@@ -1,4 +1,4 @@
-import { customType, index, integer, jsonb, pgTable, text } from 'drizzle-orm/pg-core';
+import { customType, index, integer, jsonb, pgTable, text, uniqueIndex } from 'drizzle-orm/pg-core';
 
 /**
  * Customer-side store (spec section 9, "Customer webhook credential store").
@@ -72,3 +72,30 @@ export const vaultSettings = pgTable('vault_settings', {
   keyRef: text('key_ref').notNull(),
   createdAt: ts('created_at').notNull(),
 });
+
+/**
+ * Secret values (Secret Management, spec 4.9.5): one row per version of a secret, encrypted
+ * like credentials (same key, KMS envelope and re-encryption). The control plane holds the
+ * secret's metadata and refers to a version by value_ref; the plaintext exists only here,
+ * and only as ciphertext. The additional authenticated data binds each row to its
+ * organization, secret and version, so a row moved or relabelled in the database no longer
+ * decrypts. Destroying a version deletes its row (crypto-shredding).
+ */
+export const secretValues = pgTable(
+  'secret_values',
+  {
+    valueRef: text('value_ref').primaryKey(),
+    orgId: text('org_id').notNull(),
+    secretId: text('secret_id').notNull(),
+    version: integer('version').notNull(),
+    typeKey: text('type_key').notNull(),
+    iv: text('iv').notNull(),
+    ciphertext: text('ciphertext').notNull(),
+    authTag: text('auth_tag').notNull(),
+    encryptionKeyRef: text('encryption_key_ref').notNull(),
+    wrappedKey: text('wrapped_key'),
+    fingerprint: text('fingerprint').notNull(),
+    createdAt: ts('created_at').notNull(),
+  },
+  (t) => [index('secret_values_org_secret_idx').on(t.orgId, t.secretId), uniqueIndex('secret_values_org_secret_version').on(t.orgId, t.secretId, t.version)],
+);

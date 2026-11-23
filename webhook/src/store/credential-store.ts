@@ -78,7 +78,7 @@ function noteKeyService<T>(p: Promise<T>): Promise<T> {
  * Seals a secret for one row: with a fresh data key wrapped by the KMS, or (env mode) with
  * the current environment key. Throws KeyServiceUnavailableError when the KMS is down.
  */
-async function sealSecret(ref: string, secret: string) {
+export async function sealSecret(ref: string, secret: string) {
   if (config.keyProvider) {
     const e = await noteKeyService(sealEnvelope(config.keyProvider, secret, ref));
     return { iv: e.sealed.iv, ciphertext: e.sealed.ciphertext, authTag: e.sealed.authTag, encryptionKeyRef: e.ref, wrappedKey: e.wrappedKey };
@@ -92,7 +92,7 @@ async function sealSecret(ref: string, secret: string) {
  * Returns null if no configured key opens it (wrong key, removed key, tampered row). Throws
  * KeyServiceUnavailableError when the KMS cannot be reached: that says nothing about the row.
  */
-async function openRecord(r: Pick<CredentialRecord, 'credentialRef' | 'sealed' | 'encryptionKeyRef' | 'wrappedKey'>): Promise<string | null> {
+export async function openRecord(r: Pick<CredentialRecord, 'credentialRef' | 'sealed' | 'encryptionKeyRef' | 'wrappedKey'>): Promise<string | null> {
   if (r.wrappedKey) {
     const provider = config.keyProvider;
     if (!provider || !provider.handles(r.encryptionKeyRef)) return null;
@@ -114,7 +114,7 @@ async function openRecord(r: Pick<CredentialRecord, 'credentialRef' | 'sealed' |
 let fingerprintKeyPromise: Promise<Buffer> | null = null;
 const FINGERPRINT_SETTING = 'fingerprint_key';
 const settingContext = { token_vault_setting: FINGERPRINT_SETTING };
-function fingerprintKey(): Promise<Buffer> {
+export function fingerprintKey(): Promise<Buffer> {
   if (!config.keyProvider) return Promise.resolve(config.encryptionKey!);
   fingerprintKeyPromise ??= (async () => {
     const provider = config.keyProvider!;
@@ -169,7 +169,7 @@ const mockSecret = () => `mock_ghp_${randomBytes(18).toString('base64url')}`;
 export async function initStore() {
   if (config.seedMode === 'reset') {
     console.warn('[vault] SEED_MODE=reset: wiping the credential store');
-    await db.execute(sql`TRUNCATE credentials, used_nonces, provider_catalog_state`);
+    await db.execute(sql`TRUNCATE credentials, used_nonces, provider_catalog_state, secret_values`);
   }
   await importLegacyFile();
 

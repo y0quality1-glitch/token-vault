@@ -35,6 +35,15 @@ Authenticated with the `tv_session` httpOnly cookie, which is set by `POST /auth
 | POST | `/integration/getCatalog` | any role | |
 | POST | `/integration/getall` | any role | |
 | POST | `/provider/getall` · GET `/provider/getbyid/:key` | any role | application definitions and catalog status |
+| POST | `/secretType/getall` · GET `/secretType/getbyid/:key` | any role | secret types (spec 4.9.3) the control plane trusts: `{search?, filters: {category?}}` → `{types, categories, catalog}`; each type carries `categoryLabel`, `digest` and `source` (`catalog` or `bundled`) |
+| POST | `/secret/getall` | `secret:read_metadata` | secrets, metadata only (never a value). Filters as top-level fields: `typeKey`, `category`, `project`, `workspace`, `environment`, `status` (`EXPIRED` includes secrets past their expiry), `tag`, `integrationId`, `createdFrom/To`, `updatedFrom/To`, `expiresBefore/After`, `search`, `sortBy` (`name`, `createdAt`, `updatedAt`, `expiresAt`), `sortOrder`. Deleted secrets only with `status: "DELETED"` |
+| GET | `/secret/getbyid/:id` | `secret:read_metadata` | metadata, masked summary and fingerprint of the active version, every version, and `can.*` for the signed-in member |
+| POST | `/secret/save` | `secret:create` (no `id`) · `secret:update_metadata` (`id`) | create (201): `{name, typeKey, environment, payload, project?, workspace?, description?, tags?, metadata?, expiresAt?, rotationEnabled?, rotationIntervalDays?, activate?, webhookId?}`. The value goes to the customer webhook, which validates it against the secret type and encrypts it. With `id`: metadata only (`name`, `description`, `tags`, `metadata`, `expiresAt`, rotation); a future `expiresAt` renews an expired secret |
+| POST | `/secret/updateValue` · `/secret/rotate` | `secret:update_value` · `secret:rotate` | `{id, payload, reason?}` → a new active version; the previous one stays until destroyed |
+| POST | `/secret/retrieve` | `secret:retrieve` | `{id, version?, fields?, reason?}` → `{id, name, typeKey, version, payload, expiresAt, retrievedAt}`. Refused (and audited as `secret.access_denied`) for other roles, expired, pending, revoked or archived secrets, and destroyed versions; an older version needs `secret:manage_versions` |
+| POST | `/secret/rollback` · `/secret/destroyVersion` | `secret:manage_versions` | `{id, version, reason?}`: a new active version with that version's value (history is not rewritten) · crypto-shred an inactive version |
+| POST | `/secret/activate` · `/secret/revoke` · `/secret/archive` | `secret:update_metadata` · `secret:delete` · `secret:delete` | `{id, reason?}`: PENDING → ACTIVE · → REVOKED · REVOKED/EXPIRED → ARCHIVED |
+| DELETE | `/secret/delete/:id` | `secret:delete` | destroys every version on the webhook (nothing changes if it is unreachable), then keeps a DELETED tombstone; the name is free again |
 | POST | `/integration/save` | `integration:manage` | create (no `id`). PAT: `{provider, webhookId, displayName, environment, accountLabel, authType: "PAT", secret, allowedResources, description}`. GitHub App: `{…, authType: "GITHUB_APP", appId, installationId (optional), keySource: "stored" \| "webhook_env", privateKey (PEM, when stored)}`; `accountLabel` is optional and defaults to the installation's account. Secrets are forwarded to the webhook and never stored. An invalid key or unknown installation returns 400 `INVALID_PRIVATE_KEY` / `INSTALLATION_NOT_FOUND` / `APP_KEY_NOT_CONFIGURED` |
 | GET | `/integration/getbyid/:id` | any role | includes granted agents |
 | POST | `/integration/save` | `integration:manage` | with `id`: metadata only |
@@ -199,13 +208,17 @@ Every endpoint requires a valid control-plane signature: the `x-tv-timestamp`, `
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/internal/v1/health?challenge=` | identity proof: `challenge_response = HMAC("health:<challenge>:<instance_id>")` |
+| GET | `/internal/v1/health?challenge=` | identity proof: `challenge_response = HMAC("health:<challenge>:<instance_id>")`; also reports the secret types the webhook verified (`secret_types: {count, source, last_success_at, last_error}`) |
 | POST | `/internal/v1/credentials` | encrypt and store → `{credential_ref, masked_identifier, fingerprint, …}` |
 | POST | `/internal/v1/credentials/:ref/rotate` | re-encrypt with a new secret |
 | POST | `/internal/v1/credentials/:ref/test` | decrypt and call the provider; returns validity only |
 | POST | `/internal/v1/credentials/:ref/delete` | crypto-shred |
 | POST | `/internal/v1/execute` | validate `aud`, `exp`, TTL and org, then inject the credential and return a sanitized result |
 | POST | `/internal/v1/credentials/issue` | short-lived credential mode: the same checks as `execute`, then return a GitHub App token minted for the request's repository and the operation's permissions (not revoked), or the current OAuth access token (refreshed if about to expire). 403 `CREDENTIAL_ISSUE_DISABLED` unless `WEBHOOK_ALLOW_CREDENTIAL_ISSUE=true`; 409 `CREDENTIAL_NOT_ISSUABLE` for stored keys and tokens |
+| POST | `/internal/v1/secrets/store` | `{org_id, secret_id, version, type_key, payload}`: validate against a secret type the webhook verified itself, encrypt (bound to organization, secret and version) → `{value_ref, fingerprint, summary}` with sensitive fields masked |
+| POST | `/internal/v1/secrets/read` | `{org_id, secret_id, value_ref, fields?}` → the payload (only `fields`, if given) |
+| POST | `/internal/v1/secrets/copy` | `{org_id, secret_id, from_ref, version}`: a new version with an older version's value (rollback), checked against the current type |
+| POST | `/internal/v1/secrets/destroy` | `{org_id, secret_id, value_refs}` → `{destroyed}` (crypto-shred) |
 
 For a GitHub App integration, `execution.credential` describes the token the webhook minted for this one request (the token itself is never returned):
 

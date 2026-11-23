@@ -2,6 +2,7 @@ import { DataSource } from 'typeorm';
 import { config } from '../config';
 import { ENTITIES } from '../entities';
 import { Baseline1730000000000 } from './migrations/1730000000000-Baseline';
+import { Secrets1795000000000 } from './migrations/1795000000000-Secrets';
 
 /**
  * TypeORM DataSource (template: databases/dataSource.ts). Every entity and migration is listed
@@ -16,7 +17,7 @@ export const getPostgresConnection = () =>
     ...(config.databaseReadUrl ? { replication: { master: { url: config.databaseUrl }, slaves: [{ url: config.databaseReadUrl }] } } : { url: config.databaseUrl }),
     ssl: config.databaseSsl ? { rejectUnauthorized: true } : false,
     entities: ENTITIES,
-    migrations: [Baseline1730000000000],
+    migrations: [Baseline1730000000000, Secrets1795000000000],
     migrationsTableName: 'tv_migrations',
     synchronize: false,
     logging: false,

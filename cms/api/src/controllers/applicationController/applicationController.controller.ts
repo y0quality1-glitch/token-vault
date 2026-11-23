@@ -14,6 +14,9 @@ import { BaseController } from '../baseController';
  *   POST /newversion       new draft from the latest (or `from`)    editor, admin
  *   POST /availability     one-click available / coming soon        admin
  *   POST /archive          remove from the catalog                  admin
+ *
+ * Mounted twice: at /application for provider definitions and at /secretType for secret
+ * types (same workflow; each route sees only its own kind; availability is for applications).
  */
 export class ApplicationController extends BaseController {
   declare service: ApplicationService;
@@ -29,11 +32,13 @@ export class ApplicationController extends BaseController {
     this.route('post', '/newversion', [authMiddleware, editors, validationMiddleware(NewVersionDto)], async (req, res) =>
       this.sendResponse(res, 'Version Added Successfully', await this.service.newVersion(req.body, req.user!), 0, ResponseStatus.CREATED),
     );
-    this.route('post', '/availability', [authMiddleware, admins, validationMiddleware(AvailabilityDto)], async (req, res) =>
-      this.sendResponse(res, 'Availability Updated Successfully', await this.service.setAvailability(req.body, req.user!)),
-    );
+    if (this.service.kind === 'provider') {
+      this.route('post', '/availability', [authMiddleware, admins, validationMiddleware(AvailabilityDto)], async (req, res) =>
+        this.sendResponse(res, 'Availability Updated Successfully', await this.service.setAvailability(req.body, req.user!)),
+      );
+    }
     this.route('post', '/archive', [authMiddleware, admins, validationMiddleware(ArchiveDto)], async (req, res) =>
-      this.sendResponse(res, 'Application Archived Successfully', await this.service.archive(req.body, req.user!)),
+      this.sendResponse(res, `${this.service.getModuleName()} Archived Successfully`, await this.service.archive(req.body, req.user!)),
     );
   }
 }

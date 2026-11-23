@@ -1,4 +1,4 @@
-import { Blocks, KeyRound, LogOut, ScrollText } from 'lucide-react';
+import { Blocks, FileKey2, KeyRound, LogOut, ScrollText } from 'lucide-react';
 import { NavLink, Outlet } from 'react-router-dom';
 import { Badge } from '@ui/badge';
 import { ROLE_LABELS, useAuth } from '@/auth';
@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils';
 
 const NAV = [
   { to: '/applications', label: 'Applications', icon: Blocks },
+  { to: '/secret-types', label: 'Secret types', icon: FileKey2 },
   { to: '/audit', label: 'Audit log', icon: ScrollText },
   { to: '/catalog', label: 'Catalog & signing key', icon: KeyRound },
 ];
@@ -21,7 +22,7 @@ export function Shell() {
           </div>
           <div>
             <p className="text-sm font-semibold text-slate-900">Token Vault CMS</p>
-            <p className="text-xs text-slate-500">Provider definitions</p>
+            <p className="text-xs text-slate-500">Providers &amp; secret types</p>
           </div>
         </div>
         <nav className="flex-1 space-y-0.5 p-3">

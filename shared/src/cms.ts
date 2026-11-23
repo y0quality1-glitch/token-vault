@@ -16,6 +16,8 @@ export interface CmsSession {
 
 export interface CmsApplicationSummary {
   key: string;
+  /** provider: an application definition; secret_type: a secret type (spec 4.9.3). */
+  kind: 'provider' | 'secret_type';
   name: string;
   description: string;
   archived: boolean;
@@ -24,6 +26,8 @@ export interface CmsApplicationSummary {
   /** The open version, and the catalog availability it would publish. */
   openVersion: { version: number; status: 'DRAFT' | 'IN_REVIEW'; availability: 'available' | 'coming_soon' } | null;
   operationCount: number;
+  /** Secret types: payload fields of the published (or latest) version. */
+  fieldCount: number;
   /** Catalog presentation of the published (or latest) version. */
   icon: string;
   category: string;
@@ -57,6 +61,7 @@ export interface CmsDiff {
 
 export interface CmsVersionDetail extends CmsVersionSummary {
   key: string;
+  kind: 'provider' | 'secret_type';
   definition: unknown;
   /** Validation problems; a version can only be submitted with none. */
   issues: string[];

@@ -11,6 +11,9 @@ import CatalogService from '../../services/catalogService/catalogService.service
  *   GET /public-key          active key and every key that signed published versions
  *   GET /definitions         every published, non-archived definition (ETag, If-None-Match)
  *   GET /definitions/:key    one of them
+ *   GET /secret-types        every published, non-archived secret type (ETag, If-None-Match),
+ *                            signed under the secret-type context
+ *   GET /secret-types/:key   one of them
  */
 export class CatalogController {
   public readonly router = express.Router();
@@ -35,6 +38,21 @@ export class CatalogController {
     this.router.get(
       '/definitions/:key',
       wrap(async (req, res) => void res.json(await this.catalog.definition(String(req.params.key)))),
+    );
+    this.router.get(
+      '/secret-types',
+      wrap(async (req, res) => {
+        const types = await this.catalog.publishedEnvelopes(undefined, 'secret_type');
+        const etag = this.catalog.etag(types);
+        res.setHeader('ETag', etag);
+        res.setHeader('Cache-Control', 'no-cache');
+        if (req.headers['if-none-match'] === etag) return void res.status(304).end();
+        res.json({ key_id: SIGNING.keyId, generated_at: new Date().toISOString(), secret_types: types });
+      }),
+    );
+    this.router.get(
+      '/secret-types/:key',
+      wrap(async (req, res) => void res.json(await this.catalog.definition(String(req.params.key), 'secret_type'))),
     );
   }
 }

@@ -12,3 +12,4 @@ export * from './providers';
 export * from './cms';
 export * from './rotation';
 export * from './database-errors';
+export * from './secrets';

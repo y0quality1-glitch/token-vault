@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, FileCheck2, Pencil, Play, Rocket, Save, Send, Undo2, XCircle } from 'lucide-react';
-import { useNavigate, useParams } from 'react-router-dom';
-import { DefinitionError, validateProviderDefinition, type CmsPreviewResult, type CmsVersionDetail } from '@token-vault/shared';
+import { Navigate, useNavigate, useParams } from 'react-router-dom';
+import { DefinitionError, SecretTypeError, validateProviderDefinition, validateSecretTypeDefinition, type CmsPreviewResult, type CmsVersionDetail } from '@token-vault/shared';
 import { Badge } from '@ui/badge';
 import { Button } from '@ui/button';
 import { Card, CardBody, CardHeader, DetailList } from '@ui/card';
@@ -15,8 +15,10 @@ import { useMutation } from '@tv-hooks/useApi';
 import { useQuery } from '@/lib/hooks';
 import { DefinitionForm } from '@/components/DefinitionForm';
 import { AvailabilityBadge } from '@/components/AvailabilityBadge';
+import { SecretTypePreview, SecretTypeSummary, type SecretTypeShape } from '@/components/SecretTypeView';
 import { VersionBadge } from '@/components/VersionBadge';
 import { api } from '@/lib/api';
+import { KINDS, type CatalogKind } from '@/lib/kinds';
 import { formatDateTime } from '@/lib/utils';
 
 type Tab = 'definition' | 'changes' | 'preview' | 'signature';
@@ -47,9 +49,32 @@ function ordered(v: unknown): unknown {
   }
   return v;
 }
-const pretty = (v: unknown) => JSON.stringify(ordered(v), null, 2);
+/** Secret types: same idea; the entries of fields and metadata are listed in display order (`order`, then name). */
+const SECRET_ORDER = ['key', 'version', 'name', 'label', 'order', 'description', 'category', 'kind', 'required', 'sensitive', 'pattern', 'minLength', 'maxLength', 'min', 'max', 'values', 'placeholder', 'fields', 'metadata', 'identifiedBy', 'lifecycle', 'versioning', 'rotation', 'expiration', 'dynamic', 'defaults', 'rotationIntervalDays', 'expiresInDays', 'expiryWarningDays', 'tags'];
+const secretRank = (k: string) => (SECRET_ORDER.includes(k) ? SECRET_ORDER.indexOf(k) : SECRET_ORDER.length);
+function orderedSecret(v: unknown, fieldRecord = false): unknown {
+  if (Array.isArray(v)) return v.map((x) => orderedSecret(x));
+  if (v && typeof v === 'object') {
+    const keys = Object.keys(v);
+    if (fieldRecord) {
+      // Plain JS rather than orderedFields: the document being edited may not be valid yet.
+      const order = (k: string) => {
+        const o = ((v as Record<string, unknown>)[k] as { order?: unknown } | null)?.order;
+        return typeof o === 'number' ? o : 0;
+      };
+      keys.sort((a, b) => order(a) - order(b) || a.localeCompare(b));
+    } else keys.sort((a, b) => secretRank(a) - secretRank(b));
+    return Object.fromEntries(keys.map((k) => [k, orderedSecret((v as Record<string, unknown>)[k], !fieldRecord && (k === 'fields' || k === 'metadata'))]));
+  }
+  return v;
+}
+const prettyFor = (kind: CatalogKind) => (v: unknown) => JSON.stringify(kind === 'secret_type' ? orderedSecret(v) : ordered(v), null, 2);
 
-export function VersionPage() {
+/** A version of an application (provider definition) or of a secret type, and its review workflow. */
+export function VersionPage({ kind = 'provider' }: { kind?: CatalogKind }) {
+  const k = KINDS[kind];
+  const secretType = kind === 'secret_type';
+  const pretty = prettyFor(kind);
   const { key, version } = useParams() as { key: string; version: string };
   /** Which version every call is about (the CMS API takes it in the body). */
   const ref = { key: key!, version: Number(version) };
@@ -59,7 +84,9 @@ export function VersionPage() {
   const v = useQuery(path, () => api.post<CmsVersionDetail>('/version/getdatabyid', ref));
   const [tab, setTab] = useState<Tab>('definition');
   const [text, setText] = useState('');
-  const [view, setView] = useState<'form' | 'json'>('form');
+  // Secret types: 'form' is a read-only preview, so editors start in the JSON editor.
+  const [chosenView, setView] = useState<'form' | 'json' | null>(null);
+  const view = chosenView ?? (secretType && v.data?.can.edit ? 'json' : 'form');
   const [dialog, setDialog] = useState<null | 'approve' | 'reject' | 'publish'>(null);
 
   useEffect(() => {
@@ -78,20 +105,23 @@ export function VersionPage() {
   const liveIssues = useMemo(() => {
     if (parsed.error || !parsed.value || typeof parsed.value !== 'object') return null;
     try {
-      validateProviderDefinition(parsed.value);
+      if (secretType) validateSecretTypeDefinition(parsed.value);
+      else validateProviderDefinition(parsed.value);
       return [] as string[];
     } catch (e) {
-      return e instanceof DefinitionError ? e.issues : [(e as Error).message];
+      return e instanceof DefinitionError || e instanceof SecretTypeError ? e.issues : [(e as Error).message];
     }
-  }, [parsed]);
+  }, [parsed, secretType]);
 
   const save = useMutation(() => api.post<CmsVersionDetail>('/version/save', { ...ref, definition: parsed.value }));
   const action = useMutation((name: 'submit' | 'withdraw') => api.post<CmsVersionDetail>(`/version/${name}`, ref));
-  const startEdit = useMutation((from: number) => api.post<{ version: number }>('/application/newversion', { key: ref.key, from }));
+  const startEdit = useMutation((from: number) => api.post<{ version: number }>(`${k.apiBase}/newversion`, { key: ref.key, from }));
 
   if (v.error) return <ErrorState error={v.error} onRetry={v.reload} />;
   if (!v.data) return <PageSkeleton />;
   const d = v.data;
+  // The version routes serve both kinds: open the version under the section it belongs to.
+  if (d.kind && d.kind !== kind) return <Navigate to={`${KINDS[d.kind].basePath}/${key}/versions/${d.version}`} replace />;
   const def = d.definition as DefShape;
   const dirty = text !== pretty(d.definition);
   const update = (next: CmsVersionDetail) => {
@@ -103,17 +133,19 @@ export function VersionPage() {
     <>
       <PageHeader
         breadcrumbs={[
-          { label: 'Applications', to: '/applications' },
-          { label: def.name ?? key, to: `/applications/${key}` },
+          { label: k.plural, to: k.basePath },
+          { label: def.name ?? key, to: `${k.basePath}/${key}` },
           { label: `v${d.version}` },
         ]}
         title={`${def.name ?? key} v${d.version}`}
         badge={
           <>
             <VersionBadge status={d.status} />
-            <span title="How this version appears in Token Vault's Integration Catalog once published">
-              <AvailabilityBadge availability={(def as { catalog?: { availability?: string } }).catalog?.availability === 'coming_soon' ? 'coming_soon' : 'available'} />
-            </span>
+            {!secretType && (
+              <span title="How this version appears in Token Vault's Integration Catalog once published">
+                <AvailabilityBadge availability={(def as { catalog?: { availability?: string } }).catalog?.availability === 'coming_soon' ? 'coming_soon' : 'available'} />
+              </span>
+            )}
           </>
         }
         description={`Created by ${d.createdBy} ${formatDateTime(d.createdAt)}${d.submittedAt ? ` · submitted ${formatDateTime(d.submittedAt)}` : ''}${d.publishedAt ? ` · published ${formatDateTime(d.publishedAt)}` : ''}`}
@@ -124,11 +156,11 @@ export function VersionPage() {
                 loading={startEdit.pending}
                 title={d.openVersion ? `v${d.openVersion} is already open: continue editing there` : 'Published versions are frozen: this starts a new draft copied from this version'}
                 onClick={async () => {
-                  if (d.openVersion) return navigate(`/applications/${key}/versions/${d.openVersion}`);
+                  if (d.openVersion) return navigate(`${k.basePath}/${key}/versions/${d.openVersion}`);
                   const r = await startEdit.run(d.version);
                   if (r) {
                     toast.success(`Draft v${r.version} created`, `Copied from v${d.version}. Edit it, then publish.`);
-                    navigate(`/applications/${key}/versions/${r.version}`);
+                    navigate(`${k.basePath}/${key}/versions/${r.version}`);
                   }
                 }}
               >
@@ -186,7 +218,7 @@ export function VersionPage() {
           </Callout>
         )}
         {d.status === 'IN_REVIEW' && d.can.reviewBlockedReason && !d.can.publishDirectly && <Callout tone="info">{d.can.reviewBlockedReason}</Callout>}
-        {d.status === 'IN_REVIEW' && d.diff.hostChange && (
+        {!secretType && d.status === 'IN_REVIEW' && d.diff.hostChange && (
           <Callout tone="warning" title={d.diff.againstVersion ? 'This version changes where credentials are sent' : 'First publication'}>
             Credentials will be sent to <span className="font-mono">{def.api?.baseUrl}</span> (allowed hosts: <span className="font-mono">{def.api?.allowedHosts?.join(', ')}</span>). The approver must confirm these hosts.
           </Callout>
@@ -200,7 +232,7 @@ export function VersionPage() {
         tabs={[
           { value: 'definition', label: 'Definition' },
           { value: 'changes', label: 'Changes', count: d.diff.changes.length },
-          { value: 'preview', label: 'Request preview' },
+          ...(secretType ? [] : [{ value: 'preview' as const, label: 'Request preview' }]),
           ...(d.digest ? [{ value: 'signature' as const, label: 'Signature' }] : []),
         ]}
       />
@@ -211,7 +243,13 @@ export function VersionPage() {
             <Card className="xl:col-span-3">
               <CardHeader
                 title="Definition"
-                description={d.can.edit ? 'Edit with the form or as JSON: both change the same document. The key and version are set by the CMS.' : 'Read-only in this state.'}
+                description={
+                  !d.can.edit
+                    ? 'Read-only in this state.'
+                    : secretType
+                      ? 'Edit as JSON; Preview shows the fields, sensitivity and validation of the unsaved document. The key and version are set by the CMS.'
+                      : 'Edit with the form or as JSON: both change the same document. The key and version are set by the CMS.'
+                }
                 actions={
                   <>
                     <div className="flex rounded-md border border-slate-200 p-0.5 text-xs" role="tablist" aria-label="Editor view">
@@ -225,7 +263,7 @@ export function VersionPage() {
                           onClick={() => setView(v)}
                           className={view === v ? 'rounded bg-slate-900 px-2.5 py-1 font-medium text-white' : 'rounded px-2.5 py-1 text-slate-600 hover:bg-slate-100 disabled:opacity-40'}
                         >
-                          {v === 'form' ? 'Form' : 'JSON'}
+                          {v === 'json' ? 'JSON' : secretType ? 'Preview' : 'Form'}
                         </button>
                       ))}
                     </div>
@@ -259,7 +297,11 @@ export function VersionPage() {
                 <FormError error={save.error} />
                 {parsed.error && <Callout tone="danger">Not valid JSON: {parsed.error}</Callout>}
                 {view === 'form' && !parsed.error && parsed.value && typeof parsed.value === 'object' ? (
-                  <DefinitionForm value={parsed.value as Record<string, unknown>} onChange={(next) => setText(pretty(next))} readOnly={!d.can.edit} issues={liveIssues ?? []} />
+                  secretType ? (
+                    <SecretTypePreview def={parsed.value as SecretTypeShape} />
+                  ) : (
+                    <DefinitionForm value={parsed.value as Record<string, unknown>} onChange={(next) => setText(pretty(next))} readOnly={!d.can.edit} issues={liveIssues ?? []} />
+                  )
                 ) : (
                   <Textarea
                     aria-label="Definition JSON"
@@ -280,10 +322,19 @@ export function VersionPage() {
                 <CardBody className="space-y-3">
                   {dirty && liveIssues && (
                     <p className={liveIssues.length ? 'text-sm text-amber-700' : 'text-sm text-emerald-700'} data-testid="live-validation">
-                      {liveIssues.length ? `Unsaved changes: ${liveIssues.length} problem${liveIssues.length > 1 ? 's' : ''} (shown in the form sections)` : 'Unsaved changes are valid.'}
+                      {liveIssues.length ? `Unsaved changes: ${liveIssues.length} problem${liveIssues.length > 1 ? 's' : ''}${secretType ? '' : ' (shown in the form sections)'}` : 'Unsaved changes are valid.'}
                     </p>
                   )}
-                  {d.issues.length === 0 ? (
+                  {/* Secret types have no form to show them in: list the unsaved problems here. */}
+                  {secretType && dirty && !!liveIssues?.length && (
+                    <ul className="space-y-1.5 text-amber-700" data-testid="live-validation-issues">
+                      {liveIssues.map((i) => (
+                        <li key={i} className="font-mono text-xs">
+                          {i}
+                        </li>
+                      ))}
+                    </ul>
+                  )}                  {d.issues.length === 0 ? (
                     <p className="flex items-center gap-2 text-sm text-emerald-700">
                       <FileCheck2 className="h-4 w-4" /> The saved definition is valid.
                     </p>
@@ -298,15 +349,15 @@ export function VersionPage() {
                   )}
                 </CardBody>
               </Card>
-              <Summary def={def} />
+              {secretType ? <SecretTypeSummary def={(parsed.value && typeof parsed.value === 'object' ? parsed.value : d.definition) as SecretTypeShape} /> : <Summary def={def} />}
             </div>
           </div>
         )}
         {tab === 'changes' && <Changes d={d} />}
-        {tab === 'preview' && <Preview vref={ref} def={def} valid={d.issues.length === 0} />}
+        {tab === 'preview' && !secretType && <Preview vref={ref} def={def} valid={d.issues.length === 0} />}
         {tab === 'signature' && d.digest && (
           <Card>
-            <CardHeader title="Signature" description="Ed25519 over token-vault/provider-definition/v1:<digest>, where digest = sha256(canonical JSON)." />
+            <CardHeader title="Signature" description={`Ed25519 over ${KINDS[d.kind ?? kind].signatureContext}:<digest>, where digest = sha256(canonical JSON).`} />
             <CardBody>
               <DetailList
                 columns={1}
@@ -375,11 +426,21 @@ function Summary({ def }: { def: DefShape }) {
   );
 }
 
+/** Secret type diffs flag a payload field that stops being sensitive (its value would then appear in summaries). */
+const LOST_SENSITIVITY = '(no longer sensitive)';
+
 function Changes({ d }: { d: CmsVersionDetail }) {
+  const lostSensitivity = d.diff.changes.filter((c) => c.area.includes(LOST_SENSITIVITY));
   return (
     <Card>
       <CardHeader title={d.diff.againstVersion ? `Compared with v${d.diff.againstVersion}` : 'First version'} />
       <CardBody className="space-y-3">
+        {lostSensitivity.length > 0 && (
+          <Callout tone="warning" title={lostSensitivity.length > 1 ? `${lostSensitivity.length} fields are no longer sensitive` : 'A field is no longer sensitive'}>
+            Their values will be shown unmasked in secret summaries once this version is published. Confirm that{' '}
+            {lostSensitivity.map((c) => c.area.replace(LOST_SENSITIVITY, '').replace(/^field /, '').trim()).join(', ')} never hold{lostSensitivity.length > 1 ? '' : 's'} secret material.
+          </Callout>
+        )}
         {d.diff.hostChange && (
           <Callout tone="warning" title={d.diff.againstVersion ? 'API host changed' : 'New API hosts'}>
             api.baseUrl or api.allowedHosts {d.diff.againstVersion ? 'differ from the published version' : 'are published for the first time'}. Approval requires confirming them.
@@ -390,8 +451,8 @@ function Changes({ d }: { d: CmsVersionDetail }) {
         ) : (
           <ul className="divide-y divide-slate-100 text-sm">
             {d.diff.changes.map((c) => (
-              <li key={c.area} className="flex items-center justify-between py-2">
-                <span className="font-mono text-xs">{c.area}</span>
+              <li key={c.area} className={c.area.includes(LOST_SENSITIVITY) ? '-mx-2 flex items-center justify-between rounded-md bg-amber-50 px-2 py-2' : 'flex items-center justify-between py-2'} data-warning={c.area.includes(LOST_SENSITIVITY) || undefined}>
+                <span className={c.area.includes(LOST_SENSITIVITY) ? 'font-mono text-xs font-medium text-amber-900' : 'font-mono text-xs'}>{c.area}</span>
                 <Badge tone={c.kind === 'added' ? 'green' : c.kind === 'removed' ? 'red' : 'amber'}>{c.kind}</Badge>
               </li>
             ))}

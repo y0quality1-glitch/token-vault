@@ -7,6 +7,8 @@ export enum APP_ROUTES {
   DASHBOARD = '/dashboard',
   WEBHOOK = '/webhook',
   PROVIDER = '/provider',
+  SECRET_TYPE = '/secretType',
+  SECRET = '/secret',
   INTEGRATION = '/integration',
   AGENT = '/agent',
   API_CLIENT = '/apiClient',

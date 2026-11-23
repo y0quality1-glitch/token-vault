@@ -5,14 +5,22 @@ import { watchTlsFiles, type TlsFiles } from './security/tls';
 import { config } from './config';
 import { closeDatabase, describeError, runMigrations } from './db/client';
 import { buildRouter } from './routes';
-import { initStore } from './store/credential-store';
+import { initStore, keyIdOfRef } from './store/credential-store';
+import { reencryptValues } from './store/secret-store';
 import { catalogSync } from './providers/registry';
+import { secretTypeSync } from './providers/secret-types';
 
 async function main() {
   await runMigrations();
   await initStore();
+  // Secret values follow the store's key: after a key rotation they are re-encrypted like credentials.
+  const values = await reencryptValues();
+  if (values.reencrypted) console.log(`[vault] re-encrypted ${values.reencrypted} secret value(s) under the current key ${keyIdOfRef(config.encryptionKeyRef)}`);
+  if (values.pending) console.warn(`[vault] ${values.pending} secret value(s) not re-encrypted yet: the key service is unavailable; retried at the next start`);
+  if (values.unreadable) console.warn(`[vault] ${values.unreadable} secret value(s) cannot be decrypted with the configured keys; they are kept, never deleted`);
   // Never blocks startup: if the CMS is unreachable, the bundled definitions apply until the next poll.
   await catalogSync?.start();
+  await secretTypeSync?.start();
 
   const app = express();
   app.disable('x-powered-by');

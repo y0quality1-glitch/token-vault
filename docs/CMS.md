@@ -105,6 +105,7 @@ Admin API (`/api/v1`):
 | POST | `/application/newversion` | editor, admin | `{key, from?}` new draft from the latest (or given) version (201) |
 | POST | `/application/availability` | admin | `{key, availability, note?}` one-click availability |
 | POST | `/application/archive` | admin | `{key, reason}` |
+| POST | `/secretType/getall` · GET `/secretType/getbyid/:key` · POST `/secretType/save` · `/secretType/newversion` · `/secretType/archive` | as for applications | the same routes for [secret types](#secret-types) (no availability); each route sees only its own kind |
 | POST | `/version/getdatabyid` | any | `{key, version}` → definition, validation issues, diff, allowed actions |
 | POST | `/version/save` | editor, admin | `{key, version, definition}` (drafts only) |
 | POST | `/version/submit` · `/version/withdraw` | editor, admin | `{key, version}` |
@@ -123,8 +124,21 @@ Public catalog (`/catalog/v1`, no authentication: definitions are not secret, th
 | GET | `/public-key` | `{algorithm: "Ed25519", key_id, public_key_pem}` |
 | GET | `/definitions` | `{key_id, generated_at, definitions: SignedDefinition[]}`, with an `ETag` (send `If-None-Match` to get 304) |
 | GET | `/definitions/:key` | one `SignedDefinition` |
+| GET | `/secret-types` | `{key_id, generated_at, secret_types: SignedDefinition[]}`, with an `ETag`; signed under the secret-type context |
+| GET | `/secret-types/:key` | one signed secret type |
 
 `SignedDefinition` = `{definition, digest, signature, key_id, published_at, published_by, approved_by}`.
+
+## Secret types
+
+Secret types are the classification model of Secret Management ([plan](SECRET_MANAGEMENT.md), [spec §4.9.3](specs/4.9-secret-management.md)). A type decides a secret's structure: its payload fields (which are sensitive, how each is validated), the metadata kept with it, and the lifecycle operations it supports (versioning, rotation, expiration, dynamic generation). The schema is `secretTypeDefinitionSchema` in `shared/src/secrets/schema.ts`.
+
+- **Same workflow as applications.** A type is a catalog entry of kind `secret_type`: drafted by an editor, reviewed by another publisher (or published directly by an administrator), signed, versioned and audited. Applications and secret types share one key space. Secret types send credentials nowhere, so there is no host acknowledgement and no request preview; the diff flags a field that stops being sensitive (`field token (no longer sensitive)`), because summaries would then show its values.
+- **Rules a type must follow.** At least one field is sensitive; patterns are anchored; enum fields list their values; metadata fields are never sensitive and do not repeat payload fields; only `dynamic` types generate credentials. Field order is explicit (`order`), because stored JSON does not keep key order.
+- **Predefined types.** The CMS seeds 51 published types covering categories A–I of the spec (API, database, authentication and OAuth, cloud, cryptographic, certificates, infrastructure and SSH, application, webhook secrets), from `shared/src/secrets/builtin-types.ts`. Existing databases get any missing ones at start-up; an archived or edited type keeps its key and is never re-added.
+- **Signed apart from providers.** Secret types are signed with the same key under the context `token-vault/secret-type/v1` (providers: `token-vault/provider-definition/v1`), so a signature over one kind never verifies as the other. Key rotation re-signs both kinds.
+- **Consumers.** The control plane and every customer webhook pull `/catalog/v1/secret-types` independently and verify every type against the pinned key, exactly as for definitions (all or nothing, no version rollbacks, persisted and re-verified across restarts, in row 2 of `provider_catalog_state`). The webhook validates every secret value against a type it verified itself. Without a CMS (`CMS_CATALOG_URL` unset), both use the predefined types.
+- **Console.** **Secret types** in the CMS console lists the types by category, with a JSON editor, a preview of fields and metadata, and the same review workflow.
 
 ## The Integration Catalog is data
 

@@ -24,6 +24,17 @@ function sortKeys(v: unknown): unknown {
 export const SIGNATURE_CONTEXT = 'token-vault/provider-definition/v1';
 export const signaturePayload = (digest: string) => `${SIGNATURE_CONTEXT}:${digest}`;
 
+/** Kinds of signed catalog entries. Each has its own signature context. */
+export type CatalogKind = 'provider' | 'secret_type';
+export const CATALOG_KINDS: readonly CatalogKind[] = ['provider', 'secret_type'];
+/**
+ * Secret types are signed under a different context, so a signature over a provider
+ * definition can never be presented as one over a secret type (or the other way round),
+ * even though the CMS signs both with the same key.
+ */
+export const SECRET_TYPE_SIGNATURE_CONTEXT = 'token-vault/secret-type/v1';
+export const signaturePayloadFor = (kind: CatalogKind, digest: string) => (kind === 'secret_type' ? `${SECRET_TYPE_SIGNATURE_CONTEXT}:${digest}` : signaturePayload(digest));
+
 /** A published, signed provider definition as served by the CMS catalog. */
 export interface SignedDefinition {
   definition: unknown;

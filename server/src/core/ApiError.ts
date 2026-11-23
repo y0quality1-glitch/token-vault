@@ -13,10 +13,22 @@ export const catalogError = (id: ErrorCodeId, message?: string, details?: unknow
  * sanitized (never request bodies or secrets); unknown errors are logged without request data
  * and answered with a generic 500 (template fix B-27: formatting never throws).
  */
+/**
+ * Field errors (`details.fields`) map an input's path to a validation message we wrote. Their
+ * keys name inputs such as `payload.password`, which the key-based redaction would hide, so the
+ * keys are kept and each message is scrubbed by value pattern only.
+ */
+function sanitizeDetails(details: unknown): unknown {
+  const fields = (details as { fields?: unknown } | null)?.fields;
+  if (!fields || typeof fields !== 'object' || Array.isArray(fields) || !Object.values(fields).every((v) => typeof v === 'string')) return sanitize(details);
+  const { fields: _, ...rest } = details as Record<string, unknown>;
+  return { ...sanitize(rest), fields: Object.fromEntries(Object.entries(fields as Record<string, string>).map(([k, v]) => [k, sanitize(v)])) };
+}
+
 export function handleError(err: unknown, res: Response): void {
   if (res.headersSent) return;
   if (err instanceof HttpError) {
-    res.status(err.status).json(GenericResponse.failure(sanitize(err.message) as string, err.code, sanitize(err.details) ?? null));
+    res.status(err.status).json(GenericResponse.failure(sanitize(err.message) as string, err.code, sanitizeDetails(err.details) ?? null));
     return;
   }
   const e = err as { type?: string; code?: string; detail?: string };

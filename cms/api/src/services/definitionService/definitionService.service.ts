@@ -1,5 +1,6 @@
 import {
   DefinitionError,
+  SecretTypeError,
   TemplateError,
   canonicalJson,
   mapResponse,
@@ -7,12 +8,14 @@ import {
   renderPath,
   renderString,
   validateProviderDefinition,
+  validateSecretTypeDefinition,
+  type CatalogKind,
   type CmsDiff,
   type CmsPreviewResult,
   type ProviderDefinition,
 } from '@token-vault/shared';
 
-/** Validates without throwing: the normalized definition, or every problem found. */
+/** Validates a provider definition without throwing: the normalized definition, or every problem found. */
 export function check(definition: unknown): { normalized: ProviderDefinition | null; issues: string[] } {
   try {
     return { normalized: validateProviderDefinition(definition), issues: [] };
@@ -20,6 +23,68 @@ export function check(definition: unknown): { normalized: ProviderDefinition | n
     if (e instanceof DefinitionError) return { normalized: null, issues: e.issues };
     return { normalized: null, issues: [(e as Error).message] };
   }
+}
+
+/** Validates a catalog entry of either kind without throwing. */
+export function checkKind(kind: CatalogKind, definition: unknown): { normalized: object | null; issues: string[] } {
+  if (kind === 'provider') return check(definition);
+  try {
+    return { normalized: validateSecretTypeDefinition(definition), issues: [] };
+  } catch (e) {
+    if (e instanceof SecretTypeError) return { normalized: null, issues: e.issues };
+    return { normalized: null, issues: [(e as Error).message] };
+  }
+}
+
+/** A minimal, valid starting point for a new catalog entry of this kind. */
+export function starterFor(kind: CatalogKind, key: string, name: string, description: string): object {
+  if (kind === 'provider') return starterDefinition(key, name, description);
+  return {
+    key,
+    version: 1,
+    name,
+    description,
+    category: 'custom',
+    fields: { secret: { label: 'Secret', kind: 'text', required: true, sensitive: true, order: 10 } },
+    metadata: {},
+    lifecycle: { versioning: true, rotation: true, expiration: true, dynamic: false },
+    defaults: { expiryWarningDays: 14 },
+    tags: [],
+  };
+}
+
+/**
+ * Where a secret type draft differs from the published version. Secret types send no
+ * credentials anywhere, so there is no host change; a field that stops being sensitive is
+ * flagged, because summaries would then show its values.
+ */
+export function diffSecretTypes(draft: unknown, published: unknown | null, publishedVersion: number | null): CmsDiff {
+  const d = obj(draft);
+  const p = obj(published);
+  const changes: CmsDiff['changes'] = [];
+  if (published !== null) {
+    for (const area of ['name', 'description', 'category', 'identifiedBy', 'lifecycle', 'defaults', 'tags'] as const) {
+      if (!same(d[area], p[area])) changes.push({ area, kind: 'changed' });
+    }
+    for (const list of ['fields', 'metadata'] as const) {
+      const label = list === 'fields' ? 'field' : 'metadata';
+      const dm = obj(d[list]);
+      const pm = obj(p[list]);
+      for (const [name, v] of Object.entries(dm)) {
+        if (!(name in pm)) changes.push({ area: `${label} ${name}`, kind: 'added' });
+        else if (!same(v, pm[name])) {
+          const exposed = list === 'fields' && obj(pm[name]).sensitive !== false && obj(v).sensitive === false;
+          changes.push({ area: `${label} ${name}${exposed ? ' (no longer sensitive)' : ''}`, kind: 'changed' });
+        }
+      }
+      for (const name of Object.keys(pm)) if (!(name in dm)) changes.push({ area: `${label} ${name}`, kind: 'removed' });
+    }
+  }
+  return { againstVersion: publishedVersion, hostChange: false, changes };
+}
+
+export function diffKind(kind: CatalogKind, draft: unknown, published: unknown | null, publishedVersion: number | null): CmsDiff {
+  return kind === 'provider' ? diffDefinitions(draft, published, publishedVersion) : diffSecretTypes(draft, published, publishedVersion);
 }
 
 /** A minimal, valid starting point for a new application. */

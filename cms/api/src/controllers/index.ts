@@ -3,7 +3,9 @@ import { ApplicationController } from './applicationController/applicationContro
 import { AuditController } from './auditController/auditController.controller';
 import { AuthController } from './authController/authController.controller';
 import type { BaseController } from './baseController';
+import { APP_ROUTES } from '../core/AppRoutes';
+import ApplicationService from '../services/applicationService/applicationService.service';
 import { VersionController } from './versionController/versionController.controller';
 
 /** Every admin controller, mounted under PATH. Register new modules here (and in APP_ROUTES). */
-export const controllers = (): BaseController[] => [new APIHealthCheckController(), new AuthController(), new ApplicationController(), new VersionController(), new AuditController()];
+export const controllers = (): BaseController[] => [new APIHealthCheckController(), new AuthController(), new ApplicationController(), new ApplicationController(APP_ROUTES.SECRET_TYPE, new ApplicationService('secret_type')), new VersionController(), new AuditController()];

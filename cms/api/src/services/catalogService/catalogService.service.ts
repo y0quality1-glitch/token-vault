@@ -1,4 +1,4 @@
-import type { SignedDefinition } from '@token-vault/shared';
+import type { CatalogKind, SignedDefinition } from '@token-vault/shared';
 import { In } from 'typeorm';
 import { SIGNING } from '../../config';
 import { notFound } from '../../core/ApiError';
@@ -20,11 +20,12 @@ export default class CatalogService {
     return AppDatabase.getInstance().manager;
   }
 
-  async publishedEnvelopes(key?: string): Promise<SignedDefinition[]> {
+  /** Published, non-archived entries of one kind (provider definitions unless told otherwise). */
+  async publishedEnvelopes(key?: string, kind: CatalogKind = 'provider'): Promise<SignedDefinition[]> {
     const q = this.m
       .createQueryBuilder(VersionEntity, 'v')
       .innerJoin('applications', 'app', 'app.id = v.application_id')
-      .where("v.status = 'PUBLISHED' AND app.archived_at IS NULL")
+      .where("v.status = 'PUBLISHED' AND app.archived_at IS NULL AND app.kind = :kind", { kind })
       .orderBy('app.key', 'ASC');
     if (key) q.andWhere('app.key = :key', { key });
     const rows = await q.getMany();
@@ -52,9 +53,9 @@ export default class CatalogService {
     return `"${sha256Hex(definitions.map((d) => `${d.digest}:${(d.signatures ?? []).map((x) => x.key_id).join('+')}`).join(',')).slice(0, 32)}"`;
   }
 
-  async definition(key: string): Promise<SignedDefinition> {
-    const [def] = await this.publishedEnvelopes(key);
-    if (!def) throw notFound(`Published definition "${key}"`);
+  async definition(key: string, kind: CatalogKind = 'provider'): Promise<SignedDefinition> {
+    const [def] = await this.publishedEnvelopes(key, kind);
+    if (!def) throw notFound(`Published ${kind === 'provider' ? 'definition' : 'secret type'} "${key}"`);
     return def;
   }
 

@@ -2,8 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { generateKeyPairSync } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
-import type { SignedDefinition } from '@token-vault/shared';
-import { SignatureError, verifySignedDefinition } from '@token-vault/shared/signing';
+import { orderedFields, type SignedDefinition } from '@token-vault/shared';
+import { SignatureError, verifySignedDefinition, verifySignedSecretType } from '@token-vault/shared/signing';
 
 /**
  * End-to-end tests of the CMS API against a real PostgreSQL database. Skipped unless
@@ -344,5 +344,80 @@ suite('provider CMS workflow', () => {
       m.config.SETTINGS.adminDirectPublish = true;
     }
     expect((await ok(admin, '/version/publish', { key: 'openai', version: 2, acknowledgeHostChange: true })).status).toBe('PUBLISHED');
+  });
+  // ── secret types (spec 4.9.3): the same workflow, their own routes and catalog ──
+
+  const secretTypes = async () => (await call(null, 'GET', '/catalog/v1/secret-types')).body as unknown as { secret_types: SignedDefinition[] };
+
+  it('publishes the predefined secret types, signed under the secret-type context, apart from providers', async () => {
+    const { secret_types } = await secretTypes();
+    expect(secret_types.length).toBeGreaterThan(40);
+    const pg = secret_types.find((t) => (t.definition as { key: string }).key === 'postgresql')!;
+    expect(verifySignedSecretType(pg, publicKeyPem)).toMatchObject({ category: 'database', fields: { password: { sensitive: true } } });
+    // A secret type is not a provider definition, and its signature does not verify as one.
+    expect(() => verifySignedDefinition(pg, publicKeyPem)).toThrow();
+    expect((await catalog()).definitions.some((d) => (d.definition as { key: string }).key === 'postgresql')).toBe(false);
+    expect((await call(null, 'GET', '/catalog/v1/secret-types/postgresql')).status).toBe(200);
+    expect((await call(null, 'GET', '/catalog/v1/definitions/postgresql')).status).toBe(404);
+    // Each admin route sees only its own kind.
+    const types = await call(editor, 'POST', '/api/v1/secretType/getall', { pageSize: 500 });
+    expect(types.body.totalRecords).toBe(secret_types.length);
+    expect(types.body.details.every((t: { kind: string }) => t.kind === 'secret_type')).toBe(true);
+    expect((await ok(editor, '/application/getall', { pageSize: 500 })).every((a: { kind: string }) => a.kind === 'provider')).toBe(true);
+    expect((await call(editor, 'GET', '/api/v1/application/getbyid/postgresql')).body.code).toBe('RECORD_NOT_FOUND');
+    expect((await call(editor, 'GET', '/api/v1/secretType/getbyid/postgresql')).body.details).toMatchObject({ kind: 'secret_type', category: 'Database secrets', fieldCount: 2 });
+  });
+
+  it('takes a new secret type from draft to publication with separation of duties, no host acknowledgement', async () => {
+    const created = await call(editor, 'POST', '/api/v1/secretType/save', { key: 'payments-gateway', name: 'Payment gateway', description: 'API key, secret and webhook secret' });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(created.body.msg).toBe('Secret type Added Successfully');
+    // One key space for both kinds.
+    expect((await fails(editor, '/secretType/save', { key: 'github', name: 'Clash' })).code).toBe('KEY_TAKEN');
+    expect((await fails(editor, '/application/save', { key: 'postgresql', name: 'Clash' })).code).toBe('KEY_TAKEN');
+
+    const draft = await version(editor, 'payments-gateway', 1);
+    expect(draft).toMatchObject({ kind: 'secret_type', status: 'DRAFT', issues: [], diff: { hostChange: false } });
+
+    // A type holding nothing sensitive cannot be submitted.
+    const leaky = { ...draft.definition, fields: { apiKey: { label: 'API key', sensitive: false } } };
+    expect((await ok(editor, '/version/save', { key: 'payments-gateway', version: 1, definition: leaky })).issues).toContain('fields: at least one field must be sensitive');
+    expect((await fails(editor, '/version/submit', { key: 'payments-gateway', version: 1 })).code).toBe('DEFINITION_INVALID');
+
+    const good = {
+      ...draft.definition,
+      category: 'api',
+      fields: { apiKey: { label: 'API key', required: true, order: 10 }, apiSecret: { label: 'API secret', required: true, order: 20 }, webhookSecret: { label: 'Webhook signing secret', order: 30 }, merchantId: { label: 'Merchant ID', sensitive: false, order: 40 } },
+      identifiedBy: ['merchantId'],
+      metadata: { endpoint: { label: 'API endpoint', kind: 'url' } },
+    };
+    await ok(editor, '/version/save', { key: 'payments-gateway', version: 1, definition: good });
+    expect((await ok(editor, '/version/submit', { key: 'payments-gateway', version: 1 })).status).toBe('IN_REVIEW');
+    expect((await fails(editor, '/version/approve', { key: 'payments-gateway', version: 1 })).code).toBe('ROLE_REQUIRED');
+    // No hosts to acknowledge: secret types send credentials nowhere.
+    expect(await ok(publisher, '/version/approve', { key: 'payments-gateway', version: 1, note: 'Fields reviewed' })).toMatchObject({ status: 'PUBLISHED' });
+
+    const env = (await secretTypes()).secret_types.find((t) => (t.definition as { key: string }).key === 'payments-gateway')!;
+    // Signed by the active key only (the key was rotated earlier in this suite).
+    // Display order survives storage (jsonb does not keep key order; `order` does).
+    expect(orderedFields(verifySignedSecretType(env, m.config.SIGNING.publicKeyPem).fields).map(([name]) => name)).toEqual(['apiKey', 'apiSecret', 'webhookSecret', 'merchantId']);
+    expect(env.approved_by).toBe('Priya Publisher');
+    const [audit] = await ok(admin, '/audit/getall', { application: 'payments-gateway' });
+    expect(audit).toMatchObject({ action: 'version.published', details: { kind: 'secret_type' } });
+    expect(audit.details.hosts).toBeUndefined();
+  });
+
+  it('flags a field that stops being sensitive, has no availability or preview, and archives out of the catalog', async () => {
+    await ok(editor, '/secretType/newversion', { key: 'payments-gateway' });
+    const v2 = await version(editor, 'payments-gateway', 2);
+    const fields = { ...v2.definition.fields, webhookSecret: { ...v2.definition.fields.webhookSecret, sensitive: false } };
+    const saved = await ok(editor, '/version/save', { key: 'payments-gateway', version: 2, definition: { ...v2.definition, fields } });
+    expect(saved.diff.changes).toContainEqual({ area: 'field webhookSecret (no longer sensitive)', kind: 'changed' });
+    // Availability is an application route only; previews are for provider operations.
+    expect((await call(admin, 'POST', '/api/v1/secretType/availability', { key: 'payments-gateway', availability: 'available' })).status).toBe(404);
+    expect((await call(editor, 'POST', '/api/v1/version/preview', { key: 'payments-gateway', version: 2, operation: 'x' })).status).toBe(404);
+
+    await ok(admin, '/secretType/archive', { key: 'payments-gateway', reason: 'Replaced by third-party-api' });
+    expect((await secretTypes()).secret_types.some((t) => (t.definition as { key: string }).key === 'payments-gateway')).toBe(false);
   });
 });
