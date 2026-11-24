@@ -161,6 +161,15 @@ export const config = {
    * default: the customer decides whether a credential may ever leave this webhook.
    */
   allowCredentialIssue: process.env.WEBHOOK_ALLOW_CREDENTIAL_ISSUE === 'true',
+  /**
+   * PROVIDER_ALLOWED_HOSTS: the databases this webhook may connect to with stored secrets
+   * (dynamic credentials, provider rotation, connection checks), comma-separated `host` or
+   * `host:port`; `*` allows any. Empty (default): none. The host comes from the secret, so this
+   * list is what stops a stored administrative login from being sent anywhere else.
+   */
+  providerAllowedHosts: (process.env.PROVIDER_ALLOWED_HOSTS ?? '').split(',').map((h) => h.trim().toLowerCase()).filter(Boolean),
+  /** AWS STS endpoint override (tests, private endpoints); default: the regional AWS endpoint. */
+  awsStsEndpoint: process.env.AWS_STS_ENDPOINT || undefined,
   /** Lifetime of access tokens issued by the simulated OAuth server (mock mode only). */
   mockOAuthTokenTtlS: Number(process.env.MOCK_OAUTH_TOKEN_TTL_S ?? 3600),
   /** if-missing: (re)create demo mock credentials only where absent or unreadable. reset: wipe the store first (tests). */

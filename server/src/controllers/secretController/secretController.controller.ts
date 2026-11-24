@@ -6,7 +6,9 @@ import { RotateSecretDto } from '../../databases/repository/secret/secretLifecyc
 import { orgCtx, requirePermission } from '../../middlewares/auth.middleware';
 import { validationMiddleware } from '../../middlewares/validation.middleware';
 import SecretService from '../../services/secretService/secretService.service';
+import SecretImportService, { type ImportRequest } from '../../services/secretImportService/secretImportService.service';
 import { BaseController, Reply } from '../baseController';
+import { badRequest } from '../../lib/errors';
 import { adminGuards } from '../guards';
 
 /**
@@ -19,6 +21,9 @@ import { adminGuards } from '../guards';
  *   POST   /rotate           `{id, payload?, reason?}` rotate now; without a   secret:rotate
  *                             payload the webhook generates the new value
  *   POST   /getRotations     `{secretId?, status?}` rotation history           secret:read_metadata
+ *   POST   /checkProvider    `{id}` the stored credential works at its provider secret:read_metadata
+ *   POST   /import           `{format: json|env, content, name?, project?, workspace?, environment?,
+ *                             onConflict?: skip|new_version|fail, dryRun?}`     secret:create
  *   POST   /retrieve         `{id, version?, fields?, reason?}` the value      secret:retrieve (refusals audited)
  *   POST   /rollback         `{id, version, reason?}` new version from old     secret:manage_versions
  *   POST   /destroyVersion   `{id, version, reason?}` crypto-shred a version   secret:manage_versions
@@ -28,6 +33,8 @@ import { adminGuards } from '../guards';
  *   DELETE /delete/:id       destroy every version; DELETED tombstone          secret:delete
  */
 export class SecretController extends BaseController {
+  private readonly importer = new SecretImportService();
+
   constructor(private readonly service = new SecretService()) {
     super(APP_ROUTES.SECRET, 'Secret', adminGuards);
   }
@@ -47,6 +54,8 @@ export class SecretController extends BaseController {
     });
     this.route('post', '/updateValue', [requirePermission(P.SECRET_UPDATE_VALUE), validationMiddleware(UpdateSecretValueDto)], (req) => this.service.updateValue(orgCtx(req), req.body as UpdateSecretValueDto));
     this.route('post', '/rotate', [requirePermission(P.SECRET_ROTATE), validationMiddleware(RotateSecretDto)], (req) => this.service.rotate(orgCtx(req), req.body as RotateSecretDto));
+    this.route('post', '/checkProvider', [requirePermission(P.SECRET_READ_METADATA)], (req) => this.service.checkProvider(SecretService.writer(orgCtx(req)), String((req.body as { id?: unknown })?.id ?? '')));
+    this.route('post', '/import', [requirePermission(P.SECRET_CREATE)], (req) => this.importer.import(orgCtx(req), importRequest(req.body)));
     this.route('post', '/getRotations', [requirePermission(P.SECRET_READ_METADATA)], (req) => this.service.rotations(orgCtx(req).org.id, req.body ?? {}));
     // secret:retrieve is checked by the service, so refusals are audited as secret.access_denied.
     this.route('post', '/retrieve', [requirePermission(P.SECRET_READ_METADATA), validationMiddleware(RetrieveSecretDto)], (req) => this.service.retrieve(orgCtx(req), req.body as RetrieveSecretDto));
@@ -57,4 +66,17 @@ export class SecretController extends BaseController {
     this.route('post', '/archive', [requirePermission(P.SECRET_DELETE), validationMiddleware(SecretLifecycleDto)], (req) => this.service.archive(orgCtx(req), req.body as SecretLifecycleDto));
     this.route('delete', '/delete/:id', [requirePermission(P.SECRET_DELETE)], (req) => this.service.remove(orgCtx(req), String(req.params.id)));
   }
+}
+
+/** The import body, checked loosely here (the service validates each item against its type). */
+function importRequest(raw: unknown): ImportRequest {
+  const b = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+  const content = typeof b.content === 'string' ? b.content : '';
+  const fields: Record<string, string> = {};
+  if (b.format !== 'json' && b.format !== 'env') fields.format = 'Choose json or env';
+  if (!content.trim()) fields.content = 'Paste or upload the file';
+  if (b.onConflict !== undefined && !['skip', 'new_version', 'fail'].includes(String(b.onConflict))) fields.onConflict = 'Choose skip, new_version or fail';
+  if (Object.keys(fields).length) throw badRequest('Request validation failed', { fields });
+  return { format: b.format as 'json' | 'env', content, name: str(b.name), project: str(b.project), workspace: str(b.workspace), environment: str(b.environment) as ImportRequest['environment'], onConflict: (b.onConflict as ImportRequest['onConflict']) ?? 'skip', dryRun: b.dryRun === true };
 }

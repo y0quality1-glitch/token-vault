@@ -48,8 +48,8 @@ describe('secret type definitions', () => {
     const keys = BUILTIN_SECRET_TYPES.map((t) => t.key);
     expect(new Set(keys).size).toBe(keys.length);
     const defs = BUILTIN_SECRET_TYPES.map((t) => validateSecretTypeDefinition(t));
-    // A–I are predefined; dynamic (J) comes with its generators and custom (K) per organization.
-    expect(new Set(defs.map((d) => d.category))).toEqual(new Set(SECRET_CATEGORIES.filter((c) => c !== 'dynamic' && c !== 'custom')));
+    // A–J are predefined (J with the webhook's provider engines); custom (K) types are defined per organization.
+    expect(new Set(defs.map((d) => d.category))).toEqual(new Set(SECRET_CATEGORIES.filter((c) => c !== 'custom')));
     for (const d of defs) expect(Object.values(d.fields).some((f) => f.sensitive)).toBe(true);
   });
 

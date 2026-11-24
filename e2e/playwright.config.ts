@@ -25,6 +25,8 @@ const cmsCatalog = {
 // Same host port as docker-compose.yml (POSTGRES_PORT in the root .env, default 5432).
 const rootEnv = resolve(import.meta.dirname, '../.env');
 const pgPort = process.env.POSTGRES_PORT ?? (existsSync(rootEnv) ? readFileSync(rootEnv, 'utf8').match(/^POSTGRES_PORT=(\d+)\s*$/m)?.[1] : undefined) ?? '5432';
+// Specs that connect to PostgreSQL themselves (34: dynamic secrets) read the port from here.
+process.env.E2E_PG_PORT = pgPort;
 const databaseUrl = process.env.E2E_DATABASE_URL ?? `postgres://token_vault:token_vault@127.0.0.1:${pgPort}/token_vault_e2e`;
 // Customer-zone database for the webhook (separate role), also wiped on start.
 const webhookDatabaseUrl = process.env.E2E_WEBHOOK_DATABASE_URL ?? `postgres://token_vault_customer:token_vault_customer@127.0.0.1:${pgPort}/token_vault_customer_e2e`;
@@ -79,6 +81,8 @@ export default defineConfig({
         WEBHOOK_ALLOW_DESTRUCTIVE: 'true',
         // Integrations in short-lived credential mode get a token from the webhook; spec 29 covers that path.
         WEBHOOK_ALLOW_CREDENTIAL_ISSUE: 'true',
+        // Dynamic secrets and provider rotation reach the e2e PostgreSQL server; spec 34 covers that path.
+        PROVIDER_ALLOWED_HOSTS: `127.0.0.1:${pgPort}`,
         // Simulated OAuth access tokens expire quickly, so every call exercises the refresh path.
         MOCK_OAUTH_TOKEN_TTL_S: '2',
         ...cmsCatalog,
@@ -102,6 +106,8 @@ export default defineConfig({
         HEARTBEAT_INTERVAL_MS: '30000',
         // Secret lifecycle job and notification delivery run often, so 33-secret-lifecycle.spec.ts sees them act.
         SECRET_JOB_INTERVAL_MS: '2000',
+        // Export of secret values is off by default; spec 34 exercises the approval workflow.
+        SECRET_EXPORT_ENABLED: 'true',
         NOTIFICATION_INTERVAL_MS: '1000',
         VAULT_ENCRYPTION_KEY: '',
         // Slack approvals talk to a stand-in Slack started by 28-slack-approvals.spec.ts.

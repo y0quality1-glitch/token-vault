@@ -72,4 +72,17 @@ describe('tv.secrets', () => {
     expect(await tv.secrets.list()).toEqual([{ secret_id: 'sec_1', name: 'orders-db' }]);
     expect(calls[0]!.url).toBe('http://tv/agent/v1/secret/getall');
   });
+
+  it('lease: short-lived credentials from a dynamic secret, with renew() and revoke()', async () => {
+    const issued = { lease_id: 'lse_0123456789', secret_id: 'sec_0123456789abcdef', name: 'orders-dynamic', type_key: 'postgresql-dynamic', credentials: { username: 'tv_lse_0123456789', password: 'lease-password' }, expires_at: '2026-11-23T11:00:00.000Z', max_expires_at: '2026-11-24T10:00:00.000Z', renewable: true, grant_id: 'sag_1', request_id: 'req_2' };
+    const { tv, calls } = server([201, ok(issued)], [200, ok({ lease_id: 'lse_0123456789', status: 'ACTIVE', expires_at: '2026-11-23T12:00:00.000Z', max_expires_at: issued.max_expires_at, renew_count: 1 })], [200, ok({ lease_id: 'lse_0123456789', status: 'REVOKED' })]);
+    const lease = await tv.secrets.lease('orders-dynamic', { ttlSeconds: 900, reason: 'report' });
+    expect(lease).toEqual(issued);
+    expect(calls[0]).toMatchObject({ url: 'http://tv/agent/v1/secret/lease', body: { name: 'orders-dynamic', ttl_seconds: 900, reason: 'report' } });
+    expect((await lease.renew(3600)).renew_count).toBe(1);
+    expect(calls[1]).toMatchObject({ url: 'http://tv/agent/v1/secret/lease/renew', body: { lease_id: 'lse_0123456789', ttl_seconds: 3600 } });
+    await lease.revoke();
+    expect(calls[2]).toMatchObject({ url: 'http://tv/agent/v1/secret/lease/revoke', body: { lease_id: 'lse_0123456789' } });
+    await expect(server([409, fail('SECRET_NOT_DYNAMIC', 'static')]).tv.secrets.lease('x')).rejects.toMatchObject({ code: 'SECRET_NOT_DYNAMIC' });
+  });
 });

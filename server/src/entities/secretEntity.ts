@@ -77,6 +77,16 @@ export class SecretEntity extends BaseEntity {
   @tsColumn('last_rotated_at', true)
   lastRotatedAt!: string | null;
 
+  /** Provider health (spec 4.9.16): the last connection check by the webhook, for types it can reach. */
+  @Column({ name: 'provider_status', type: 'text', nullable: true })
+  providerStatus!: 'OK' | 'FAILING' | null;
+
+  @tsColumn('provider_checked_at', true)
+  providerCheckedAt!: string | null;
+
+  @Column({ name: 'provider_error', type: 'text', nullable: true })
+  providerError!: string | null;
+
   @tsColumn('last_retrieved_at', true)
   lastRetrievedAt!: string | null;
 

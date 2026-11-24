@@ -362,6 +362,24 @@ export function generateSecretFieldValue(spec: SecretGenerateSpec): string {
   }
 }
 
+/** Organization-defined secret types (spec 4.9.3 K) use keys with this prefix, so they never collide with catalog types. */
+export const CUSTOM_SECRET_TYPE_PREFIX = 'custom-';
+
+/**
+ * Validates an organization-defined type: the same schema as catalog types (so every field is
+ * encrypted, sensitive fields are masked, and access, audit and lifecycle apply unchanged), with
+ * the `custom-` key prefix and the custom category; it cannot be dynamic.
+ */
+export function validateCustomSecretType(raw: unknown): SecretTypeDefinition {
+  const def = validateSecretTypeDefinition(raw);
+  const issues: string[] = [];
+  if (!def.key.startsWith(CUSTOM_SECRET_TYPE_PREFIX)) issues.push(`key: custom types start with "${CUSTOM_SECRET_TYPE_PREFIX}"`);
+  if (def.category !== 'custom') issues.push('category: custom types are in the custom category');
+  if (def.lifecycle.dynamic) issues.push('lifecycle.dynamic: custom types cannot generate credentials');
+  if (issues.length) throw new SecretTypeError(issues);
+  return def;
+}
+
 /** The fields of a type the webhook can generate (empty: the type cannot rotate by itself). */
 export function generatableSecretFields(type: SecretTypeDefinition): string[] {
   return orderedFields(type.fields)

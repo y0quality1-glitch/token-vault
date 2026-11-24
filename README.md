@@ -306,6 +306,7 @@ token-vault/
 | `SLACK_API_URL` | Slack Web API base (default `https://slack.com/api`); tests point it at a stand-in |
 | `SECRET_JOB_INTERVAL_MS` | How often the secret lifecycle job runs: expiry (`EXPIRING`, `EXPIRED`), scheduled rotation and version retention (default 60000; `0` turns it off). Safe with several instances: one runs at a time (PostgreSQL advisory lock) |
 | `NOTIFICATION_INTERVAL_MS` | How often queued secret notifications are sent (default 5000; `0` turns sending off) |
+| `SECRET_EXPORT_ENABLED` | `true` allows exporting secret values (default `false`). Even then each export needs `secret:export`, another member's approval, and a passphrase that encrypts the file; open it with `node scripts/decrypt-export.mjs` |
 | `SMTP_URL` / `SMTP_FROM` | Email for secret notifications: an `smtp://` or `smtps://` URL (credentials in the URL) and the sender. Unset: email channels fail with "Email is not configured" |
 | `CMS_CATALOG_URL` | Provider CMS catalog (`http://localhost:4200/catalog/v1`). Optional: without it only the bundled definitions are used |
 | `CMS_PUBLIC_KEY` / `CMS_PUBLIC_KEY_FILE` | Pinned Ed25519 public key(s) of the CMS (PEM; `\n` escapes allowed; several concatenated during a key rotation). Required with `CMS_CATALOG_URL`; written by `npm run setup` |
@@ -333,6 +334,8 @@ token-vault/
 | `WEBHOOK_DATABASE_URL` | Customer-side PostgreSQL connection string (required). Deliberately a different variable from the control plane's `DATABASE_URL` |
 | `SEED_MODE` | `if-missing` (default): create the demo mock credentials where absent or unreadable. `reset`: wipe the credential store on start (used by the e2e suite) |
 | `UPSTREAM_MODE` | `mock` (default) or `live`: the default for every application. `GITHUB_MODE` is still read when `UPSTREAM_MODE` is not set |
+| `PROVIDER_ALLOWED_HOSTS` | Databases this webhook may connect to with stored secrets (dynamic credentials, rotation at the provider, connection checks): comma-separated `host` or `host:port`, `*` for any. Default: none. The host comes from the secret, so this list is what keeps a stored administrative login from being sent elsewhere |
+| `AWS_STS_ENDPOINT` | Optional AWS STS endpoint (private endpoints, tests) for `aws-sts-dynamic` secrets; default: the regional AWS endpoint |
 | `WEBHOOK_ALLOW_CREDENTIAL_ISSUE` | `true` lets this webhook hand a short-lived credential to the caller for integrations in short-lived credential mode: a GitHub App token for one repository and the operation's permissions, or the current OAuth access token. Stored keys and tokens are never handed out. Default `false` |
 | `WEBHOOK_ALLOW_DESTRUCTIVE` | `true` lets this webhook run destructive operations (delete a repository, write a file), and then only for requests a human approved in Token Vault. Default `false`: the customer decides whether destructive actions can ever run |
 | `PROVIDER_MODES` | Per-application override, e.g. `github=live,slack=mock`: go live with one provider at a time. Anything malformed stops the webhook at start-up rather than silently staying simulated (or going live) |

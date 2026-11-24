@@ -2,6 +2,7 @@ import { In, type EntityManager } from 'typeorm';
 import {
   RETRIEVABLE_SECRET_STATUSES,
   type AgentSecretInfo,
+  type AgentSecretLease,
   type AgentSecretRetrieval,
   type SecretAccessGrantView,
   type SecretPayload,
@@ -9,7 +10,7 @@ import {
   type SecretSelector,
 } from '@token-vault/shared';
 import { db, transaction } from '../../databases/client';
-import { AgentEntity, SecretAccessGrantEntity, SecretEntity, SecretRetrievalApprovalEntity, SecretVersionEntity } from '../../entities';
+import { AgentEntity, SecretAccessGrantEntity, SecretEntity, SecretLeaseEntity, SecretRetrievalApprovalEntity, SecretVersionEntity } from '../../entities';
 import { HttpError, badRequest, conflict, forbidden, notFound } from '../../lib/errors';
 import { newId, requestId as newRequestId } from '../../lib/ids';
 import { ipAllowed } from '../../lib/net';
@@ -19,7 +20,8 @@ import { recordEvent, userActor, type Actor } from '../auditService/auditService
 import type { OrgContext } from '../baseService';
 import { authenticateCaller } from '../brokerService/brokerService.service';
 import { effectiveStatus } from '../secretService/secretService.service';
-import { getSecretType } from '../secretTypeService/registry';
+import { getSecretType, loadCustomTypes } from '../secretTypeService/registry';
+import SecretLeaseService from '../secretLeaseService/secretLeaseService.service';
 import { WebhookUnavailableError, callWebhook } from '../webhookService/webhook.client';
 
 /**
@@ -37,6 +39,8 @@ const now = () => new Date().toISOString();
 
 /** Agent API error: the code and message the agent sees; the audit gets the same code. */
 export class SecretAccessError extends HttpError {}
+
+const leases = new SecretLeaseService();
 
 type Grant = SecretAccessGrantEntity;
 
@@ -86,6 +90,7 @@ export default class SecretAccessService {
 
   /** `{ secretId?, agentId?, status? }`. A secret's list includes the selector grants that cover it. */
   async list(orgId: string, body: { secretId?: unknown; agentId?: unknown; status?: unknown } = {}): Promise<{ items: SecretAccessGrantView[]; total: number }> {
+    await loadCustomTypes(orgId);
     const q = db.createQueryBuilder(SecretAccessGrantEntity, 'g').where('g.organization_id = :orgId', { orgId }).orderBy('g.created_at', 'DESC');
     if (typeof body.agentId === 'string' && body.agentId) q.andWhere('g.agent_id = :agentId', { agentId: body.agentId });
     let rows = await q.getMany();
@@ -103,6 +108,7 @@ export default class SecretAccessService {
     dto: { agentId: string; secretId?: string; selector?: SecretSelector; description?: string; fields?: string[]; versions?: 'ACTIVE' | 'ANY'; allowedCidrs?: string[]; requireApproval?: boolean; validFrom?: string; expiresAt?: string | null },
   ): Promise<SecretAccessGrantView> {
     const fields: Record<string, string> = {};
+    await loadCustomTypes(ctx.org.id);
     const agent = await agentRepo.getAgent(ctx.org.id, dto.agentId);
     if (!agent) fields.agentId = 'Unknown agent';
     const selector = dto.selector && Object.values(dto.selector).some((v) => v) ? Object.fromEntries(Object.entries(dto.selector).filter(([, v]) => v)) as SecretSelector : null;
@@ -111,9 +117,9 @@ export default class SecretAccessService {
     if (dto.secretId) {
       const s = await db.findOneBy(SecretEntity, { id: dto.secretId, organizationId: ctx.org.id });
       if (!s || s.status === 'DELETED') fields.secretId = 'Unknown secret';
-      else typeFields = Object.keys(getSecretType(s.typeKey)?.fields ?? {});
+      else typeFields = Object.keys(getSecretType(s.typeKey, s.organizationId)?.fields ?? {});
     } else if (selector?.typeKey) {
-      const t = getSecretType(selector.typeKey);
+      const t = getSecretType(selector.typeKey, ctx.org.id);
       if (!t) fields['selector.typeKey'] = 'Unknown secret type';
       else typeFields = Object.keys(t.fields);
     }
@@ -249,13 +255,15 @@ export default class SecretAccessService {
     if (agent.status !== 'ACTIVE') return { items: [] };
     const grants = await this.activeGrants(agent);
     if (!grants.length) return { items: [] };
+    await loadCustomTypes(agent.organizationId);
     const secrets = await db.createQueryBuilder(SecretEntity, 's').where(`s.organization_id = :orgId AND s.status <> 'DELETED'`, { orgId: agent.organizationId }).orderBy('s.name', 'ASC').getMany();
     const items: AgentSecretInfo[] = [];
     for (const s of secrets) {
       const g = this.bestGrant(grants.filter((x) => grantCovers(x, s)));
       if (!g) continue;
-      const typeFields = Object.keys(getSecretType(s.typeKey)?.fields ?? {});
-      items.push({ secret_id: s.id, name: s.name, type_key: s.typeKey, project: s.project, workspace: s.workspace, environment: s.environment, status: effectiveStatus(s), active_version: s.activeVersion, expires_at: s.expiresAt, grant_id: g.id, fields: allowedFields(g, typeFields), versions: g.versions, requires_approval: g.requireApproval });
+      const type = getSecretType(s.typeKey, s.organizationId);
+      const typeFields = Object.keys(type?.fields ?? {});
+      items.push({ secret_id: s.id, name: s.name, type_key: s.typeKey, project: s.project, workspace: s.workspace, environment: s.environment, status: effectiveStatus(s), active_version: s.activeVersion, expires_at: s.expiresAt, grant_id: g.id, fields: allowedFields(g, typeFields), versions: g.versions, requires_approval: g.requireApproval, dynamic: !!type?.lifecycle.dynamic });
     }
     return { items };
   }
@@ -279,15 +287,21 @@ export default class SecretAccessService {
    * plus `version?`, `fields?`, `reason?`, `approval_id?`. Checks, in order: the agent's key and
    * status, the organization's emergency stop, the secret, a covering grant (default deny), source
    * IP, the secret's state and expiry, the version and fields the grant allows, and approval.
+   *
+   * `mode: 'lease'` (POST /agent/v1/secret/lease, dynamic secrets): the same checks, then a
+   * short-lived credential is issued instead of a value (`ttl_seconds?`). A grant limited to some
+   * fields cannot issue leases. Dynamic secrets are never returned by retrieve: their stored value
+   * is the administrative credential that issues leases.
    */
-  async agentRetrieve(input: { authorization: string | undefined; sourceIp: string; body: unknown; onPreviousKey?: (expiresAt: string) => void }): Promise<{ status: number; body: AgentSecretRetrieval | { approval_id: string; status: 'PENDING'; expires_at: string; decision_code: 'APPROVAL_REQUIRED'; reason: string } }> {
+  async agentRetrieve(input: { authorization: string | undefined; sourceIp: string; body: unknown; onPreviousKey?: (expiresAt: string) => void; mode?: 'retrieve' | 'lease' }): Promise<{ status: number; body: AgentSecretRetrieval | AgentSecretLease | { approval_id: string; status: 'PENDING'; expires_at: string; decision_code: 'APPROVAL_REQUIRED'; reason: string } }> {
+    const leasing = input.mode === 'lease';
     const requestId = newRequestId();
     const agent = await this.agentOf(input.authorization, input.onPreviousKey);
     const actor: Actor = { type: 'AGENT', id: agent.id, name: agent.name };
     const b = (input.body && typeof input.body === 'object' ? input.body : {}) as Record<string, unknown>;
     const str = (v: unknown, max = 200) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
-    const version = Number.isInteger(b.version) && (b.version as number) > 0 ? (b.version as number) : null;
-    const requested = Array.isArray(b.fields) ? [...new Set(b.fields.filter((f): f is string => typeof f === 'string').slice(0, 40))] : null;
+    const version = !leasing && Number.isInteger(b.version) && (b.version as number) > 0 ? (b.version as number) : null;
+    const requested = !leasing && Array.isArray(b.fields) ? [...new Set(b.fields.filter((f): f is string => typeof f === 'string').slice(0, 40))] : null;
     const reason = str(b.reason, 300);
 
     let secret: SecretEntity | null = null;
@@ -333,21 +347,27 @@ export default class SecretAccessService {
     if (status === 'EXPIRED') await deny(409, 'SECRET_EXPIRED', 'This secret has expired');
     if (!RETRIEVABLE_SECRET_STATUSES.includes(status)) await deny(409, 'SECRET_NOT_ACTIVE', `This secret is ${status.toLowerCase().replace('_', ' ')}`);
 
-    const typeFields = Object.keys(getSecretType(s.typeKey)?.fields ?? {});
+    await loadCustomTypes(s.organizationId);
+    const secretType = getSecretType(s.typeKey, s.organizationId);
+    const dynamic = !!secretType?.lifecycle.dynamic;
+    if (!leasing && dynamic) await deny(409, 'SECRET_IS_DYNAMIC', 'This secret issues short-lived credentials: ask for a lease (POST /agent/v1/secret/lease)');
+    if (leasing && !dynamic) throw new SecretAccessError(400, 'SECRET_NOT_DYNAMIC', 'This secret is static: retrieve it (POST /agent/v1/secret/retrieve)');
+    const typeFields = Object.keys(secretType?.fields ?? {});
     const unknown = (requested ?? []).filter((f) => !typeFields.includes(f));
     if (unknown.length) throw new SecretAccessError(400, 'SECRET_FIELD_UNKNOWN', `Not fields of this secret: ${unknown.join(', ')}`);
     // A grant that allows this version and every requested field (the best one first).
     // Without `fields`, the agent gets the fields its grant allows.
     // During a rotation's grace period the version it replaced stays readable under grants limited to the active version (spec 4.9.11).
     const inGrace = !!version && version !== s.activeVersion && (await this.inRotationGrace(s, version));
-    const fits = (g: Grant) => (!version || version === s.activeVersion || g.versions === 'ANY' || inGrace) && (requested ?? []).every((f) => allowedFields(g, typeFields).includes(f));
+    const fits = (g: Grant) => (leasing ? !g.fields.length : (!version || version === s.activeVersion || g.versions === 'ANY' || inGrace) && (requested ?? []).every((f) => allowedFields(g, typeFields).includes(f)));
     const grant = this.bestGrant(fromIp.filter(fits));
+    if (!grant && leasing) await deny(403, 'LEASE_NOT_PERMITTED', 'A grant limited to some fields cannot issue leases');
     if (!grant) {
       const versionProblem = version && version !== s.activeVersion && !inGrace && !fromIp.some((g) => g.versions === 'ANY');
       await deny(403, versionProblem ? 'SECRET_VERSION_NOT_PERMITTED' : 'SECRET_FIELDS_NOT_PERMITTED', versionProblem ? 'This agent may read only the active version' : `This agent may read only: ${allowedFields(fromIp[0]!, typeFields).join(', ')}`);
     }
     const g = grant!;
-    const fields = requested ?? allowedFields(g, typeFields);
+    const fields = leasing ? [] : (requested ?? allowedFields(g, typeFields));
     const versionNo = version ?? s.activeVersion;
     const v = versionNo ? await db.findOneBy(SecretVersionEntity, { secretId: s.id, version: versionNo }) : null;
     if (!v) throw new SecretAccessError(404, 'SECRET_VERSION_NOT_FOUND', `Version ${versionNo} does not exist`);
@@ -375,6 +395,17 @@ export default class SecretAccessService {
         });
         return { status: 202, body: { approval_id: pending.id, status: 'PENDING', expires_at: pending.expiresAt, decision_code: 'APPROVAL_REQUIRED', reason: 'This grant requires a human to approve each retrieval; retry with approval_id once approved' } };
       }
+    }
+
+    if (leasing) {
+      const ttl = Number.isInteger(b.ttl_seconds) && (b.ttl_seconds as number) > 0 ? (b.ttl_seconds as number) : undefined;
+      if (approvalId) {
+        const used = await db.createQueryBuilder().update(SecretRetrievalApprovalEntity).set({ status: 'USED', usedAt: now() }).where(`id = :id AND status = 'APPROVED'`, { id: approvalId }).execute();
+        if (!used.affected) throw new SecretAccessError(409, 'APPROVAL_USED', 'That approval was already used; ask again');
+      }
+      const issued = await leases.issue(s, { type: 'AGENT', id: agent.id, name: agent.name, actor }, { ttlSeconds: ttl, reason, grantId: g.id, requestId });
+      await db.createQueryBuilder().update(SecretAccessGrantEntity).set({ lastUsedAt: issued.createdAt, useCount: () => 'use_count + 1' }).where('id = :id', { id: g.id }).execute();
+      return { status: 201, body: { lease_id: issued.id, secret_id: s.id, name: s.name, type_key: s.typeKey, credentials: issued.credentials, expires_at: issued.expiresAt, max_expires_at: issued.maxExpiresAt, renewable: issued.renewable, grant_id: g.id, request_id: requestId } };
     }
 
     const webhook = await webhookRepo.getWebhook(agent.organizationId, s.webhookId);
@@ -409,5 +440,28 @@ export default class SecretAccessService {
       );
     });
     return { status: 200, body: { secret_id: s.id, name: s.name, type_key: s.typeKey, version: v.version, payload: res.body.payload, expires_at: s.expiresAt, retrieved_at: t, grant_id: g.id, request_id: requestId } };
+  }
+
+  /**
+   * POST /agent/v1/secret/lease/renew `{lease_id, ttl_seconds?}` and /lease/revoke `{lease_id}`:
+   * only the agent holding the lease. Renewing needs an active agent and no emergency stop;
+   * revoking is always allowed (ending access early is safe).
+   */
+  async agentLeaseAction(input: { authorization: string | undefined; action: 'renew' | 'revoke'; body: unknown; onPreviousKey?: (expiresAt: string) => void }) {
+    const agent = await this.agentOf(input.authorization, input.onPreviousKey);
+    const actor: Actor = { type: 'AGENT', id: agent.id, name: agent.name };
+    const b = (input.body && typeof input.body === 'object' ? input.body : {}) as Record<string, unknown>;
+    const id = typeof b.lease_id === 'string' ? b.lease_id : '';
+    const lease = id ? await db.findOneBy(SecretLeaseEntity, { id, organizationId: agent.organizationId }) : null;
+    if (!lease || lease.holderType !== 'AGENT' || lease.holderId !== agent.id) throw new SecretAccessError(404, 'LEASE_NOT_FOUND', 'This agent holds no such lease');
+    let view;
+    if (input.action === 'renew') {
+      if (agent.status !== 'ACTIVE') throw new SecretAccessError(403, 'AGENT_DISABLED', 'This agent is disabled');
+      const org = await orgRepo.getOrganization(agent.organizationId);
+      if (org?.emergencyStoppedAt) throw new SecretAccessError(403, 'EMERGENCY_STOP', 'An administrator stopped all agent access in this organization');
+      const ttl = Number.isInteger(b.ttl_seconds) && (b.ttl_seconds as number) > 0 ? (b.ttl_seconds as number) : undefined;
+      view = await leases.renew(lease, actor, ttl);
+    } else view = await leases.revoke(lease, actor, typeof b.reason === 'string' ? b.reason.slice(0, 300) : 'Ended by the agent');
+    return { lease_id: view.id, status: view.status, expires_at: view.expiresAt, max_expires_at: view.maxExpiresAt, renewable: view.renewable, renew_count: view.renewCount };
   }
 }

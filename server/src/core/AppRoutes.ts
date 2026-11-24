@@ -11,6 +11,8 @@ export enum APP_ROUTES {
   SECRET = '/secret',
   SECRET_ACCESS = '/secretAccess',
   SECRET_POLICY = '/secretPolicy',
+  SECRET_LEASE = '/secretLease',
+  SECRET_EXPORT = '/secretExport',
   NOTIFICATION_CHANNEL = '/notificationChannel',
   INTEGRATION = '/integration',
   AGENT = '/agent',

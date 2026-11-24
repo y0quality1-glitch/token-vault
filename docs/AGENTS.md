@@ -324,6 +324,17 @@ const key = await tv.secrets.get('release-signing', { waitForApproval: { timeout
 await tv.secrets.get('orders-db', { cacheTtlMs: 5 * 60_000 });
 ```
 
+**Dynamic secrets** give each caller its own short-lived credential instead of a shared one: a PostgreSQL login created for the lease and dropped when it ends, or AWS session credentials. The application asks for a lease; the stored administrative login never leaves the customer webhook.
+
+```ts
+const lease = await tv.secrets.lease('reporting-db', { ttlSeconds: 15 * 60, reason: 'nightly report' });
+const db = new pg.Client({ ...lease.credentials, port: Number(lease.credentials.port) });
+// ... long job? lengthen it (never past lease.max_expires_at)
+await lease.renew(30 * 60);
+// done early: end it now (the role is dropped)
+await lease.revoke();
+```
+
 When a secret rotates, `get()` returns the new version at once. For the secret's grace period (24 hours unless changed) the version it replaced can still be read with `{ version: n }`, even under a grant limited to the active version, so a running service can finish with it. `tv.secrets.list()` shows what the agent may read. Every retrieval and every refusal is in the audit log (**Security events**, `secret.*`), never with the value. The MCP server has no tool that reads secrets: models get brokered operations, never raw credentials.
 
 ## 2b. TypeScript SDK

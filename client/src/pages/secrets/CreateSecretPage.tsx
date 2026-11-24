@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, LockKeyhole } from 'lucide-react';
 import { SECRET_SCOPE_SLUG, type Environment, type SecretDetail, type SecretTypeInfo } from '@token-vault/shared';
 import { useMutation } from '@/hooks/useApi';
@@ -12,7 +12,7 @@ import { Checkbox, Field, Input, Select } from '@/components/ui/form';
 import { Callout, ErrorState, PageSkeleton } from '@/components/ui/feedback';
 import { PageHeader, Stepper } from '@/components/ui/navigation';
 import { useToast } from '@/components/ui/toast';
-import { ApiErrorCallout, SecretTypePicker, TypeFields, checkMetadata, checkPayload, initialValues, useSecretTypes, type FieldValues } from './secretUi';
+import { ApiErrorCallout, SecretTypePicker, TypeFields, checkMetadata, checkPayload, initialValues, isArchivedType, useSecretTypes, type FieldValues } from './secretUi';
 import { LifecycleFields, NameFields, SETTINGS_FIELDS, settingsBody, settingsForType, validateSettings, type SettingsValues } from './secretSettings';
 
 /** New secret: pick a type, then fill a form generated from it. */
@@ -20,7 +20,9 @@ export function CreateSecretPage() {
   const [params, setParams] = useSearchParams();
   const types = useSecretTypes();
   const typeKey = params.get('type');
-  const type = types.data?.types.find((t) => t.key === typeKey) ?? null;
+  // Archived custom types take no new secrets.
+  const available = (types.data?.types ?? []).filter((t) => !isArchivedType(t));
+  const type = available.find((t) => t.key === typeKey) ?? null;
 
   if (types.error) return <ErrorState error={types.error} onRetry={types.reload} />;
   if (types.loading && !types.data) return <PageSkeleton />;
@@ -37,9 +39,17 @@ export function CreateSecretPage() {
         <CreateSecretForm key={type.key} type={type} onChangeType={() => setParams({})} />
       ) : (
         <Card>
-          <CardHeader title="Secret type" description="The type decides the fields of the secret, which of them are sensitive, and its lifecycle." />
+          <CardHeader
+            title="Secret type"
+            description="The type decides the fields of the secret, which of them are sensitive, and its lifecycle."
+            actions={
+              <Link className="text-xs text-brand-700 hover:underline" to="/secrets/types">
+                All secret types
+              </Link>
+            }
+          />
           <CardBody>
-            <SecretTypePicker types={types.data?.types ?? []} value={typeKey} onChange={(key) => setParams({ type: key })} />
+            <SecretTypePicker types={available} value={typeKey} onChange={(key) => setParams({ type: key })} />
           </CardBody>
         </Card>
       )}
@@ -112,6 +122,7 @@ function CreateSecretForm({ type, onChangeType }: { type: SecretTypeInfo; onChan
           title={
             <span className="flex flex-wrap items-center gap-2">
               {type.name} <Badge>{type.categoryLabel}</Badge>
+              {type.source === 'custom' && <Badge tone="amber">Custom type</Badge>}
             </span>
           }
           description={type.description || undefined}
@@ -148,6 +159,11 @@ function CreateSecretForm({ type, onChangeType }: { type: SecretTypeInfo; onChan
       <Card>
         <CardHeader title="Value" description="Sensitive fields are masked here and everywhere else; they are only shown by an audited reveal." />
         <CardBody className="space-y-4" data-testid="secret-payload-fields">
+          {type.lifecycle.dynamic && (
+            <Callout tone="info" title="Administrative credential">
+              This is the administrative credential leases are created with; applications never receive it. Each lease gets its own short-lived credential, created by the customer webhook and ended when the lease ends. Applications ask for a lease with <code className="font-mono text-[12px]">tv.secrets.lease()</code>.
+            </Callout>
+          )}
           <TypeFields prefix="payload" fields={type.fields} values={payload} onChange={setPayload} errors={allErrors} />
           {allErrors.payload && <p className="text-xs text-red-600">{allErrors.payload}</p>}
         </CardBody>

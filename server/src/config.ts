@@ -149,4 +149,9 @@ export const config = {
   /** Email notifications: SMTP server (smtp:// or smtps:// URL, credentials in the URL) and sender. Unset: email channels fail visibly. */
   smtpUrl: process.env.SMTP_URL ?? '',
   smtpFrom: process.env.SMTP_FROM ?? 'Token Vault <no-reply@token-vault.local>',
+  /**
+   * Export of secret values (spec 4.9.14): off unless SECRET_EXPORT_ENABLED=true. Even then each
+   * export needs secret:export, another member's approval, and a passphrase that encrypts the file.
+   */
+  secretExportEnabled: process.env.SECRET_EXPORT_ENABLED === 'true',
 };

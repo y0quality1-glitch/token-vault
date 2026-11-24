@@ -40,6 +40,10 @@ import { SecretAccessPage } from '@/pages/secrets/SecretAccessPage';
 import { SecretApprovalsPage } from '@/pages/secrets/SecretApprovalsPage';
 import { SecretRotationsPage } from '@/pages/secrets/SecretRotationsPage';
 import { SecretPoliciesPage } from '@/pages/secrets/SecretPoliciesPage';
+import { SecretLeasesPage } from '@/pages/secrets/SecretLeasesPage';
+import { SecretImportPage } from '@/pages/secrets/SecretImportPage';
+import { SecretExportsPage } from '@/pages/secrets/SecretExportsPage';
+import { SecretTypesPage } from '@/pages/secrets/SecretTypesPage';
 import { NotificationsPage } from '@/pages/settings/NotificationsPage';
 
 export function App() {
@@ -112,6 +116,31 @@ export function App() {
             </RequirePermission>
           }
         />
+        <Route
+          path="secrets/leases"
+          element={
+            <RequirePermission permission={PERMISSIONS.SECRET_READ_METADATA}>
+              <SecretLeasesPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="secrets/import"
+          element={
+            <RequirePermission permission={PERMISSIONS.SECRET_CREATE}>
+              <SecretImportPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="secrets/exports"
+          element={
+            <RequirePermission permission={PERMISSIONS.SECRET_READ_METADATA}>
+              <SecretExportsPage />
+            </RequirePermission>
+          }
+        />
+        <Route path="secrets/types" element={<SecretTypesPage />} />
         <Route
           path="secrets/:id"
           element={

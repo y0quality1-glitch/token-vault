@@ -32,7 +32,7 @@ test.describe.serial('secret types: published in the CMS, trusted by Token Vault
     expect(list.catalog).toMatchObject({ lastError: null });
     expect(list.types.length).toBeGreaterThan(40);
     expect(list.types.every((t: { source: string }) => t.source === 'catalog')).toBe(true);
-    expect(list.categories.map((c: { key: string }) => c.key)).toEqual(['api', 'database', 'auth', 'cloud', 'crypto', 'certificate', 'infrastructure', 'application', 'webhook']);
+    expect(list.categories.map((c: { key: string }) => c.key)).toEqual(['api', 'database', 'auth', 'cloud', 'crypto', 'certificate', 'infrastructure', 'application', 'webhook', 'dynamic']);
     const pg = await details(await admin.get('/api/v1/secretType/getbyid/postgresql'));
     expect(pg).toMatchObject({ category: 'database', categoryLabel: 'Database secrets', fields: { username: { sensitive: false }, password: { sensitive: true, required: true } }, metadata: { host: { kind: 'hostname' } } });
     const aws = await details(await admin.post('/api/v1/secretType/getall', { data: { search: 'aws', filters: { category: 'cloud' } } }));
