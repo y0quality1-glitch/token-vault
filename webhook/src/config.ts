@@ -170,6 +170,8 @@ export const config = {
   providerAllowedHosts: (process.env.PROVIDER_ALLOWED_HOSTS ?? '').split(',').map((h) => h.trim().toLowerCase()).filter(Boolean),
   /** AWS STS endpoint override (tests, private endpoints); default: the regional AWS endpoint. */
   awsStsEndpoint: process.env.AWS_STS_ENDPOINT || undefined,
+  /** Optional AWS KMS endpoint for aws-kms-key secrets (private endpoints, tests); default: the regional AWS endpoint. */
+  awsKmsEndpoint: process.env.AWS_KMS_ENDPOINT || undefined,
   /** Lifetime of access tokens issued by the simulated OAuth server (mock mode only). */
   mockOAuthTokenTtlS: Number(process.env.MOCK_OAUTH_TOKEN_TTL_S ?? 3600),
   /** if-missing: (re)create demo mock credentials only where absent or unreadable. reset: wipe the store first (tests). */

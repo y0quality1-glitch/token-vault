@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, LockKeyhole } from 'lucide-react';
-import { SECRET_SCOPE_SLUG, type Environment, type SecretDetail, type SecretTypeInfo } from '@token-vault/shared';
+import { SECRET_CERTIFICATE_TYPES, SECRET_KEY_CAPABILITIES, SECRET_SCOPE_SLUG, type Environment, type SecretDetail, type SecretTypeInfo } from '@token-vault/shared';
 import { useMutation } from '@/hooks/useApi';
 import { api } from '@/lib/api';
 import { ENV_LABELS } from '@/lib/utils';
@@ -163,6 +163,21 @@ function CreateSecretForm({ type, onChangeType }: { type: SecretTypeInfo; onChan
             <Callout tone="info" title="Administrative credential">
               This is the administrative credential leases are created with; applications never receive it. Each lease gets its own short-lived credential, created by the customer webhook and ended when the lease ends. Applications ask for a lease with <code className="font-mono text-[12px]">tv.secrets.lease()</code>.
             </Callout>
+          )}
+          {SECRET_CERTIFICATE_TYPES[type.key] && (
+            <div data-testid="secret-create-certificate-note">
+              <Callout tone="info" title="Read from the certificate">
+                The expiry and the descriptive details (subject, issuer, names) are read from the certificate when it is stored. A private key stored with it must belong to the certificate; one that does not is refused.
+              </Callout>
+            </div>
+          )}
+          {SECRET_KEY_CAPABILITIES[type.key] && (
+            <div data-testid="secret-create-key-note">
+              <Callout tone="info" title="Used without being read">
+                Applications can use this key ({SECRET_KEY_CAPABILITIES[type.key]!.operations.join(', ')}) through an access grant without ever reading it; the customer webhook performs each operation.
+                {SECRET_KEY_CAPABILITIES[type.key]!.external && ` The key itself stays in ${SECRET_KEY_CAPABILITIES[type.key]!.external === 'aws-kms' ? 'AWS KMS' : 'Vault Transit'}: store how the webhook reaches it.`}
+              </Callout>
+            </div>
           )}
           <TypeFields prefix="payload" fields={type.fields} values={payload} onChange={setPayload} errors={allErrors} />
           {allErrors.payload && <p className="text-xs text-red-600">{allErrors.payload}</p>}

@@ -446,6 +446,17 @@ const ERROR_TITLES: Record<string, string> = {
   EXPORT_RATE_LIMITED: 'Too many export requests',
   EXPORT_GONE: 'The download link has expired or was used',
   SEPARATION_OF_DUTIES: 'You cannot decide your own request',
+  CERTIFICATE_KEY_MISMATCH: 'The certificate does not belong to the key',
+  CERTIFICATE_EXPIRED: 'The certificate has expired',
+  CERTIFICATE_ISSUER_INVALID: 'That CA secret cannot issue this certificate',
+  CERTIFICATE_REQUEST_PENDING: 'A renewal request is already waiting',
+  CERTIFICATE_REQUEST_NOT_PENDING: 'The renewal request is no longer waiting',
+  CERTIFICATE_NOT_RENEWABLE: 'This certificate type cannot be renewed here',
+  SECRET_NOT_A_KEY: 'This secret is not a key',
+  KEY_VERSION_DISABLED: 'That key version is deactivated',
+  RETRIEVE_NOT_PERMITTED: 'The grant does not allow reading the value',
+  KEY_OPERATION_NOT_PERMITTED: 'The grant does not allow that key operation',
+  KEY_OPERATION_NOT_ALLOWED: 'The key may not be used for that',
 };
 
 /** An API error with its code, shown inline (field errors are shown next to their inputs instead). */

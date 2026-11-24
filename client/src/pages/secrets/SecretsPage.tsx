@@ -15,6 +15,7 @@ import { EmptyState, ErrorState } from '@/components/ui/feedback';
 import { DataTable } from '@/components/ui/table';
 import { PageHeader } from '@/components/ui/navigation';
 import { GrantDialog, SecretsSectionTabs, selectorText } from './secretAccess';
+import { CertificateHint } from './secretKeys';
 import { SECRET_STATUS_META, SecretStatusBadge, categoryLabel, useSecretTypes } from './secretUi';
 
 const PAGE_SIZE = 25;
@@ -199,6 +200,7 @@ export function SecretsPage() {
                       {s.customType && <span className="ml-1 text-amber-700">· custom type</span>}
                       {s.provider?.status === 'FAILING' && <span className="ml-1 text-red-700" data-testid="secret-provider-failing">· provider failing</span>}
                     </p>
+                    {s.certificate && <CertificateHint certificate={s.certificate} />}
                   </div>
                 ),
                 hideBelow: 'md',

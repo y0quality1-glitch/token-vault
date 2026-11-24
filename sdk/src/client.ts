@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { AgentAccessRequestBody, AgentApprovalBody, AgentCapabilitiesBody, AgentDelegationBody, AgentOperationsBody, AgentSecretInfo, AgentSecretLease, AgentSecretRetrieval, ExecuteRequestBody, ExecuteResponseBody } from '@token-vault/shared';
+import type { AgentAccessRequestBody, AgentApprovalBody, AgentCapabilitiesBody, AgentDelegationBody, AgentKeyOperationResult, AgentOperationsBody, AgentSecretInfo, AgentSecretLease, AgentSecretRetrieval, ExecuteRequestBody, ExecuteResponseBody } from '@token-vault/shared';
 import { AccessDeniedError, ApprovalRequiredError, AuthenticationError, ExecutionFailedError, ResponseWithheldError, TokenVaultError } from './errors';
 
 export type GitHubOperation = 'github.repositories.read' | 'github.contents.read' | 'github.issues.list' | 'github.issues.create';
@@ -195,6 +195,24 @@ export interface SecretLease extends AgentSecretLease {
   renew(ttlSeconds?: number): Promise<{ lease_id: string; status: string; expires_at: string; max_expires_at: string; renew_count: number }>;
   revoke(reason?: string): Promise<void>;
 }
+
+/** Options of a key operation (tv.keys.*). */
+export interface KeyOperationOptions {
+  /** JOSE name, e.g. PS256, ES384, EdDSA, HS512, RSA-OAEP-256 (default: what the key uses). */
+  algorithm?: string;
+  /** Associated data for encrypt/decrypt (must be the same for both). */
+  aad?: string | Uint8Array;
+  /** Recorded in the audit log. */
+  reason?: string;
+  approvalId?: string;
+  /** As for secrets.get(): wait for a human to approve a held operation. */
+  waitForApproval?: GetSecretOptions['waitForApproval'];
+}
+
+export type KeyResult = AgentKeyOperationResult;
+
+/** Text is encoded as UTF-8; bytes as they are. */
+const toBase64 = (v: string | Uint8Array) => Buffer.from(typeof v === 'string' ? Buffer.from(v, 'utf8') : v).toString('base64');
 
 export class TokenVault {
   readonly baseUrl: string;
@@ -529,6 +547,33 @@ export class TokenVault {
       this.#secretCache.clear();
     },
   };
+
+  /**
+   * Keys the agent uses without reading them (spec 4.9.3 E): the customer webhook signs, verifies,
+   * encrypts, decrypts and computes MACs. Needs a grant with those key operations.
+   *
+   *   const { signature } = await tv.keys.sign('release-signing', artifactDigest);
+   *   const { valid } = await tv.keys.verify('release-signing', artifactDigest, signature);
+   */
+  readonly keys = {
+    sign: (ref: SecretRef, data: string | Uint8Array, options: KeyOperationOptions = {}) => this.#keyOp('sign', ref, { data: toBase64(data) }, options),
+    /** A signature (or, for MAC keys, a MAC). `version`: the key version that signed it (default: the active one). */
+    verify: (ref: SecretRef, data: string | Uint8Array, signature: string, options: KeyOperationOptions & { version?: number; mac?: boolean } = {}) =>
+      this.#keyOp('verify', ref, { data: toBase64(data), ...(options.mac ? { mac: signature } : { signature }), ...(options.version ? { version: options.version } : {}) }, options),
+    encrypt: (ref: SecretRef, plaintext: string | Uint8Array, options: KeyOperationOptions = {}) => this.#keyOp('encrypt', ref, { data: toBase64(plaintext) }, options),
+    /** Decrypts what encrypt returned; `data` is the plaintext as bytes. */
+    decrypt: async (ref: SecretRef, ciphertext: string, options: KeyOperationOptions = {}): Promise<KeyResult & { data: Buffer }> => {
+      const r = await this.#keyOp('decrypt', ref, { ciphertext }, options);
+      return { ...r, data: Buffer.from(r.plaintext ?? '', 'base64') };
+    },
+    mac: (ref: SecretRef, data: string | Uint8Array, options: KeyOperationOptions = {}) => this.#keyOp('mac', ref, { data: toBase64(data) }, options),
+  };
+
+  #keyOp(operation: string, ref: SecretRef, input: Record<string, unknown>, options: KeyOperationOptions): Promise<KeyResult> {
+    const target = typeof ref === 'string' ? (ref.startsWith('sec_') ? { secret_id: ref } : { name: ref }) : { secret_id: ref.secretId, name: ref.name, project: ref.project, workspace: ref.workspace, environment: ref.environment };
+    const body = { ...target, ...input, ...(options.algorithm ? { algorithm: options.algorithm } : {}), ...(options.aad !== undefined ? { aad: toBase64(options.aad) } : {}), ...(options.reason ? { reason: options.reason } : {}) };
+    return this.#heldCall<KeyResult>(`/agent/v1/secret/key/${operation}`, body, options, `The key operation (${operation}) failed`);
+  }
 
   readonly #secretCache = new Map<string, { value: SecretValue; until: number }>();
 

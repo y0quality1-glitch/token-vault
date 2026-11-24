@@ -85,4 +85,23 @@ describe('tv.secrets', () => {
     expect(calls[2]).toMatchObject({ url: 'http://tv/agent/v1/secret/lease/revoke', body: { lease_id: 'lse_0123456789' } });
     await expect(server([409, fail('SECRET_NOT_DYNAMIC', 'static')]).tv.secrets.lease('x')).rejects.toMatchObject({ code: 'SECRET_NOT_DYNAMIC' });
   });
+
+  it('keys: sign, verify, encrypt and decrypt with a key the agent never sees; inputs go as base64', async () => {
+    const base = { secret_id: 'sec_0123456789abcdef', name: 'release-signing', grant_id: 'sag_1', request_id: 'req_3' };
+    const { tv, calls } = server(
+      [200, ok({ ...base, operation: 'sign', version: 2, algorithm: 'ES256', signature: 'c2ln' })],
+      [200, ok({ ...base, operation: 'verify', version: 1, algorithm: 'ES256', valid: true })],
+      [200, ok({ ...base, operation: 'encrypt', version: 2, algorithm: 'A256GCM', ciphertext: 'tv:v2:abc' })],
+      [200, ok({ ...base, operation: 'decrypt', version: 2, algorithm: 'A256GCM', plaintext: Buffer.from('card 4242').toString('base64') })],
+    );
+    expect(await tv.keys.sign('release-signing', 'release 1.2.3', { reason: 'release' })).toMatchObject({ signature: 'c2ln', version: 2 });
+    expect(calls[0]).toMatchObject({ url: 'http://tv/agent/v1/secret/key/sign', body: { name: 'release-signing', data: Buffer.from('release 1.2.3').toString('base64'), reason: 'release' } });
+    expect((await tv.keys.verify('sec_0123456789abcdef', new Uint8Array([1, 2, 3]), 'c2ln', { version: 1, algorithm: 'ES256' })).valid).toBe(true);
+    expect(calls[1]).toMatchObject({ url: 'http://tv/agent/v1/secret/key/verify', body: { secret_id: 'sec_0123456789abcdef', data: 'AQID', signature: 'c2ln', version: 1, algorithm: 'ES256' } });
+    expect((await tv.keys.encrypt('pii-key', 'card 4242', { aad: 'order-17' })).ciphertext).toBe('tv:v2:abc');
+    expect(calls[2]!.body).toMatchObject({ aad: Buffer.from('order-17').toString('base64') });
+    expect((await tv.keys.decrypt('pii-key', 'tv:v2:abc')).data.toString()).toBe('card 4242');
+    expect(calls[3]!.body).toMatchObject({ ciphertext: 'tv:v2:abc' });
+    await expect(server([403, fail('KEY_OPERATION_NOT_PERMITTED', 'no')]).tv.keys.mac('x', 'y')).rejects.toMatchObject({ code: 'KEY_OPERATION_NOT_PERMITTED' });
+  });
 });

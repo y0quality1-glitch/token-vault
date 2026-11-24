@@ -45,6 +45,9 @@ const keyNotice = (res: Response) => (expiresAt: string) => res.setHeader('Token
  *   POST /lease      dynamic secrets: same target and checks, plus `ttl_seconds?` → 201 short-lived credentials (202 when held)
  *   POST /lease/renew   `{lease_id, ttl_seconds?}` lengthen a lease this agent holds (up to the secret's longest lease)
  *   POST /lease/revoke  `{lease_id, reason?}` end it now
+ *   POST /key/:operation  sign | verify | encrypt | decrypt | mac with a key the agent never sees: same target,
+ *                    `data` (base64), `signature?` / `mac?` (verify), `ciphertext?` (decrypt), `aad?`, `algorithm?`,
+ *                    `version?`, `reason?`, `approval_id?` → 200 the result (202 when held for approval)
  */
 export class AgentSecretController extends BaseController {
   constructor(private readonly service = new SecretAccessService()) {
@@ -62,6 +65,10 @@ export class AgentSecretController extends BaseController {
       return new Reply(r.body, r.status, r.status === 202 ? 'Approval Required' : 'Lease Issued Successfully');
     });
     this.route('post', '/lease/renew', [], (req: Request, res: Response) => this.service.agentLeaseAction({ authorization: req.headers.authorization, action: 'renew', body: req.body, onPreviousKey: keyNotice(res) }));
+    this.route('post', '/key/:operation', [], async (req: Request, res: Response) => {
+      const r = await this.service.agentKeyOperation({ authorization: req.headers.authorization, sourceIp: normalizeIp(req.ip), operation: String(req.params.operation), body: req.body, onPreviousKey: keyNotice(res) });
+      return new Reply(r.body, r.status, r.status === 202 ? 'Approval Required' : 'Key Operation Completed');
+    });
     this.route('post', '/lease/revoke', [], (req: Request, res: Response) => this.service.agentLeaseAction({ authorization: req.headers.authorization, action: 'revoke', body: req.body, onPreviousKey: keyNotice(res) }));
   }
 }

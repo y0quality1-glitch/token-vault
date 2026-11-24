@@ -1,5 +1,5 @@
 import { BaseEntity, Column, Entity, PrimaryColumn } from 'typeorm';
-import type { Environment, SecretCategory, SecretPayload, SecretRotationStrategy, SecretStatus } from '@token-vault/shared';
+import type { Environment, SecretCategory, SecretPayload, SecretRotationStrategy, SecretStatus, KeyOperation } from '@token-vault/shared';
 import { tsColumn } from './columns';
 
 /**
@@ -86,6 +86,10 @@ export class SecretEntity extends BaseEntity {
 
   @Column({ name: 'provider_error', type: 'text', nullable: true })
   providerError!: string | null;
+
+  /** Key types: operations allowed through the agent API (null: every one the type supports). */
+  @Column({ name: 'key_operations', type: 'jsonb', nullable: true })
+  keyOperations!: KeyOperation[] | null;
 
   @tsColumn('last_retrieved_at', true)
   lastRetrievedAt!: string | null;

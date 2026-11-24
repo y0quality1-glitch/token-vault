@@ -1,5 +1,5 @@
 import { BaseEntity, Column, Entity, PrimaryColumn } from 'typeorm';
-import type { SecretApprovalStatus } from '@token-vault/shared';
+import type { SecretApprovalStatus, KeyOperation } from '@token-vault/shared';
 import { tsColumn } from './columns';
 
 /**
@@ -56,4 +56,12 @@ export class SecretRetrievalApprovalEntity extends BaseEntity {
 
   @tsColumn('used_at', true)
   usedAt!: string | null;
+
+  /** What is held: a retrieval, a lease, or a key operation (spec 4.9.3 E). */
+  @Column({ name: 'operation', type: 'text', default: 'retrieve' })
+  operation!: 'retrieve' | 'lease' | KeyOperation;
+
+  /** Key operations: SHA-256 of the input, so the approval covers that exact input. */
+  @Column({ name: 'input_digest', type: 'text', nullable: true })
+  inputDigest!: string | null;
 }

@@ -2,9 +2,12 @@ import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Bot, Filter, KeyRound, Plus, ShieldOff } from 'lucide-react';
 import {
+  KEY_OPERATIONS,
   PERMISSIONS,
+  SECRET_KEY_CAPABILITIES,
   orderedFields,
   type Agent,
+  type KeyOperation,
   type SecretAccessGrantView,
   type SecretGrantStatus,
   type SecretSelector,
@@ -25,6 +28,7 @@ import { DataTable, type Column } from '@/components/ui/table';
 import { Tabs } from '@/components/ui/navigation';
 import { useToast } from '@/components/ui/toast';
 import { ApiErrorCallout } from './secretUi';
+import { KEY_OPERATION_LABELS, KeyOperationBadges } from './secretKeys';
 
 /**
  * Secret access (spec 4.9.9, 4.9.15): grants that let an agent retrieve one secret or every
@@ -130,6 +134,26 @@ function FieldsText({ fields }: { fields: string[] }) {
   );
 }
 
+/** What a grant allows: reading the value (which fields), or use only, and key operations. */
+function GrantAllows({ g }: { g: SecretAccessGrantView }) {
+  return (
+    <div className="space-y-1">
+      {g.allowRetrieve ? (
+        <FieldsText fields={g.fields} />
+      ) : (
+        <span data-testid="secret-grant-use-only">
+          <Badge tone="amber">Use only</Badge>
+        </span>
+      )}
+      {g.keyOperations.length > 0 && (
+        <div>
+          <KeyOperationBadges operations={g.keyOperations} testId="secret-grant-key-ops" />
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Grants table shared by the secret page, the Access tab and the agent page. */
 export function GrantsTable({
   grants,
@@ -164,7 +188,7 @@ export function GrantsTable({
       ),
     },
     ...(show.target ? [{ key: 'target', header: 'Covers', cell: (g: SecretAccessGrantView) => <GrantTarget g={g} linkSecret={linkSecret} /> }] : []),
-    { key: 'fields', header: 'Fields', cell: (g) => <FieldsText fields={g.fields} />, hideBelow: 'md' },
+    { key: 'fields', header: 'Allows', cell: (g) => <GrantAllows g={g} />, hideBelow: 'md' },
     { key: 'versions', header: 'Versions', cell: (g) => <span className="whitespace-nowrap text-slate-600">{g.versions === 'ANY' ? 'Any version' : 'Active only'}</span>, hideBelow: 'lg' },
     {
       key: 'cidrs',
@@ -257,7 +281,7 @@ export function useAgents(enabled = true) {
 
 // ── grant dialog ─────────────────────────────────────────────────
 
-const GRANT_FORM_FIELDS = ['agentId', 'secretId', 'fields', 'versions', 'allowedCidrs', 'requireApproval', 'expiresAt', 'description', 'selector', 'selector.project', 'selector.workspace', 'selector.environment', 'selector.typeKey', 'selector.tag'];
+const GRANT_FORM_FIELDS = ['agentId', 'secretId', 'fields', 'allowRetrieve', 'keyOperations', 'versions', 'allowedCidrs', 'requireApproval', 'expiresAt', 'description', 'selector', 'selector.project', 'selector.workspace', 'selector.environment', 'selector.typeKey', 'selector.tag'];
 
 /**
  * Grants an agent access. With `secret`, the grant names that secret; without, the admin builds a
@@ -270,6 +294,8 @@ export function GrantDialog({ secret, types, defaultAgentId, onClose, onDone }: 
   const [fields, setFields] = useState<string[]>([]);
   const [versions, setVersions] = useState<'ACTIVE' | 'ANY'>('ACTIVE');
   const [requireApproval, setRequireApproval] = useState(false);
+  const [allowRetrieve, setAllowRetrieve] = useState(true);
+  const [keyOps, setKeyOps] = useState<KeyOperation[]>([]);
   const [cidrs, setCidrs] = useState('');
   const [expiresAt, setExpiresAt] = useState('');
   const [description, setDescription] = useState('');
@@ -281,6 +307,8 @@ export function GrantDialog({ secret, types, defaultAgentId, onClose, onDone }: 
   const type = types.find((t) => t.key === typeKey) ?? null;
   const typeFields = type ? orderedFields(type.fields) : [];
   const sortedTypes = useMemo(() => [...types].sort((a, b) => a.name.localeCompare(b.name)), [types]);
+  // Key operations: the key's own for one key secret; for a selector, the type's when it names a key type, else all.
+  const offeredOps: readonly KeyOperation[] = secret ? (secret.key?.supported ?? []) : (SECRET_KEY_CAPABILITIES[selector.typeKey]?.operations ?? KEY_OPERATIONS);
   const agentOptions = useMemo(() => [...(agents.data?.items ?? [])].sort((a, b) => a.name.localeCompare(b.name)), [agents.data]);
 
   const setSel = (k: keyof SecretSelector, v: string) => {
@@ -310,6 +338,8 @@ export function GrantDialog({ secret, types, defaultAgentId, onClose, onDone }: 
       versions,
       allowedCidrs: cidrList,
       requireApproval,
+      allowRetrieve,
+      ...(offeredOps.length ? { keyOperations: offeredOps.filter((o) => keyOps.includes(o)) } : {}),
       ...(expiresAt ? { expiresAt: fromLocalInput(expiresAt) } : {}),
     });
     if (r) onDone(r);
@@ -415,6 +445,32 @@ export function GrantDialog({ secret, types, defaultAgentId, onClose, onDone }: 
             <p className="text-xs text-slate-500">{secret ? `The secret type ${secret.typeKey} is not available; the grant allows every field.` : 'All fields. Choose a secret type in the selector to limit fields.'}</p>
           )}
           {allErrors.fields && <p className="text-xs text-red-600">{allErrors.fields}</p>}
+        </div>
+
+        <div className="space-y-3 rounded-lg border border-slate-200 p-4" data-testid="secret-grant-use">
+          <Checkbox
+            id="secret-grant-allow-retrieve"
+            testId="secret-grant-allow-retrieve"
+            checked={allowRetrieve}
+            onChange={setAllowRetrieve}
+            label="Allow reading the value"
+            description={offeredOps.length ? 'Off: the agent may only use the key through the operations below, never read it.' : 'The agent retrieves the value (or a lease, for dynamic secrets).'}
+          />
+          {allErrors.allowRetrieve && <p className="text-xs text-red-600">{allErrors.allowRetrieve}</p>}
+          {offeredOps.length > 0 && (
+            <div className="space-y-2 border-t border-slate-100 pt-3" data-testid="secret-grant-key-ops-field">
+              <div>
+                <p className="text-sm font-medium text-slate-700">Key operations</p>
+                <p className="text-xs text-slate-500">{secret ? 'What the agent may ask the customer webhook to do with the key, without reading it.' : 'Apply to key secrets the selector covers, as far as each key allows.'}</p>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-3">
+                {offeredOps.map((o) => (
+                  <Checkbox key={o} id={`secret-grant-key-op-${o}`} testId={`secret-grant-key-op-${o}`} checked={keyOps.includes(o)} onChange={(c) => setKeyOps((xs) => (c ? [...xs, o] : xs.filter((x) => x !== o)))} label={KEY_OPERATION_LABELS[o].label} />
+                ))}
+              </div>
+              {allErrors.keyOperations && <p className="text-xs text-red-600">{allErrors.keyOperations}</p>}
+            </div>
+          )}
         </div>
 
         <div className="grid gap-4 sm:grid-cols-2">

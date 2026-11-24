@@ -1,7 +1,12 @@
+import { createHash } from 'node:crypto';
 import { In, type EntityManager } from 'typeorm';
 import {
+  KEY_OPERATIONS,
   RETRIEVABLE_SECRET_STATUSES,
+  SECRET_KEY_CAPABILITIES,
+  type AgentKeyOperationResult,
   type AgentSecretInfo,
+  type KeyOperation,
   type AgentSecretLease,
   type AgentSecretRetrieval,
   type SecretAccessGrantView,
@@ -19,7 +24,7 @@ import type { AgentRecord } from '../../store/types';
 import { recordEvent, userActor, type Actor } from '../auditService/auditService.service';
 import type { OrgContext } from '../baseService';
 import { authenticateCaller } from '../brokerService/brokerService.service';
-import { effectiveStatus } from '../secretService/secretService.service';
+import { effectiveStatus, keyOperationsOf } from '../secretService/secretService.service';
 import { getSecretType, loadCustomTypes } from '../secretTypeService/registry';
 import SecretLeaseService from '../secretLeaseService/secretLeaseService.service';
 import { WebhookUnavailableError, callWebhook } from '../webhookService/webhook.client';
@@ -75,6 +80,8 @@ export default class SecretAccessService {
       versions: g.versions,
       allowedCidrs: g.allowedCidrs,
       requireApproval: g.requireApproval,
+      allowRetrieve: g.allowRetrieve,
+      keyOperations: g.keyOperations,
       validFrom: g.validFrom,
       expiresAt: g.expiresAt,
       status: grantStatus(g),
@@ -105,7 +112,7 @@ export default class SecretAccessService {
 
   async create(
     ctx: OrgContext,
-    dto: { agentId: string; secretId?: string; selector?: SecretSelector; description?: string; fields?: string[]; versions?: 'ACTIVE' | 'ANY'; allowedCidrs?: string[]; requireApproval?: boolean; validFrom?: string; expiresAt?: string | null },
+    dto: { agentId: string; secretId?: string; selector?: SecretSelector; description?: string; fields?: string[]; versions?: 'ACTIVE' | 'ANY'; allowedCidrs?: string[]; requireApproval?: boolean; validFrom?: string; expiresAt?: string | null; allowRetrieve?: boolean; keyOperations?: KeyOperation[] },
   ): Promise<SecretAccessGrantView> {
     const fields: Record<string, string> = {};
     await loadCustomTypes(ctx.org.id);
@@ -114,15 +121,33 @@ export default class SecretAccessService {
     const selector = dto.selector && Object.values(dto.selector).some((v) => v) ? Object.fromEntries(Object.entries(dto.selector).filter(([, v]) => v)) as SecretSelector : null;
     if (!!dto.secretId === !!selector) fields.secretId = 'Choose one secret, or a selector (project, workspace, environment, type or tag), not both';
     let typeFields: string[] | null = null;
+    let typeKey: string | null = null;
     if (dto.secretId) {
       const s = await db.findOneBy(SecretEntity, { id: dto.secretId, organizationId: ctx.org.id });
       if (!s || s.status === 'DELETED') fields.secretId = 'Unknown secret';
-      else typeFields = Object.keys(getSecretType(s.typeKey, s.organizationId)?.fields ?? {});
+      else {
+        typeFields = Object.keys(getSecretType(s.typeKey, s.organizationId)?.fields ?? {});
+        typeKey = s.typeKey;
+      }
     } else if (selector?.typeKey) {
       const t = getSecretType(selector.typeKey, ctx.org.id);
       if (!t) fields['selector.typeKey'] = 'Unknown secret type';
-      else typeFields = Object.keys(t.fields);
+      else {
+        typeFields = Object.keys(t.fields);
+        typeKey = t.key;
+      }
     }
+    // Key operations (spec 4.9.3 E): what the agent may have the webhook do with a key; without
+    // retrieval, the agent uses the key but never reads it.
+    const keyOps = [...new Set(dto.keyOperations ?? [])];
+    const allowRetrieve = dto.allowRetrieve ?? true;
+    if (keyOps.some((o) => !(KEY_OPERATIONS as readonly string[]).includes(o))) fields.keyOperations = `Key operations are ${KEY_OPERATIONS.join(', ')}`;
+    else if (keyOps.length && typeKey) {
+      const supported = SECRET_KEY_CAPABILITIES[typeKey]?.operations ?? [];
+      if (!supported.length) fields.keyOperations = 'That secret is not a key';
+      else if (keyOps.some((o) => !supported.includes(o))) fields.keyOperations = `This key can only ${supported.join(', ')}`;
+    }
+    if (!allowRetrieve && !keyOps.length) fields.allowRetrieve = 'A grant that allows neither reading nor any key operation allows nothing';
     const wanted = [...new Set(dto.fields ?? [])];
     if (wanted.length) {
       if (!typeFields) fields.fields = 'Field limits need one secret, or a selector with a secret type';
@@ -143,6 +168,8 @@ export default class SecretAccessService {
       versions: dto.versions ?? 'ACTIVE',
       allowedCidrs: dto.allowedCidrs ?? [],
       requireApproval: dto.requireApproval ?? false,
+      allowRetrieve,
+      keyOperations: keyOps,
       validFrom: dto.validFrom ? new Date(dto.validFrom).toISOString() : t,
       expiresAt: dto.expiresAt ? new Date(dto.expiresAt).toISOString() : null,
       status: 'ACTIVE' as const,
@@ -163,7 +190,7 @@ export default class SecretAccessService {
           actor: userActor(ctx),
           eventType: 'secret.access_granted',
           target: { type: 'secret_access_grant', id: g.id, name: agent!.name },
-          metadata: { agentId: agent!.id, target: g.secretId ?? g.selector, fieldLimit: g.fields, versions: g.versions, requireApproval: g.requireApproval, allowedCidrs: g.allowedCidrs, expiresAt: g.expiresAt },
+          metadata: { agentId: agent!.id, target: g.secretId ?? g.selector, fieldLimit: g.fields, versions: g.versions, requireApproval: g.requireApproval, allowedCidrs: g.allowedCidrs, expiresAt: g.expiresAt, allowRetrieve: g.allowRetrieve, keyOperations: g.keyOperations },
         },
         ex,
       );
@@ -198,6 +225,8 @@ export default class SecretAccessService {
       secret: { id: r.secretId, name: secrets.find((s) => s.id === r.secretId)?.name ?? 'Deleted secret' },
       version: r.version,
       fields: r.fields,
+      operation: r.operation ?? 'retrieve',
+      inputDigest: r.inputDigest ?? null,
       reason: r.reason,
       status: r.status === 'PENDING' || r.status === 'APPROVED' ? (Date.parse(r.expiresAt) <= Date.now() ? 'EXPIRED' : r.status) : r.status,
       requestedAt: r.requestedAt,
@@ -228,7 +257,7 @@ export default class SecretAccessService {
       const changes = { status: decision, decidedBy: ctx.user.id, decidedByName: ctx.user.fullName, decidedAt: now(), note: dto.note ?? '' };
       await ex.update(SecretRetrievalApprovalEntity, { id: a.id }, changes);
       const secret = await ex.findOneBy(SecretEntity, { id: a.secretId });
-      await recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: decision === 'APPROVED' ? 'secret.retrieval_approved' : 'secret.retrieval_rejected', target: { type: 'secret', id: a.secretId, name: secret?.name ?? a.secretId }, metadata: { approvalId: a.id, agentId: a.agentId, version: a.version, fieldsRequested: a.fields, note: dto.note ?? '' } }, ex);
+      await recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: decision === 'APPROVED' ? 'secret.retrieval_approved' : 'secret.retrieval_rejected', target: { type: 'secret', id: a.secretId, name: secret?.name ?? a.secretId }, metadata: { approvalId: a.id, agentId: a.agentId, version: a.version, fieldsRequested: a.fields, operation: a.operation, note: dto.note ?? '' } }, ex);
       return Object.assign(a, changes);
     });
     return (await this.approvalViews([row]))[0]!;
@@ -259,11 +288,13 @@ export default class SecretAccessService {
     const secrets = await db.createQueryBuilder(SecretEntity, 's').where(`s.organization_id = :orgId AND s.status <> 'DELETED'`, { orgId: agent.organizationId }).orderBy('s.name', 'ASC').getMany();
     const items: AgentSecretInfo[] = [];
     for (const s of secrets) {
-      const g = this.bestGrant(grants.filter((x) => grantCovers(x, s)));
+      const covering = grants.filter((x) => grantCovers(x, s));
+      const g = this.bestGrant(covering.filter((x) => x.allowRetrieve)) ?? this.bestGrant(covering);
       if (!g) continue;
       const type = getSecretType(s.typeKey, s.organizationId);
       const typeFields = Object.keys(type?.fields ?? {});
-      items.push({ secret_id: s.id, name: s.name, type_key: s.typeKey, project: s.project, workspace: s.workspace, environment: s.environment, status: effectiveStatus(s), active_version: s.activeVersion, expires_at: s.expiresAt, grant_id: g.id, fields: allowedFields(g, typeFields), versions: g.versions, requires_approval: g.requireApproval, dynamic: !!type?.lifecycle.dynamic });
+      const keyOps = keyOperationsOf(s).filter((o) => covering.some((x) => x.keyOperations.includes(o)));
+      items.push({ secret_id: s.id, name: s.name, type_key: s.typeKey, project: s.project, workspace: s.workspace, environment: s.environment, status: effectiveStatus(s), active_version: s.activeVersion, expires_at: s.expiresAt, grant_id: g.id, fields: allowedFields(g, typeFields), versions: g.versions, requires_approval: g.requireApproval, dynamic: !!type?.lifecycle.dynamic, retrieve: covering.some((x) => x.allowRetrieve), key_operations: keyOps });
     }
     return { items };
   }
@@ -340,8 +371,11 @@ export default class SecretAccessService {
     }
     const s = secret!;
     const ipOk = (g: Grant) => (!g.allowedCidrs.length || ipAllowed(input.sourceIp, g.allowedCidrs)) && (!agent.allowedCidrs.length || ipAllowed(input.sourceIp, agent.allowedCidrs));
-    const fromIp = grants.filter(ipOk);
-    if (!fromIp.length) await deny(403, 'IP_NOT_ALLOWED', `Requests from ${input.sourceIp} are not allowed for this secret`);
+    const fromIpAll = grants.filter(ipOk);
+    if (!fromIpAll.length) await deny(403, 'IP_NOT_ALLOWED', `Requests from ${input.sourceIp} are not allowed for this secret`);
+    // Grants that only allow key operations never reveal the value (spec 4.9.3 E).
+    const fromIp = fromIpAll.filter((g) => g.allowRetrieve);
+    if (!fromIp.length) await deny(403, 'RETRIEVE_NOT_PERMITTED', 'This agent may use this key through key operations, not read it');
 
     const status = effectiveStatus(s);
     if (status === 'EXPIRED') await deny(409, 'SECRET_EXPIRED', 'This secret has expired');
@@ -376,7 +410,7 @@ export default class SecretAccessService {
     // Approval: the exact request (agent, secret, version, fields), once, within 15 minutes.
     let approvalId: string | null = null;
     if (g.requireApproval) {
-      const same = (a: SecretRetrievalApprovalEntity) => a.agentId === agent.id && a.secretId === s.id && a.grantId === g.id && (a.version ?? null) === version && JSON.stringify([...a.fields].sort()) === JSON.stringify([...fields].sort());
+      const same = (a: SecretRetrievalApprovalEntity) => (a.operation ?? 'retrieve') === (leasing ? 'lease' : 'retrieve') && a.agentId === agent.id && a.secretId === s.id && a.grantId === g.id && (a.version ?? null) === version && JSON.stringify([...a.fields].sort()) === JSON.stringify([...fields].sort());
       const given = str(b.approval_id);
       if (given) {
         const a = await db.findOneBy(SecretRetrievalApprovalEntity, { id: given, organizationId: agent.organizationId });
@@ -388,7 +422,7 @@ export default class SecretAccessService {
         approvalId = a!.id;
       } else {
         const t = now();
-        const pending = Object.assign(new SecretRetrievalApprovalEntity(), { id: newId('sapr'), organizationId: agent.organizationId, grantId: g.id, agentId: agent.id, secretId: s.id, version, fields, reason, status: 'PENDING' as const, requestedAt: t, expiresAt: new Date(Date.now() + APPROVAL_TTL_MS).toISOString(), decidedBy: null, decidedByName: null, decidedAt: null, note: '', usedAt: null });
+        const pending = Object.assign(new SecretRetrievalApprovalEntity(), { id: newId('sapr'), organizationId: agent.organizationId, grantId: g.id, agentId: agent.id, secretId: s.id, version, fields, operation: leasing ? ('lease' as const) : ('retrieve' as const), inputDigest: null, reason, status: 'PENDING' as const, requestedAt: t, expiresAt: new Date(Date.now() + APPROVAL_TTL_MS).toISOString(), decidedBy: null, decidedByName: null, decidedAt: null, note: '', usedAt: null });
         await transaction(async (ex) => {
           await ex.insert(SecretRetrievalApprovalEntity, pending);
           await recordEvent({ orgId: agent.organizationId, actor, eventType: 'secret.retrieval_held', target: { type: 'secret', id: s.id, name: s.name }, metadata: { approvalId: pending.id, grantId: g.id, version, fieldsRequested: fields, reason, requestId } }, ex);
@@ -440,6 +474,161 @@ export default class SecretAccessService {
       );
     });
     return { status: 200, body: { secret_id: s.id, name: s.name, type_key: s.typeKey, version: v.version, payload: res.body.payload, expires_at: s.expiresAt, retrieved_at: t, grant_id: g.id, request_id: requestId } };
+  }
+
+  /**
+   * POST /agent/v1/secret/key/{operation} (spec 4.9.3 E): the customer webhook signs, verifies,
+   * encrypts, decrypts or computes a MAC with a key the agent never sees. Body: the secret (as for
+   * retrieve), `data` (base64), and per operation `signature` / `mac` (verify), `ciphertext`
+   * (decrypt), `aad?`, `algorithm?`, `version?` (verify), `reason?`, `approval_id?`.
+   *
+   * Checks, in order: the agent, the emergency stop, a covering grant, source IP, the secret's
+   * state (verify and decrypt still work on an expired key), that it is a key whose type and usage
+   * policy allow the operation, a grant allowing it, the key version (it must exist and be
+   * enabled; signing, encrypting and MACs use the active one), then approval, which covers that
+   * exact input (by SHA-256). Every use is audited (`secret.key_used`), never the input or output.
+   */
+  async agentKeyOperation(input: { authorization: string | undefined; sourceIp: string; operation: string; body: unknown; onPreviousKey?: (expiresAt: string) => void }): Promise<{ status: number; body: AgentKeyOperationResult | { approval_id: string; status: 'PENDING'; expires_at: string; decision_code: 'APPROVAL_REQUIRED'; reason: string } }> {
+    if (!(KEY_OPERATIONS as readonly string[]).includes(input.operation)) throw new SecretAccessError(404, 'KEY_OPERATION_UNKNOWN', `Key operations are ${KEY_OPERATIONS.join(', ')}`);
+    const op = input.operation as KeyOperation;
+    const requestId = newRequestId();
+    const agent = await this.agentOf(input.authorization, input.onPreviousKey);
+    const actor: Actor = { type: 'AGENT', id: agent.id, name: agent.name };
+    const b = (input.body && typeof input.body === 'object' ? input.body : {}) as Record<string, unknown>;
+    const str = (v: unknown, max = 200) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+    const blob = (k: string) => (typeof b[k] === 'string' ? (b[k] as string) : undefined);
+    const reason = str(b.reason, 300);
+    for (const k of ['data', 'signature', 'mac', 'ciphertext', 'aad']) if ((blob(k)?.length ?? 0) > 120_000) throw new SecretAccessError(413, 'KEY_INPUT_TOO_LARGE', `${k} is too large (at most 64 KiB once decoded)`);
+
+    let secret: SecretEntity | null = null;
+    const deny = async (status: number, code: string, message: string): Promise<never> => {
+      await recordEvent({
+        orgId: agent.organizationId,
+        actor,
+        eventType: 'secret.access_denied',
+        target: secret ? { type: 'secret', id: secret.id, name: secret.name } : { type: 'secret', id: str(b.secret_id) || 'unknown', name: str(b.name) || 'unknown' },
+        outcome: 'DENIED',
+        severity: ['AGENT_DISABLED', 'EMERGENCY_STOP', 'SECRET_ACCESS_DENIED'].includes(code) ? 'critical' : 'warning',
+        metadata: { reasonCode: code, requestId, sourceIp: input.sourceIp, operation: op },
+      });
+      throw new SecretAccessError(status, code, message);
+    };
+
+    if (agent.status !== 'ACTIVE') await deny(403, 'AGENT_DISABLED', 'This agent is disabled');
+    const org = await orgRepo.getOrganization(agent.organizationId);
+    if (org?.emergencyStoppedAt) await deny(403, 'EMERGENCY_STOP', `An administrator stopped all agent access in this organization at ${org.emergencyStoppedAt}`);
+    secret = await this.findSecretFor(agent, b);
+    const grants = secret && secret.status !== 'DELETED' ? (await this.activeGrants(agent)).filter((g) => grantCovers(g, secret!)) : [];
+    if (!secret || secret.status === 'DELETED' || !grants.length) {
+      if (secret?.status === 'DELETED') secret = null;
+      await deny(403, 'SECRET_ACCESS_DENIED', 'This agent has no grant for that secret');
+    }
+    const s = secret!;
+    const fromIp = grants.filter((g) => (!g.allowedCidrs.length || ipAllowed(input.sourceIp, g.allowedCidrs)) && (!agent.allowedCidrs.length || ipAllowed(input.sourceIp, agent.allowedCidrs)));
+    if (!fromIp.length) await deny(403, 'IP_NOT_ALLOWED', `Requests from ${input.sourceIp} are not allowed for this secret`);
+
+    // Existing signatures and ciphertexts stay checkable after the key expires; nothing new is made with it.
+    const status = effectiveStatus(s);
+    const readOnly = op === 'verify' || op === 'decrypt';
+    if (status === 'EXPIRED' && !readOnly) await deny(409, 'SECRET_EXPIRED', 'This key has expired; it can still verify and decrypt');
+    if (status !== 'EXPIRED' && !RETRIEVABLE_SECRET_STATUSES.includes(status)) await deny(409, 'SECRET_NOT_ACTIVE', `This key is ${status.toLowerCase().replace('_', ' ')}`);
+    const caps = SECRET_KEY_CAPABILITIES[s.typeKey];
+    if (!caps) throw new SecretAccessError(409, 'SECRET_NOT_A_KEY', 'This secret is not a key; retrieve it instead');
+    if (!caps.operations.includes(op)) throw new SecretAccessError(409, 'KEY_OPERATION_NOT_SUPPORTED', `This key can ${caps.operations.join(', ')}, not ${op}`);
+    if (!keyOperationsOf(s).includes(op)) await deny(403, 'KEY_OPERATION_NOT_ALLOWED', `This key’s usage policy does not allow ${op}`);
+    const g = this.bestGrant(fromIp.filter((x) => x.keyOperations.includes(op)));
+    if (!g) await deny(403, 'KEY_OPERATION_NOT_PERMITTED', `This agent may not ${op} with this key`);
+    const grant = g!;
+
+    // The key version: the active one to make something new; for verify the one named, for decrypt the ciphertext's.
+    let versionNo = s.activeVersion;
+    if (op === 'verify' && Number.isInteger(b.version) && (b.version as number) > 0) versionNo = b.version as number;
+    if (op === 'decrypt' && !caps.external) {
+      const m = /^tv:v(\d{1,6}):/.exec(blob('ciphertext') ?? '');
+      if (!m) throw new SecretAccessError(400, 'KEY_INPUT_INVALID', 'ciphertext must be "tv:v<version>:<base64>" as encrypt returned it');
+      versionNo = Number(m[1]);
+    }
+    const v = versionNo ? await db.findOneBy(SecretVersionEntity, { secretId: s.id, version: versionNo }) : null;
+    if (!v) throw new SecretAccessError(404, 'SECRET_VERSION_NOT_FOUND', `Version ${versionNo} of this key does not exist`);
+    if (v.state === 'DESTROYED' || !v.valueRef) await deny(410, 'SECRET_VERSION_DESTROYED', `Version ${v.version} was destroyed`);
+    if (v.keyEnabled === false) await deny(409, 'KEY_VERSION_DISABLED', `Version ${v.version} of this key is deactivated`);
+
+    // A JWT signing secret signs with the algorithm in its metadata unless asked otherwise.
+    const metaAlg = typeof s.metadata?.algorithm === 'string' && /^HS(256|384|512)$/.test(s.metadata.algorithm) ? s.metadata.algorithm : undefined;
+    const algorithm = str(b.algorithm, 20) || (s.typeKey === 'jwt-signing-secret' ? metaAlg : undefined);
+    const call = { operation: op, version: v.version, ...(algorithm ? { algorithm } : {}), ...Object.fromEntries(['data', 'signature', 'mac', 'ciphertext', 'aad'].filter((k) => blob(k) !== undefined).map((k) => [k, blob(k)])) };
+    const inputDigest = createHash('sha256').update(JSON.stringify(call)).digest('hex');
+
+    let approvalId: string | null = null;
+    if (grant.requireApproval) {
+      const given = str(b.approval_id);
+      if (given) {
+        const a = await db.findOneBy(SecretRetrievalApprovalEntity, { id: given, organizationId: agent.organizationId });
+        if (!a || a.agentId !== agent.id || a.secretId !== s.id || a.grantId !== grant.id || a.operation !== op || a.inputDigest !== inputDigest) await deny(403, 'APPROVAL_MISMATCH', 'That approval is for a different request');
+        if (a!.status === 'REJECTED') await deny(403, 'APPROVAL_REJECTED', `The request was rejected${a!.note ? `: ${a!.note}` : ''}`);
+        if (a!.status === 'USED') await deny(409, 'APPROVAL_USED', 'That approval was already used; ask again');
+        if (a!.status === 'EXPIRED' || Date.parse(a!.expiresAt) <= Date.now()) await deny(409, 'APPROVAL_EXPIRED', 'That approval expired; ask again');
+        if (a!.status === 'PENDING') return { status: 202, body: { approval_id: a!.id, status: 'PENDING', expires_at: a!.expiresAt, decision_code: 'APPROVAL_REQUIRED', reason: `Waiting for a human to approve this ${op}` } };
+        approvalId = a!.id;
+      } else {
+        const t = now();
+        const pending = Object.assign(new SecretRetrievalApprovalEntity(), { id: newId('sapr'), organizationId: agent.organizationId, grantId: grant.id, agentId: agent.id, secretId: s.id, version: v.version, fields: [], operation: op, inputDigest, reason, status: 'PENDING' as const, requestedAt: t, expiresAt: new Date(Date.now() + APPROVAL_TTL_MS).toISOString(), decidedBy: null, decidedByName: null, decidedAt: null, note: '', usedAt: null });
+        await transaction(async (ex) => {
+          await ex.insert(SecretRetrievalApprovalEntity, pending);
+          await recordEvent({ orgId: agent.organizationId, actor, eventType: 'secret.retrieval_held', target: { type: 'secret', id: s.id, name: s.name }, metadata: { approvalId: pending.id, grantId: grant.id, version: v.version, operation: op, inputDigest, reason, requestId } }, ex);
+        });
+        return { status: 202, body: { approval_id: pending.id, status: 'PENDING', expires_at: pending.expiresAt, decision_code: 'APPROVAL_REQUIRED', reason: `This grant requires a human to approve each ${op}; retry the same request with approval_id once approved` } };
+      }
+    }
+
+    const webhook = await webhookRepo.getWebhook(agent.organizationId, s.webhookId);
+    if (!webhook) throw new SecretAccessError(409, 'WEBHOOK_NOT_FOUND', 'The webhook holding this key no longer exists');
+    let res;
+    try {
+      res = await callWebhook<Omit<AgentKeyOperationResult, 'secret_id' | 'name' | 'operation' | 'version' | 'grant_id' | 'request_id'> & { error?: { code?: string; message?: string } }>(webhook, 'POST', '/internal/v1/secrets/key', { org_id: agent.organizationId, secret_id: s.id, value_ref: v.valueRef, ...call });
+    } catch (e) {
+      if (e instanceof WebhookUnavailableError) throw new SecretAccessError(503, 'WEBHOOK_UNAVAILABLE', `${e.message}. Nothing was done.`);
+      throw e;
+    }
+    if (res.status !== 200) {
+      const err = res.body?.error ?? {};
+      const code = err.code ?? 'WEBHOOK_REJECTED';
+      if (code === 'DECRYPTION_FAILED') await recordEvent({ orgId: agent.organizationId, actor, eventType: 'secret.key_operation_failed', target: { type: 'secret', id: s.id, name: s.name }, severity: 'warning', outcome: 'FAILURE', metadata: { operation: op, version: v.version, reasonCode: code, grantId: grant.id, requestId } });
+      throw new SecretAccessError(res.status === 503 ? 503 : res.status === 400 ? 400 : res.status === 409 ? 409 : 502, code, err.message ?? `The customer webhook could not ${op}`);
+    }
+
+    const t = now();
+    await transaction(async (ex) => {
+      if (approvalId) {
+        const used = await ex.createQueryBuilder().update(SecretRetrievalApprovalEntity).set({ status: 'USED', usedAt: t }).where(`id = :id AND status = 'APPROVED'`, { id: approvalId }).execute();
+        if (!used.affected) throw new SecretAccessError(409, 'APPROVAL_USED', 'That approval was already used; ask again');
+      }
+      await ex.createQueryBuilder().update(SecretAccessGrantEntity).set({ lastUsedAt: t, useCount: () => 'use_count + 1' }).where('id = :id', { id: grant.id }).execute();
+      await recordEvent(
+        {
+          orgId: agent.organizationId,
+          actor,
+          eventType: 'secret.key_used',
+          target: { type: 'secret', id: s.id, name: s.name },
+          metadata: { operation: op, version: v.version, algorithm: res.body.algorithm, ...(res.body.valid !== undefined ? { valid: res.body.valid } : {}), grantId: grant.id, reason, requestId, sourceIp: input.sourceIp, ...(approvalId ? { approvalId } : {}) },
+        },
+        ex,
+      );
+    });
+    const { error: _e, ...out } = res.body;
+    return { status: 200, body: { secret_id: s.id, name: s.name, operation: op, version: v.version, ...out, grant_id: grant.id, request_id: requestId } };
+  }
+
+  /** The secret an agent request names (by id, or by name within a scope); never outside its organization. */
+  private async findSecretFor(agent: AgentRecord, b: Record<string, unknown>): Promise<SecretEntity | null> {
+    const str = (v: unknown, max = 200) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+    if (str(b.secret_id)) return db.findOneBy(SecretEntity, { id: str(b.secret_id), organizationId: agent.organizationId });
+    if (!str(b.name)) throw new SecretAccessError(400, 'INVALID_REQUEST', 'Give secret_id, or name (with project, workspace and environment if needed)');
+    const q = db.createQueryBuilder(SecretEntity, 's').where(`s.organization_id = :orgId AND lower(s.name) = lower(:name) AND s.status <> 'DELETED'`, { orgId: agent.organizationId, name: str(b.name) });
+    for (const k of ['project', 'workspace', 'environment'] as const) if (str(b[k])) q.andWhere(`s.${k} = :${k}`, { [k]: str(b[k]) });
+    const found = await q.getMany();
+    if (found.length > 1) throw new SecretAccessError(409, 'SECRET_AMBIGUOUS', `Several secrets are named "${str(b.name)}"; give project, workspace and environment, or secret_id`);
+    return found[0] ?? null;
   }
 
   /**

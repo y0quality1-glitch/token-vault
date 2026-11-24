@@ -335,6 +335,17 @@ await lease.renew(30 * 60);
 await lease.revoke();
 ```
 
+**Keys the application never sees.** A grant can allow key operations instead of (or as well as) reading: the customer webhook signs, verifies, encrypts, decrypts or computes a MAC with the key, or asks Vault Transit or AWS KMS to. Create the grant with *Allow reading the value* off and the operations ticked; the agent then gets `RETRIEVE_NOT_PERMITTED` if it tries to read the key.
+
+```ts
+const { signature, version } = await tv.keys.sign('release-signing', artifactDigest, { reason: 'release 1.6.0' });
+const { valid } = await tv.keys.verify('release-signing', artifactDigest, signature, { version });
+const { ciphertext } = await tv.keys.encrypt('pii-key', cardNumber, { aad: customerId });
+const { data } = await tv.keys.decrypt('pii-key', ciphertext, { aad: customerId });
+```
+
+Ciphertexts name their key version (`tv:v3:…`), so data encrypted before a rotation still decrypts. A version can be deactivated in the console; nothing can then be signed, verified, encrypted or decrypted with it.
+
 When a secret rotates, `get()` returns the new version at once. For the secret's grace period (24 hours unless changed) the version it replaced can still be read with `{ version: n }`, even under a grant limited to the active version, so a running service can finish with it. `tv.secrets.list()` shows what the agent may read. Every retrieval and every refusal is in the audit log (**Security events**, `secret.*`), never with the value. The MCP server has no tool that reads secrets: models get brokered operations, never raw credentials.
 
 ## 2b. TypeScript SDK

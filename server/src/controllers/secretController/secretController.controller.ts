@@ -1,7 +1,7 @@
 import type { NextFunction, Request, Response } from 'express';
 import { PERMISSIONS } from '@token-vault/shared';
 import { APP_ROUTES } from '../../core/AppRoutes';
-import { RetrieveSecretDto, SaveSecretDto, SecretLifecycleDto, SecretVersionDto, UpdateSecretValueDto } from '../../databases/repository/secret/secret.dto';
+import { CancelCertificateDto, CertificateRequestDto, CompleteCertificateDto, KeyVersionDto, RetrieveSecretDto, SaveSecretDto, SecretLifecycleDto, SecretVersionDto, UpdateSecretValueDto } from '../../databases/repository/secret/secret.dto';
 import { RotateSecretDto } from '../../databases/repository/secret/secretLifecycle.dto';
 import { orgCtx, requirePermission } from '../../middlewares/auth.middleware';
 import { validationMiddleware } from '../../middlewares/validation.middleware';
@@ -31,6 +31,12 @@ import { adminGuards } from '../guards';
  *   POST   /revoke           `{id, reason?}` → REVOKED                         secret:delete
  *   POST   /archive          `{id, reason?}` REVOKED/EXPIRED → ARCHIVED        secret:delete
  *   DELETE /delete/:id       destroy every version; DELETED tombstone          secret:delete
+ *   POST   /keyVersion/disable · /enable  `{id, version, reason?}` a key version  secret:manage_versions
+ *                             may (not) be used for key operations
+ *   POST   /certificate/request  `{id, keyAlgorithm?}` renewal: new key + CSR   secret:update_value
+ *   POST   /certificate/complete `{requestId, certificate?, chain?} | {requestId, secret:update_value
+ *                             issuerSecretId, validityDays?}` the next version   (+ secret:retrieve to issue with a CA secret)
+ *   POST   /certificate/cancel   `{requestId, reason?}` the waiting key is destroyed secret:update_value
  */
 export class SecretController extends BaseController {
   private readonly importer = new SecretImportService();
@@ -64,6 +70,11 @@ export class SecretController extends BaseController {
     this.route('post', '/activate', [requirePermission(P.SECRET_UPDATE_METADATA), validationMiddleware(SecretLifecycleDto)], (req) => this.service.activate(orgCtx(req), req.body as SecretLifecycleDto));
     this.route('post', '/revoke', [requirePermission(P.SECRET_DELETE), validationMiddleware(SecretLifecycleDto)], (req) => this.service.revoke(orgCtx(req), req.body as SecretLifecycleDto));
     this.route('post', '/archive', [requirePermission(P.SECRET_DELETE), validationMiddleware(SecretLifecycleDto)], (req) => this.service.archive(orgCtx(req), req.body as SecretLifecycleDto));
+    this.route('post', '/keyVersion/disable', [requirePermission(P.SECRET_MANAGE_VERSIONS), validationMiddleware(KeyVersionDto)], (req) => this.service.setKeyVersion(orgCtx(req), req.body as KeyVersionDto, false));
+    this.route('post', '/keyVersion/enable', [requirePermission(P.SECRET_MANAGE_VERSIONS), validationMiddleware(KeyVersionDto)], (req) => this.service.setKeyVersion(orgCtx(req), req.body as KeyVersionDto, true));
+    this.route('post', '/certificate/request', [requirePermission(P.SECRET_UPDATE_VALUE), validationMiddleware(CertificateRequestDto)], async (req) => new Reply(await this.service.requestCertificate(orgCtx(req), req.body as CertificateRequestDto), 201));
+    this.route('post', '/certificate/complete', [requirePermission(P.SECRET_UPDATE_VALUE), validationMiddleware(CompleteCertificateDto)], (req) => this.service.completeCertificate(orgCtx(req), req.body as CompleteCertificateDto));
+    this.route('post', '/certificate/cancel', [requirePermission(P.SECRET_UPDATE_VALUE), validationMiddleware(CancelCertificateDto)], (req) => this.service.cancelCertificate(orgCtx(req), req.body as CancelCertificateDto));
     this.route('delete', '/delete/:id', [requirePermission(P.SECRET_DELETE)], (req) => this.service.remove(orgCtx(req), String(req.params.id)));
   }
 }
