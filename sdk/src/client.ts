@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { AgentAccessRequestBody, AgentApprovalBody, AgentCapabilitiesBody, AgentDelegationBody, AgentOperationsBody, AgentSecretInfo, AgentSecretRetrieval, ExecuteRequestBody, ExecuteResponseBody } from '@token-vault/shared';
+import type { AgentAccessRequestBody, AgentApprovalBody, AgentCapabilitiesBody, AgentDelegationBody, AgentOperationsBody, AgentSecretInfo, AgentSecretLease, AgentSecretRetrieval, ExecuteRequestBody, ExecuteResponseBody } from '@token-vault/shared';
 import { AccessDeniedError, ApprovalRequiredError, AuthenticationError, ExecutionFailedError, ResponseWithheldError, TokenVaultError } from './errors';
 
 export type GitHubOperation = 'github.repositories.read' | 'github.contents.read' | 'github.issues.list' | 'github.issues.create';
@@ -175,6 +175,26 @@ export interface GetSecretOptions {
 }
 
 export type SecretValue = AgentSecretRetrieval;
+
+export interface LeaseOptions {
+  /** Requested length in seconds (default: the secret's default lease; never past its longest). */
+  ttlSeconds?: number;
+  /** Recorded in the audit log with the lease. */
+  reason?: string;
+  approvalId?: string;
+  /** As for get(): wait for a human to approve a held lease. */
+  waitForApproval?: GetSecretOptions['waitForApproval'];
+}
+
+/**
+ * Short-lived credentials from a dynamic secret (a database role, cloud session credentials).
+ * They end on their own at `expires_at`; renew() lengthens them (up to `max_expires_at`), revoke()
+ * ends them at once. Never cached by the SDK.
+ */
+export interface SecretLease extends AgentSecretLease {
+  renew(ttlSeconds?: number): Promise<{ lease_id: string; status: string; expires_at: string; max_expires_at: string; renew_count: number }>;
+  revoke(reason?: string): Promise<void>;
+}
 
 export class TokenVault {
   readonly baseUrl: string;
@@ -475,27 +495,34 @@ export class TokenVault {
         this.#secretCache.delete(cacheKey);
       }
       const body = { ...target, ...(options.fields ? { fields: options.fields } : {}), ...(options.version ? { version: options.version } : {}), ...(options.reason ? { reason: options.reason } : {}) };
-      const wait = options.waitForApproval ? (options.waitForApproval === true ? {} : options.waitForApproval) : null;
-      const deadline = Date.now() + (wait?.timeoutMs ?? 10 * 60_000);
-      const interval = Math.max(1000, wait?.intervalMs ?? 5000);
-      let approvalId = options.approvalId;
-      for (;;) {
-        const res = await this.#request('POST', '/agent/v1/secret/retrieve', { ...body, ...(approvalId ? { approval_id: approvalId } : {}) });
-        if (res.status === 202) {
-          const held = (await this.#envelope(res))?.details as { approval_id: string; expires_at: string; reason: string };
-          approvalId = held.approval_id;
-          if (!wait) throw new ApprovalRequiredError(held.reason, { code: 'APPROVAL_REQUIRED', httpStatus: 202, approvalId: held.approval_id, approvalExpiresAt: held.expires_at });
-          if (Date.now() + interval > deadline) throw new TokenVaultError(`Approval ${approvalId} is still pending`, { code: 'APPROVAL_WAIT_TIMEOUT' });
-          await new Promise<void>((resolve, reject) => {
-            const t = setTimeout(resolve, interval);
-            wait.signal?.addEventListener('abort', () => (clearTimeout(t), reject(wait.signal!.reason)), { once: true });
-          });
-          continue;
-        }
-        const value = await this.#secretResult<SecretValue>(res, 'Retrieving the secret failed');
-        if (cacheKey) this.#secretCache.set(cacheKey, { value, until: Date.now() + options.cacheTtlMs! });
-        return value;
-      }
+      const value = await this.#heldCall<SecretValue>('/agent/v1/secret/retrieve', body, options, 'Retrieving the secret failed');
+      if (cacheKey) this.#secretCache.set(cacheKey, { value, until: Date.now() + options.cacheTtlMs! });
+      return value;
+    },
+    /**
+     * Short-lived credentials from a dynamic secret (e.g. a PostgreSQL role valid for an hour):
+     *
+     *   const lease = await tv.secrets.lease('orders-dynamic', { ttlSeconds: 900 });
+     *   connect(lease.credentials);  // ... later
+     *   await lease.revoke();
+     */
+    lease: async (ref: SecretRef, options: LeaseOptions = {}): Promise<SecretLease> => {
+      const target = typeof ref === 'string' ? (ref.startsWith('sec_') ? { secret_id: ref } : { name: ref }) : { secret_id: ref.secretId, name: ref.name, project: ref.project, workspace: ref.workspace, environment: ref.environment };
+      const body = { ...target, ...(options.ttlSeconds ? { ttl_seconds: options.ttlSeconds } : {}), ...(options.reason ? { reason: options.reason } : {}) };
+      const issued = await this.#heldCall<AgentSecretLease>('/agent/v1/secret/lease', body, options, 'Issuing the lease failed');
+      const id = issued.lease_id;
+      const lease = { ...issued } as SecretLease;
+      Object.defineProperties(lease, {
+        renew: {
+          enumerable: false,
+          value: async (ttlSeconds?: number) => this.#secretResult(await this.#request('POST', '/agent/v1/secret/lease/renew', { lease_id: id, ...(ttlSeconds ? { ttl_seconds: ttlSeconds } : {}) }), 'Renewing the lease failed'),
+        },
+        revoke: {
+          enumerable: false,
+          value: async (reason?: string) => void (await this.#secretResult(await this.#request('POST', '/agent/v1/secret/lease/revoke', { lease_id: id, ...(reason ? { reason } : {}) }), 'Revoking the lease failed')),
+        },
+      });
+      return lease;
     },
     /** Forgets every value cached by get({ cacheTtlMs }). */
     clearCache: (): void => {
@@ -504,6 +531,29 @@ export class TokenVault {
   };
 
   readonly #secretCache = new Map<string, { value: SecretValue; until: number }>();
+
+  /** A call a grant may hold for approval (202): throws ApprovalRequiredError, or waits when asked. */
+  async #heldCall<T>(path: string, body: Record<string, unknown>, options: { approvalId?: string; waitForApproval?: GetSecretOptions['waitForApproval'] }, what: string): Promise<T> {
+    const wait = options.waitForApproval ? (options.waitForApproval === true ? {} : options.waitForApproval) : null;
+    const deadline = Date.now() + (wait?.timeoutMs ?? 10 * 60_000);
+    const interval = Math.max(1000, wait?.intervalMs ?? 5000);
+    let approvalId = options.approvalId;
+    for (;;) {
+      const res = await this.#request('POST', path, { ...body, ...(approvalId ? { approval_id: approvalId } : {}) });
+      if (res.status === 202) {
+        const held = (await this.#envelope(res))?.details as { approval_id: string; expires_at: string; reason: string };
+        approvalId = held.approval_id;
+        if (!wait) throw new ApprovalRequiredError(held.reason, { code: 'APPROVAL_REQUIRED', httpStatus: 202, approvalId: held.approval_id, approvalExpiresAt: held.expires_at });
+        if (Date.now() + interval > deadline) throw new TokenVaultError(`Approval ${approvalId} is still pending`, { code: 'APPROVAL_WAIT_TIMEOUT' });
+        await new Promise<void>((resolve, reject) => {
+          const t = setTimeout(resolve, interval);
+          wait.signal?.addEventListener('abort', () => (clearTimeout(t), reject(wait.signal!.reason)), { once: true });
+        });
+        continue;
+      }
+      return this.#secretResult<T>(res, what);
+    }
+  }
 
   async #secretResult<T>(res: Response, what: string): Promise<T> {
     const env = await this.#envelope(res);

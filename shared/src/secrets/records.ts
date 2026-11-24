@@ -70,6 +70,10 @@ export interface SecretView {
   integrationId: string | null;
   expiresAt: string | null;
   rotation: SecretRotationSettings;
+  /** Types the webhook can reach at their provider: the last connection check (spec 4.9.16, health monitoring). */
+  provider: { capabilities: SecretProviderCapabilities; status: 'OK' | 'FAILING' | null; checkedAt: string | null; error: string | null } | null;
+  /** Organization-defined type (spec 4.9.3 K). */
+  customType: boolean;
   lastRetrievedAt: string | null;
   createdBy: { id: string; name: string };
   createdAt: string;
@@ -78,6 +82,8 @@ export interface SecretView {
 }
 
 export interface SecretDetail extends SecretView {
+  /** Dynamic secrets: leases issued from it (newest first, at most 50). */
+  leases: SecretLeaseView[];
   versions: SecretVersionView[];
   /** Latest rotation runs, newest first. */
   rotationJobs: SecretRotationJobView[];
@@ -174,6 +180,8 @@ export interface AgentSecretInfo {
   fields: string[];
   versions: SecretGrantVersions;
   requires_approval: boolean;
+  /** A dynamic secret: ask for a lease (POST /agent/v1/secret/lease), it cannot be retrieved. */
+  dynamic: boolean;
 }
 
 /** Agent API: POST /agent/v1/secret/retrieve answer. */
@@ -194,10 +202,11 @@ export interface AgentSecretRetrieval {
 /**
  * How a scheduled rotation gets its new value:
  *  - manual: the secret becomes ROTATION_PENDING and people are notified; it rotates when someone stores the new value;
- *  - generated: the customer webhook creates the new value itself (types with `generate` fields).
- * Rotation through the provider that issued a credential arrives with dynamic secrets.
+ *  - generated: the customer webhook creates the new value itself (types with `generate` fields);
+ *  - provider: the customer webhook changes the credential at its provider (the database), checks
+ *    that the new one works, then stores it (types listed in SECRET_PROVIDER_CAPABILITIES).
  */
-export const SECRET_ROTATION_STRATEGIES = ['manual', 'generated'] as const;
+export const SECRET_ROTATION_STRATEGIES = ['manual', 'generated', 'provider'] as const;
 export type SecretRotationStrategy = (typeof SECRET_ROTATION_STRATEGIES)[number];
 
 export interface SecretRotationSettings {
@@ -210,6 +219,8 @@ export interface SecretRotationSettings {
   lastRotatedAt: string | null;
   /** Whether the type has fields the webhook can generate. */
   generatable: boolean;
+  /** Whether the webhook can rotate it at its provider. */
+  providerRotation: boolean;
 }
 
 export const SECRET_ROTATION_TRIGGERS = ['SCHEDULED', 'MANUAL', 'EXPIRY'] as const;
@@ -360,4 +371,120 @@ export interface SecretNotificationPayload {
   /** Event specifics: versions, reason codes, the actor's name. Never a value. */
   details: Record<string, string | number | boolean | null>;
   consoleUrl: string | null;
+}
+
+// ── providers, dynamic secrets and leases (spec 4.9.3 J, 4.9.16) ─────
+
+/** What the customer webhook can do at a type's provider. */
+export interface SecretProviderCapabilities {
+  /** Issue short-lived credentials (leases). */
+  lease: boolean;
+  /** Lengthen a lease at the provider. */
+  renew: boolean;
+  /** End a lease early at the provider. */
+  revoke: boolean;
+  /** Change the stored credential at the provider (rotation strategy "provider"). */
+  rotate: boolean;
+  /** Connect and check the stored credential works. */
+  check: boolean;
+}
+
+/** Types the customer webhook has a provider engine for. */
+export const SECRET_PROVIDER_CAPABILITIES: Record<string, SecretProviderCapabilities> = {
+  postgresql: { lease: false, renew: false, revoke: false, rotate: true, check: true },
+  'postgresql-dynamic': { lease: true, renew: true, revoke: true, rotate: true, check: true },
+  'aws-sts-dynamic': { lease: true, renew: false, revoke: false, rotate: false, check: true },
+};
+
+export type SecretLeaseStatus = 'ACTIVE' | 'EXPIRED' | 'REVOKED' | 'REVOKE_FAILED';
+
+export interface SecretLeaseView {
+  id: string;
+  secret: { id: string; name: string; typeKey: string };
+  holder: { type: 'AGENT' | 'USER'; id: string; name: string };
+  /** The provider-side identity (role name or session name): not secret. */
+  username: string;
+  status: SecretLeaseStatus;
+  renewable: boolean;
+  createdAt: string;
+  expiresAt: string;
+  /** No renewal goes past this. */
+  maxExpiresAt: string;
+  renewedAt: string | null;
+  renewCount: number;
+  revokedAt: string | null;
+  revokedBy: string | null;
+  revocationReason: string | null;
+  lastError: string | null;
+  reason: string;
+}
+
+/** A newly issued lease: the credentials are returned once, never stored by the control plane. */
+export interface SecretLeaseIssued extends SecretLeaseView {
+  credentials: Record<string, string>;
+}
+
+/** Agent API: POST /agent/v1/secret/lease answer. */
+export interface AgentSecretLease {
+  lease_id: string;
+  secret_id: string;
+  name: string;
+  type_key: string;
+  credentials: Record<string, string>;
+  expires_at: string;
+  max_expires_at: string;
+  renewable: boolean;
+  grant_id: string;
+  request_id: string;
+}
+
+// ── import and export (spec 4.9.14) ─────────────────────────────────
+
+export type SecretImportOutcome = 'created' | 'new_version' | 'skipped' | 'invalid' | 'failed' | 'valid';
+
+export interface SecretImportResult {
+  index: number;
+  name: string;
+  outcome: SecretImportOutcome;
+  secretId: string | null;
+  /** Problems by field (invalid), or why it failed or was skipped. */
+  issues: Record<string, string>;
+  /** Other live secrets holding exactly the same value (same fingerprint). */
+  sameValueAs: { id: string; name: string }[];
+}
+
+export interface SecretImportReport {
+  dryRun: boolean;
+  results: SecretImportResult[];
+  counts: Record<SecretImportOutcome, number>;
+}
+
+export type SecretExportStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'READY' | 'DOWNLOADED' | 'EXPIRED';
+
+export interface SecretExportRequestView {
+  id: string;
+  requestedBy: { id: string; name: string };
+  secrets: { id: string; name: string }[];
+  reason: string;
+  status: SecretExportStatus;
+  createdAt: string;
+  decidedBy: { id: string; name: string } | null;
+  decidedAt: string | null;
+  note: string;
+  /** Approved: prepare before this. Ready: download before this. */
+  expiresAt: string | null;
+  downloadedAt: string | null;
+  /** Whether the signed-in member may approve, prepare or download it now. */
+  can: { decide: boolean; prepare: boolean; download: boolean };
+}
+
+/** The file an export produces: the secrets, encrypted with the passphrase the requester chose. */
+export interface SecretExportFile {
+  format: 'token-vault-secret-export/v1';
+  kdf: { name: 'scrypt'; N: number; r: number; p: number; salt: string };
+  cipher: { name: 'aes-256-gcm'; iv: string; tag: string };
+  /** base64 of the encrypted JSON: `{exportedAt, organization, secrets: [{name, typeKey, project, workspace, environment, description, tags, metadata, version, payload}]}`. */
+  ciphertext: string;
+  exportId: string;
+  createdAt: string;
 }

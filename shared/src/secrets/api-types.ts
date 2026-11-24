@@ -5,8 +5,10 @@ export interface SecretTypeInfo extends SecretTypeDefinition {
   categoryLabel: string;
   /** sha256 of the canonical definition (as signed by the CMS). */
   digest: string;
-  /** catalog: verified from the CMS; bundled: predefined (no CMS configured). */
-  source: 'catalog' | 'bundled';
+  /** catalog: verified from the CMS; bundled: predefined (no CMS configured); custom: defined by this organization. */
+  source: 'catalog' | 'bundled' | 'custom';
+  /** What the customer webhook can do at this type's provider (null: nothing). */
+  provider: import('./records').SecretProviderCapabilities | null;
 }
 
 export interface SecretTypesResponse {

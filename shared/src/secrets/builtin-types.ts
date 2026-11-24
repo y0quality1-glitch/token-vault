@@ -265,6 +265,64 @@ const TYPES: SecretTypeDefinitionInput[] = [
   { key: 'encryption-passphrase', version: 1, name: 'Encryption passphrase', category: 'application', description: 'A passphrase an application derives encryption keys from.', fields: { passphrase: secret('Passphrase', { minLength: 12, maxLength: 1024 }) }, metadata: { application: meta('Application') }, tags: ['passphrase'] },
   { key: 'app-database', version: 1, name: 'Application database credentials', category: 'application', description: 'The database login of one application, with its connection details.', fields: { username: plain('Username', { required: true, maxLength: 128 }), password: secret('Password', { maxLength: 1024 }) }, identifiedBy: ['username'], metadata: { application: meta('Application'), ...dbMeta(5432) }, defaults: { rotationIntervalDays: 90 }, tags: ['database'] },
 
+  // ── J. Dynamic secrets ─────────────────────────────────────────
+  // The stored value is the credential the customer webhook uses to create short-lived ones
+  // (leases); applications never read it. Lease lengths are metadata.
+  {
+    key: 'postgresql-dynamic',
+    version: 1,
+    name: 'PostgreSQL dynamic credentials',
+    category: 'dynamic',
+    description: 'Short-lived PostgreSQL logins created per lease (a role with VALID UNTIL and the grants below), dropped when the lease ends. Store an administrative login allowed to create roles.',
+    fields: {
+      host: plain('Host', { kind: 'hostname', required: true }),
+      port: plain('Port', { kind: 'port', placeholder: '5432' }),
+      database: plain('Database', { required: true, maxLength: 63 }),
+      ssl: plain('Require TLS', { kind: 'boolean' }),
+      username: plain('Administrative user', { required: true, maxLength: 63 }),
+      password: secret('Password', { maxLength: 1024 }),
+      creationStatements: plain('Grants for each lease', {
+        kind: 'multiline',
+        required: true,
+        maxLength: 8192,
+        description: 'SQL run after the role is created, one statement per line or separated by ";". {{name}} is the new role.',
+        placeholder: 'GRANT SELECT ON ALL TABLES IN SCHEMA public TO {{name}};',
+      }),
+    },
+    identifiedBy: ['host', 'database', 'username'],
+    metadata: {
+      defaultTtlMinutes: meta('Default lease (minutes)', { kind: 'integer', min: 1, max: 10_080, placeholder: '60' }),
+      maxTtlMinutes: meta('Longest lease, with renewals (minutes)', { kind: 'integer', min: 1, max: 43_200, placeholder: '1440' }),
+      owner: meta('Owning team'),
+    },
+    lifecycle: { dynamic: true, expiration: false },
+    defaults: { rotationIntervalDays: 90 },
+    tags: ['postgres', 'dynamic'],
+  },
+  {
+    key: 'aws-sts-dynamic',
+    version: 1,
+    name: 'AWS temporary credentials (STS)',
+    category: 'dynamic',
+    description: 'Session credentials from sts:AssumeRole per lease. They cannot be revoked early: keep leases short. Store an access key allowed to assume the role.',
+    fields: {
+      accessKeyId: plain('Access key ID', { required: true, pattern: '^(AKIA|ASIA)[A-Z0-9]{16}$' }),
+      secretAccessKey: secret('Secret access key', { minLength: 40, maxLength: 40 }),
+      roleArn: plain('Role to assume (ARN)', { required: true, pattern: '^arn:aws[a-z-]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,512}$' }),
+      region: plain('Region', { placeholder: 'us-east-1', pattern: '^[a-z]{2}(-[a-z]+)+-[0-9]$' }),
+      externalId: secret('External ID', { required: false, maxLength: 1224 }),
+    },
+    identifiedBy: ['roleArn'],
+    metadata: {
+      defaultTtlMinutes: meta('Default lease (minutes)', { kind: 'integer', min: 15, max: 720, placeholder: '60' }),
+      maxTtlMinutes: meta('Longest lease (minutes)', { kind: 'integer', min: 15, max: 720, placeholder: '60' }),
+      accountId: meta('Account'),
+    },
+    lifecycle: { dynamic: true, expiration: false },
+    defaults: { rotationIntervalDays: 90 },
+    tags: ['aws', 'dynamic'],
+  },
+
   // ── I. Webhook secrets ─────────────────────────────────────────
   { key: 'webhook-signing-secret', version: 2, name: 'Webhook signing secret', category: 'webhook', description: 'The secret webhook payloads are signed or verified with.', fields: { secret: secret('Secret', { minLength: 16, maxLength: 4096, generate: { encoding: 'hex', bytes: 32 } }) }, metadata: { provider: meta('Provider'), endpoint: meta('Webhook endpoint', { kind: 'url' }), algorithm: meta('Algorithm', { placeholder: 'e.g. HMAC-SHA256' }), direction: meta('Direction', { kind: 'enum', values: ['outgoing', 'incoming'] }) }, defaults: { rotationIntervalDays: 180 }, tags: ['webhook'] },
   { key: 'webhook-auth-token', version: 2, name: 'Webhook authentication token', category: 'webhook', description: 'A token a webhook sender presents, or a receiver expects.', fields: { token: secret('Token', { maxLength: 4096, generate: { encoding: 'base64url', bytes: 32 } }) }, metadata: { provider: meta('Provider'), endpoint: meta('Webhook endpoint', { kind: 'url' }), header: meta('Header name') }, defaults: { rotationIntervalDays: 180 }, tags: ['webhook'] },

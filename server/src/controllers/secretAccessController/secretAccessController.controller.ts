@@ -42,6 +42,9 @@ const keyNotice = (res: Response) => (expiresAt: string) => res.setHeader('Token
  *   POST /getall     the secrets this agent may read (metadata, allowed fields, whether approval is needed)
  *   POST /retrieve   `{secret_id | name + project? + workspace? + environment?, version?, fields?, reason?, approval_id?}`
  *                    → 200 the value; 202 APPROVAL_REQUIRED `{approval_id}` when the grant holds retrievals for approval
+ *   POST /lease      dynamic secrets: same target and checks, plus `ttl_seconds?` → 201 short-lived credentials (202 when held)
+ *   POST /lease/renew   `{lease_id, ttl_seconds?}` lengthen a lease this agent holds (up to the secret's longest lease)
+ *   POST /lease/revoke  `{lease_id, reason?}` end it now
  */
 export class AgentSecretController extends BaseController {
   constructor(private readonly service = new SecretAccessService()) {
@@ -54,5 +57,11 @@ export class AgentSecretController extends BaseController {
       const r = await this.service.agentRetrieve({ authorization: req.headers.authorization, sourceIp: normalizeIp(req.ip), body: req.body, onPreviousKey: keyNotice(res) });
       return new Reply(r.body, r.status, r.status === 202 ? 'Approval Required' : 'Secret Retrieved Successfully');
     });
+    this.route('post', '/lease', [], async (req: Request, res: Response) => {
+      const r = await this.service.agentRetrieve({ authorization: req.headers.authorization, sourceIp: normalizeIp(req.ip), body: req.body, onPreviousKey: keyNotice(res), mode: 'lease' });
+      return new Reply(r.body, r.status, r.status === 202 ? 'Approval Required' : 'Lease Issued Successfully');
+    });
+    this.route('post', '/lease/renew', [], (req: Request, res: Response) => this.service.agentLeaseAction({ authorization: req.headers.authorization, action: 'renew', body: req.body, onPreviousKey: keyNotice(res) }));
+    this.route('post', '/lease/revoke', [], (req: Request, res: Response) => this.service.agentLeaseAction({ authorization: req.headers.authorization, action: 'revoke', body: req.body, onPreviousKey: keyNotice(res) }));
   }
 }

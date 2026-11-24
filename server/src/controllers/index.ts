@@ -20,6 +20,8 @@ import { PolicyController } from './policyController/policyController.controller
 import { ProviderController } from './providerController/providerController.controller';
 import { SecretAccessController } from './secretAccessController/secretAccessController.controller';
 import { SecretPolicyController } from './secretPolicyController/secretPolicyController.controller';
+import { SecretLeaseController } from './secretLeaseController/secretLeaseController.controller';
+import { SecretExportController } from './secretExportController/secretExportController.controller';
 import { NotificationChannelController } from './notificationChannelController/notificationChannelController.controller';
 import { SecretController } from './secretController/secretController.controller';
 import { SecretTypeController } from './secretTypeController/secretTypeController.controller';
@@ -41,6 +43,8 @@ export const adminControllers = (): BaseController[] => [
   new SecretController(),
   new SecretAccessController(),
   new SecretPolicyController(),
+  new SecretLeaseController(),
+  new SecretExportController(),
   new NotificationChannelController(),
   new IntegrationController(),
   new AgentController(),

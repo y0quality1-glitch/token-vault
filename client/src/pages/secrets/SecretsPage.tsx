@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowDown, ArrowUp, Filter, LockKeyhole, Plus, Search } from 'lucide-react';
+import { ArrowDown, ArrowUp, FileUp, Filter, LockKeyhole, Plus, Search } from 'lucide-react';
 import { PERMISSIONS, SECRET_CATEGORIES, SECRET_STATUSES, type SecretView } from '@token-vault/shared';
 import { usePost } from '@/hooks/useApi';
 import { useToast } from '@/components/ui/toast';
@@ -73,6 +73,11 @@ export function SecretsPage() {
             {can(PERMISSIONS.SECRET_MANAGE_ACCESS) && (
               <Button variant="outline" onClick={() => setGranting(true)} data-testid="secret-grant-by-selector">
                 <Filter className="h-4 w-4" /> Grant by selector
+              </Button>
+            )}
+            {can(PERMISSIONS.SECRET_CREATE) && (
+              <Button variant="outline" onClick={() => navigate('/secrets/import')} data-testid="secret-import">
+                <FileUp className="h-4 w-4" /> Import
               </Button>
             )}
             {can(PERMISSIONS.SECRET_CREATE) && (
@@ -189,7 +194,11 @@ export function SecretsPage() {
                 cell: (s) => (
                   <div>
                     <p className="text-slate-800">{s.typeName}</p>
-                    <p className="text-xs text-slate-500">{categoryLabel(s.category)}</p>
+                    <p className="text-xs text-slate-500">
+                      {categoryLabel(s.category)}
+                      {s.customType && <span className="ml-1 text-amber-700">· custom type</span>}
+                      {s.provider?.status === 'FAILING' && <span className="ml-1 text-red-700" data-testid="secret-provider-failing">· provider failing</span>}
+                    </p>
                   </div>
                 ),
                 hideBelow: 'md',

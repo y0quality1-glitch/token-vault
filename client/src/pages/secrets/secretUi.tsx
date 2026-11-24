@@ -7,7 +7,9 @@ import {
   validateSecretPayload,
   type SecretCategory,
   type SecretPayload,
+  type SecretLeaseStatus,
   type SecretPolicySource,
+  type SecretProviderCapabilities,
   type SecretRotationJobStatus,
   type SecretRotationJobView,
   type SecretRotationStrategy,
@@ -87,8 +89,70 @@ export function RotationJobStatusBadge({ job }: { job: Pick<SecretRotationJobVie
   );
 }
 
+// ── providers, leases and type sources ──────────────────────────
+
+const LEASE_STATUS: Record<SecretLeaseStatus, { label: string; tone: Tone }> = {
+  ACTIVE: { label: 'Active', tone: 'green' },
+  EXPIRED: { label: 'Expired', tone: 'gray' },
+  REVOKED: { label: 'Ended', tone: 'gray' },
+  REVOKE_FAILED: { label: 'Cleanup pending', tone: 'amber' },
+};
+
+export function LeaseStatusBadge({ status }: { status: SecretLeaseStatus }) {
+  const m = LEASE_STATUS[status] ?? { label: status, tone: 'gray' as Tone };
+  return (
+    <span data-testid="lease-status" data-status={status}>
+      <Badge tone={m.tone} dot>
+        {m.label}
+      </Badge>
+    </span>
+  );
+}
+
+const CAPABILITY_LABELS: [keyof SecretProviderCapabilities, string, string][] = [
+  ['lease', 'Leases', 'Issues short-lived credentials'],
+  ['renew', 'Renew', 'Lengthens a lease at the provider'],
+  ['revoke', 'Revoke', 'Ends a lease early at the provider'],
+  ['rotate', 'Rotate', 'Changes the stored credential at the provider'],
+  ['check', 'Health check', 'Connects and checks the stored credential works'],
+];
+
+/** What the customer webhook can do at the provider, as small badges. */
+export function ProviderCapabilityBadges({ capabilities, className }: { capabilities: SecretProviderCapabilities; className?: string }) {
+  const on = CAPABILITY_LABELS.filter(([k]) => capabilities[k]);
+  return (
+    <span className={cn('inline-flex flex-wrap gap-1', className)} data-testid="provider-capabilities">
+      {on.map(([k, label, title]) => (
+        <span key={k} title={title} data-capability={k}>
+          <Badge tone="violet">{label}</Badge>
+        </span>
+      ))}
+    </span>
+  );
+}
+
+const TYPE_SOURCE: Record<SecretTypeInfo['source'], { label: string; tone: Tone }> = {
+  catalog: { label: 'Catalog', tone: 'blue' },
+  bundled: { label: 'Predefined', tone: 'gray' },
+  custom: { label: 'Custom', tone: 'amber' },
+};
+
+export function TypeSourceBadge({ source }: { source: SecretTypeInfo['source'] }) {
+  const m = TYPE_SOURCE[source] ?? { label: source, tone: 'gray' as Tone };
+  return (
+    <span data-testid="secret-type-source" data-source={source}>
+      <Badge tone={m.tone}>{m.label}</Badge>
+    </span>
+  );
+}
+
+/** Custom types in the list response say whether they are archived (no new secrets of them). */
+export function isArchivedType(t: SecretTypeInfo): boolean {
+  return (t as SecretTypeInfo & { archived?: boolean }).archived === true;
+}
+
 export const ROTATION_TRIGGER_LABELS: Record<SecretRotationTrigger, string> = { SCHEDULED: 'Scheduled', MANUAL: 'Rotate now', EXPIRY: 'Expiry' };
-export const ROTATION_STRATEGY_SHORT: Record<SecretRotationStrategy, string> = { manual: 'Manual', generated: 'Generated' };
+export const ROTATION_STRATEGY_SHORT: Record<SecretRotationStrategy, string> = { manual: 'Manual', generated: 'Generated', provider: 'At the provider' };
 
 /** `v3 → v4`, `v3 → …` while the new value is not stored yet. */
 export function rotationVersions(j: Pick<SecretRotationJobView, 'fromVersion' | 'toVersion'>): string {
@@ -121,7 +185,7 @@ export function SecretTypePicker({ types, value, onChange }: { types: SecretType
     const needle = q.trim().toLowerCase();
     const match = (t: SecretTypeInfo) => !needle || [t.name, t.key, t.description, t.categoryLabel, ...t.tags].some((s) => s.toLowerCase().includes(needle));
     const out = new Map<string, SecretTypeInfo[]>();
-    for (const t of types.filter(match).sort((a, b) => a.name.localeCompare(b.name))) {
+    for (const t of types.filter((t) => !isArchivedType(t) && match(t)).sort((a, b) => a.name.localeCompare(b.name))) {
       const k = t.categoryLabel || categoryLabel(t.category);
       out.set(k, [...(out.get(k) ?? []), t]);
     }
@@ -151,8 +215,10 @@ export function SecretTypePicker({ types, value, onChange }: { types: SecretType
               >
                 <span className="text-sm font-medium text-slate-900">{t.name}</span>
                 {t.description && <span className="mt-0.5 line-clamp-2 text-xs text-slate-500">{t.description}</span>}
-                {t.tags.length > 0 && (
+                {(t.tags.length > 0 || t.source === 'custom' || t.provider?.lease) && (
                   <span className="mt-1.5 flex flex-wrap gap-1">
+                    {t.source === 'custom' && <Badge tone="amber">Custom</Badge>}
+                    {t.provider?.lease && <Badge tone="violet">Leases</Badge>}
                     {t.tags.slice(0, 4).map((tag) => (
                       <Badge key={tag}>{tag}</Badge>
                     ))}
@@ -367,6 +433,19 @@ const ERROR_TITLES: Record<string, string> = {
   WEBHOOK_NOT_FOUND: 'The customer webhook was not found',
   WEBHOOK_REJECTED: 'The customer webhook refused the request',
   KEY_SERVICE_UNAVAILABLE: 'The key service is unavailable',
+  SECRET_NOT_DYNAMIC: 'This secret does not issue leases',
+  SECRET_NOT_ACTIVE: 'The secret is not active',
+  LEASE_AT_MAXIMUM: 'The lease cannot be made longer',
+  LEASE_NOT_RENEWABLE: 'This lease cannot be renewed',
+  LEASES_NOT_REVOKED: 'Leases from this secret are still open',
+  PROVIDER_UNAVAILABLE: 'The provider could not be reached',
+  PROVIDER_HOST_NOT_ALLOWED: 'The customer webhook may not connect to this host',
+  PROVIDER_AUTH_FAILED: 'The provider refused the stored credential',
+  SECRET_TYPE_IN_USE: 'Secrets still use this type',
+  EXPORT_DISABLED: 'Exports are turned off',
+  EXPORT_RATE_LIMITED: 'Too many export requests',
+  EXPORT_GONE: 'The download link has expired or was used',
+  SEPARATION_OF_DUTIES: 'You cannot decide your own request',
 };
 
 /** An API error with its code, shown inline (field errors are shown next to their inputs instead). */

@@ -5,6 +5,7 @@ import { Baseline1730000000000 } from './migrations/1730000000000-Baseline';
 import { Secrets1795000000000 } from './migrations/1795000000000-Secrets';
 import { SecretAccess1795100000000 } from './migrations/1795100000000-SecretAccess';
 import { SecretLifecycle1795200000000 } from './migrations/1795200000000-SecretLifecycle';
+import { SecretProviders1795300000000 } from './migrations/1795300000000-SecretProviders';
 
 /**
  * TypeORM DataSource (template: databases/dataSource.ts). Every entity and migration is listed
@@ -19,7 +20,7 @@ export const getPostgresConnection = () =>
     ...(config.databaseReadUrl ? { replication: { master: { url: config.databaseUrl }, slaves: [{ url: config.databaseReadUrl }] } } : { url: config.databaseUrl }),
     ssl: config.databaseSsl ? { rejectUnauthorized: true } : false,
     entities: ENTITIES,
-    migrations: [Baseline1730000000000, Secrets1795000000000, SecretAccess1795100000000, SecretLifecycle1795200000000],
+    migrations: [Baseline1730000000000, Secrets1795000000000, SecretAccess1795100000000, SecretLifecycle1795200000000, SecretProviders1795300000000],
     migrationsTableName: 'tv_migrations',
     synchronize: false,
     logging: false,

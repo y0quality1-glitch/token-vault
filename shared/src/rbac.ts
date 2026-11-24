@@ -27,6 +27,8 @@ export const PERMISSIONS = {
   SECRET_EXPORT: 'secret:export',
   /** Notification channels (email, outbound webhooks, Slack) for secret lifecycle events (spec 4.9.18). */
   NOTIFICATION_MANAGE: 'notification:manage',
+  /** Organization-defined secret types (spec 4.9.3 K). */
+  SECRET_MANAGE_TYPES: 'secret:manage_types',
 } as const;
 
 export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -53,6 +55,7 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     P.SECRET_MANAGE_VERSIONS,
     P.SECRET_MANAGE_ACCESS,
     P.NOTIFICATION_MANAGE,
+    P.SECRET_MANAGE_TYPES,
   ],
   SECURITY_ADMIN: [P.ORG_READ, P.POLICY_MANAGE, P.GRANT_REVOKE, P.GRANT_APPROVE, P.AUDIT_READ, P.SECRET_READ_METADATA, P.SECRET_MANAGE_ACCESS, P.SECRET_DELETE, P.NOTIFICATION_MANAGE],
   DEVELOPER: [P.ORG_READ, P.AGENT_MANAGE, P.SECRET_READ_METADATA],

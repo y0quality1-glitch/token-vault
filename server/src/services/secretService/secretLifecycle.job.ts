@@ -6,7 +6,10 @@ import { newId } from '../../lib/ids';
 import { SYSTEM_ACTOR, recordEvent } from '../auditService/auditService.service';
 import { policiesOf, resolvePolicy } from '../secretPolicyService/secretPolicyService.service';
 import { getSecretType } from '../secretTypeService/registry';
-import SecretService, { expiryStatus } from './secretService.service';
+import { SECRET_PROVIDER_CAPABILITIES } from '@token-vault/shared';
+import SecretService, { expiryStatus, systemWriter } from './secretService.service';
+import SecretLeaseService from '../secretLeaseService/secretLeaseService.service';
+import SecretExportService from '../secretExportService/secretExportService.service';
 
 /**
  * The secret lifecycle job (spec 4.9.10–4.9.12, 4.9.8). Each run:
@@ -17,7 +20,11 @@ import SecretService, { expiryStatus } from './secretService.service';
  *     ROTATION_PENDING and people are notified, generated ones are rotated by the webhook;
  *  3. rotation jobs waiting for a retry are run again;
  *  4. version retention: inactive versions outside the policy (newest n, or replaced less than
- *     d days ago, and never inside the rotation grace period) are destroyed on the webhook.
+ *     d days ago, and never inside the rotation grace period) are destroyed on the webhook;
+ *  5. leases of dynamic secrets that have expired are ended at the provider (and failed
+ *     revocations retried): automatic cleanup, spec 4.9.3 J;
+ *  6. provider health: secrets whose provider the webhook can reach are checked every
+ *     PROVIDER_CHECK_EVERY_MS; a new failure is notified (secret.provider_failure).
  * Every change is audited (system actor) and notified like any other secret event. One instance
  * runs at a time: a PostgreSQL advisory lock is taken for the run, other instances skip it.
  */
@@ -25,6 +32,8 @@ import SecretService, { expiryStatus } from './secretService.service';
 const LOCK_KEY = 4_909_012; // "4.9.12"
 const DAY = 86_400_000;
 const service = new SecretService();
+const leaseService = new SecretLeaseService();
+const PROVIDER_CHECK_EVERY_MS = 15 * 60_000;
 
 export interface LifecycleReport {
   expiring: number;
@@ -35,6 +44,9 @@ export interface LifecycleReport {
   rotationsRetrying: number;
   rotationsFailed: number;
   versionsDestroyed: number;
+  leasesEnded: number;
+  leasesFailed: number;
+  providersChecked: number;
 }
 
 /** One run, if no other instance is running one. Returns null when skipped. */
@@ -59,11 +71,11 @@ function warn(what: string, e: unknown) {
 }
 
 async function runOnce(): Promise<LifecycleReport> {
-  const report: LifecycleReport = { expiring: 0, expired: 0, active: 0, rotationsScheduled: 0, rotationsSucceeded: 0, rotationsRetrying: 0, rotationsFailed: 0, versionsDestroyed: 0 };
+  const report: LifecycleReport = { expiring: 0, expired: 0, active: 0, rotationsScheduled: 0, rotationsSucceeded: 0, rotationsRetrying: 0, rotationsFailed: 0, versionsDestroyed: 0, leasesEnded: 0, leasesFailed: 0, providersChecked: 0 };
   const policyCache = new Map<string, SecretPolicyEntity[]>();
   const policyFor = async (s: SecretEntity) => {
     if (!policyCache.has(s.organizationId)) policyCache.set(s.organizationId, await policiesOf(s.organizationId));
-    return resolvePolicy(policyCache.get(s.organizationId)!, s, getSecretType(s.typeKey));
+    return resolvePolicy(policyCache.get(s.organizationId)!, s, getSecretType(s.typeKey, s.organizationId));
   };
 
   // 1. Expiry.
@@ -130,6 +142,32 @@ async function runOnce(): Promise<LifecycleReport> {
   // 4. Version retention.
   report.versionsDestroyed = await applyRetention();
 
+  // 5. Expired leases end at the provider.
+  const leases = await leaseService.cleanUp(SYSTEM_ACTOR);
+  report.leasesEnded = leases.expired;
+  report.leasesFailed = leases.failed;
+
+  // Export files nobody downloaded in time are deleted.
+  await SecretExportService.expireFiles();
+
+  // 6. Provider health.
+  const checkable = Object.entries(SECRET_PROVIDER_CAPABILITIES).filter(([, c]) => c.check).map(([k]) => k);
+  const stale = await db
+    .createQueryBuilder(SecretEntity, 's')
+    .where(`s.type_key IN (:...types) AND s.status IN ('ACTIVE', 'EXPIRING', 'ROTATION_PENDING')`, { types: checkable })
+    .andWhere(`(s.provider_checked_at IS NULL OR s.provider_checked_at <= :before)`, { before: new Date(Date.now() - PROVIDER_CHECK_EVERY_MS).toISOString() })
+    .orderBy('s.provider_checked_at', 'ASC', 'NULLS FIRST')
+    .take(20)
+    .getMany();
+  for (const s of stale) {
+    try {
+      await service.checkProvider(systemWriter(s.organizationId), s.id);
+      report.providersChecked++;
+    } catch (e) {
+      warn(`provider check of ${s.id}`, e);
+    }
+  }
+
   const changed = Object.entries(report).filter(([, n]) => n > 0);
   if (changed.length) console.log(`[lifecycle] ${changed.map(([k, n]) => `${k}=${n}`).join(' ')}`);
   return report;
@@ -152,7 +190,8 @@ async function transitionIf(s: SecretEntity, to: 'EXPIRING' | 'EXPIRED', eventTy
  */
 async function queueJob(s: SecretEntity, trigger: 'SCHEDULED' | 'EXPIRY'): Promise<boolean> {
   const t = new Date().toISOString();
-  const generated = s.rotationStrategy === 'generated';
+  // Generated and provider rotations run by themselves; manual ones wait for a person.
+  const generated = s.rotationStrategy !== 'manual';
   try {
     return await transaction(async (ex) => {
       const current = await ex.findOne(SecretEntity, { where: { id: s.id }, lock: { mode: 'pessimistic_write' } });
@@ -204,7 +243,7 @@ async function applyRetention(): Promise<number> {
       .getMany();
     for (const s of secrets) {
       try {
-        const p = resolvePolicy(policies, s, getSecretType(s.typeKey));
+        const p = resolvePolicy(policies, s, getSecretType(s.typeKey, s.organizationId));
         const keepN = p.keepVersions.value;
         const keepD = p.keepDays.value;
         if (keepN == null && keepD == null) continue;
