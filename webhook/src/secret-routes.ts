@@ -1,9 +1,11 @@
 import type { Request, Response, NextFunction, Router } from 'express';
-import { CUSTOM_SECRET_TYPE_PREFIX, SecretTypeError, generatableSecretFields, generateSecretFieldValue, summarizeSecretPayload, unknownSecretFields, validateCustomSecretType, validateSecretPayload, type SecretPayload, type SecretTypeDefinition } from '@token-vault/shared';
+import { CERTIFICATE_KEY_ALGORITHMS, CUSTOM_SECRET_TYPE_PREFIX, KEY_OPERATIONS, SECRET_CERTIFICATE_TYPES, SecretTypeError, generatableSecretFields, generateSecretFieldValue, summarizeSecretPayload, unknownSecretFields, validateCustomSecretType, validateSecretPayload, type CertificateInfo, type CertificateKeyAlgorithm, type KeyOperation, type SecretPayload, type SecretTypeDefinition } from '@token-vault/shared';
 import { keyIdOfRef, KeyServiceUnavailableError } from './store/credential-store';
 import { SecretValueUnreadableError, destroyValues, getValue, readValue, storeValue } from './store/secret-store';
 import { secretTypeSync, secretTypes } from './providers/secret-types';
 import { ProviderError, engines, type Connection } from './providers/secret-engines';
+import { CertificateError, issueCertificate, keyAlgorithmOf, readCertificate, renewalRequest } from './providers/certificates';
+import { KeyOperationError, checkStoredKey, keyOperation } from './providers/key-engines';
 
 /**
  * Secret values (Secret Management, spec 4.9.4–4.9.8). Every route requires the control
@@ -23,6 +25,17 @@ import { ProviderError, engines, type Connection } from './providers/secret-engi
  *   POST /internal/v1/secrets/lease     {org_id, secret_id, value_ref, lease_id, expires_at} → 201 short-lived credentials
  *   POST /internal/v1/secrets/lease/renew   {..., lease_id, username, expires_at} → {expires_at}
  *   POST /internal/v1/secrets/lease/revoke  {..., lease_id, username} → {revoked}
+ *   POST /internal/v1/secrets/key       {org_id, secret_id, value_ref, version, operation, algorithm?, data?, signature?,
+ *                                       mac?, ciphertext?, aad?} → the result of using the key (it never leaves)
+ *   POST /internal/v1/secrets/certificate/request   {org_id, secret_id, value_ref, request_id, key_algorithm?} → 201 a CSR
+ *                                       for a new key, kept encrypted under the request id until the certificate comes
+ *   POST /internal/v1/secrets/certificate/complete  {org_id, secret_id, type_key, request_id, request_ref, version,
+ *                                       certificate?, chain?, issuer?: {secret_id, value_ref}, validity_days?} → 201 the new
+ *                                       key with its certificate (uploaded, or issued by a CA secret) as a new version
+ *
+ * Certificate types are read when stored: an unreadable certificate, a private key that is not
+ * its own, or (for new values) an expired certificate is refused; what it says is returned as
+ * `certificate`.
  *
  * Organization-defined types (keys starting "custom-") are not in the signed catalog: the control
  * plane sends their definition as `type_definition`, checked against the same schema (every field
@@ -73,7 +86,7 @@ export function secretRoutes(r: Router, { requireSignature, signedJson }: Helper
     return fail(req, res, 500, 'SECRET_STORE_FAILED', 'The value could not be processed');
   }
 
-  const storedView = (type: SecretTypeDefinition, payload: SecretPayload, v: Awaited<ReturnType<typeof storeValue>>) => ({
+  const storedView = (type: SecretTypeDefinition, payload: SecretPayload, v: Awaited<ReturnType<typeof storeValue>>, certificate: CertificateInfo | null = null) => ({
     value_ref: v.valueRef,
     version: v.version,
     fingerprint: v.fingerprint,
@@ -81,7 +94,24 @@ export function secretRoutes(r: Router, { requireSignature, signedJson }: Helper
     type_version: type.version,
     encryption_key_id: keyIdOfRef(v.encryptionKeyRef),
     created_at: v.createdAt,
+    ...(certificate ? { certificate } : {}),
   });
+
+  /** Certificates are read and keys parsed before anything is stored; false: refused (answered). */
+  function checkValue(req: Request, res: Response, type: SecretTypeDefinition, value: SecretPayload, refuseExpired: boolean): { certificate: CertificateInfo | null } | false {
+    try {
+      const keyIssue = checkStoredKey(type.key, value);
+      if (keyIssue) {
+        fail(req, res, 400, 'SECRET_INVALID', 'The value does not match its secret type', { fields: { [keyIssue.field]: keyIssue.message } });
+        return false;
+      }
+      return { certificate: SECRET_CERTIFICATE_TYPES[type.key] ? readCertificate(type.key, value, { refuseExpired }) : null };
+    } catch (e) {
+      if (!(e instanceof CertificateError)) throw e;
+      fail(req, res, e.code === 'CERTIFICATE_ISSUER_INVALID' ? 409 : 400, e.code, e.message, e.field ? { fields: { [e.field]: e.message } } : undefined);
+      return false;
+    }
+  }
 
   r.post('/internal/v1/secrets/store', requireSignature, async (req: SignedRequest, res) => {
     const b = req.json ?? {};
@@ -93,10 +123,12 @@ export function secretRoutes(r: Router, { requireSignature, signedJson }: Helper
     if (!type) return fail(req, res, 400, 'SECRET_TYPE_UNKNOWN', 'This webhook does not know that secret type (it is not in the verified catalog, or the custom definition is invalid)');
     const { value, issues } = validateSecretPayload(type, b.payload);
     if (Object.keys(issues).length) return fail(req, res, 400, 'SECRET_INVALID', 'The value does not match its secret type', { fields: issues });
+    const checked = checkValue(req, res, type, value, true);
+    if (!checked) return;
     try {
       const v = await storeValue(orgId, secretId, version, type.key, value);
       console.log(`[vault] stored secret value ${v.valueRef} secret=${secretId} v${version} type=${type.key} (encrypted, AES-256-GCM)`);
-      signedJson(req, res, 201, storedView(type, value, v));
+      signedJson(req, res, 201, storedView(type, value, v, checked.certificate));
     } catch (e) {
       if (pgCode(e) === '23505') return fail(req, res, 409, 'SECRET_VERSION_EXISTS', `Version ${version} of this secret is already stored`);
       valueFailure(req, res, e, `store secret=${secretId}`);
@@ -134,9 +166,12 @@ export function secretRoutes(r: Router, { requireSignature, signedJson }: Helper
       // A rollback creates a new version from the old value; it must still satisfy the current type.
       const { value, issues } = validateSecretPayload(type, await readValue(row));
       if (Object.keys(issues).length) return fail(req, res, 409, 'SECRET_INVALID', `That version no longer matches the current ${type.name} type`, { fields: issues });
+      // A rollback may bring back an expired certificate: it is reported, and the secret's expiry follows it.
+      const checked = checkValue(req, res, type, value, false);
+      if (!checked) return;
       const v = await storeValue(row.orgId, row.secretId, version, type.key, value);
       console.log(`[vault] copied secret value ${row.valueRef} -> ${v.valueRef} secret=${row.secretId} v${version}`);
-      signedJson(req, res, 201, { ...storedView(type, value, v), copied_from: row.version });
+      signedJson(req, res, 201, { ...storedView(type, value, v, checked.certificate), copied_from: row.version });
     } catch (e) {
       if (pgCode(e) === '23505') return fail(req, res, 409, 'SECRET_VERSION_EXISTS', `Version ${version} of this secret is already stored`);
       valueFailure(req, res, e, `copy ${row.valueRef}`);
@@ -281,6 +316,104 @@ export function secretRoutes(r: Router, { requireSignature, signedJson }: Helper
       signedJson(req, res, 200, { revoked });
     } catch (e) {
       providerFailure(req, res, e, `revoke lease ${b.lease_id}`);
+    }
+  });
+
+  // ── keys and certificates (spec 4.9.3 E, F) ───────────────────────
+
+  const b64 = (v: unknown) => (typeof v === 'string' ? v : undefined);
+
+  r.post('/internal/v1/secrets/key', requireSignature, async (req: SignedRequest, res) => {
+    const b = req.json ?? {};
+    const row = await valueFor(req, res, b.value_ref);
+    if (!row) return;
+    const operation = (KEY_OPERATIONS as readonly string[]).includes(b.operation) ? (b.operation as KeyOperation) : null;
+    const version = posInt(b.version);
+    if (!operation || !version) return fail(req, res, 400, 'INVALID_KEY_REQUEST', 'operation and version are required');
+    if (row.version !== version) return fail(req, res, 409, 'INVALID_KEY_REQUEST', 'That value is not the version named');
+    try {
+      const out = await keyOperation(row.typeKey, await readValue(row), {
+        operation,
+        version,
+        algorithm: typeof b.algorithm === 'string' && /^[A-Za-z0-9-]{2,20}$/.test(b.algorithm) ? b.algorithm : undefined,
+        data: b64(b.data),
+        signature: b64(b.signature),
+        mac: b64(b.mac),
+        ciphertext: b64(b.ciphertext),
+        aad: b64(b.aad),
+      });
+      console.log(`[vault] key ${operation} with secret=${row.secretId} v${version} algorithm=${out.algorithm}${out.valid !== undefined ? ` valid=${out.valid}` : ''}`);
+      signedJson(req, res, 200, out);
+    } catch (e) {
+      if (e instanceof KeyOperationError) {
+        console.warn(`[vault] key ${operation} with secret=${row.secretId}: ${e.code}`);
+        return fail(req, res, ['KEY_UNREADABLE', 'KEY_OPERATION_NOT_SUPPORTED', 'KEY_OPERATION_FAILED'].includes(e.code) ? 409 : 400, e.code, e.message);
+      }
+      providerFailure(req, res, e, `key ${operation} with ${row.secretId}`);
+    }
+  });
+
+  r.post('/internal/v1/secrets/certificate/request', requireSignature, async (req: SignedRequest, res) => {
+    const b = req.json ?? {};
+    const row = await valueFor(req, res, b.value_ref);
+    if (!row) return;
+    const requestId = typeof b.request_id === 'string' && /^crq_[A-Za-z0-9]{8,40}$/.test(b.request_id) ? b.request_id : '';
+    if (!requestId) return fail(req, res, 400, 'INVALID_CERTIFICATE_REQUEST', 'request_id is required');
+    if (!SECRET_CERTIFICATE_TYPES[row.typeKey]?.renewable) return fail(req, res, 409, 'CERTIFICATE_NOT_RENEWABLE', 'Renewal requests are made for TLS certificates; store a new value instead');
+    try {
+      const current = await readValue(row);
+      const info = readCertificate(row.typeKey, current)!;
+      const algorithm: CertificateKeyAlgorithm = (CERTIFICATE_KEY_ALGORITHMS as readonly string[]).includes(b.key_algorithm) ? b.key_algorithm : keyAlgorithmOf(info.publicKey);
+      const made = await renewalRequest(String(current.certificate), algorithm);
+      // The new key is stored like any value, under the request's id, until the certificate comes back.
+      const v = await storeValue(row.orgId, requestId, 1, 'certificate-request', { privateKey: made.privateKey, csr: made.csr });
+      console.log(`[vault] certificate request ${requestId} for secret=${row.secretId}: new ${algorithm} key stored as ${v.valueRef}`);
+      signedJson(req, res, 201, { request_ref: v.valueRef, csr: made.csr, subject: made.subject, subject_alt_names: made.subjectAltNames, key_algorithm: algorithm });
+    } catch (e) {
+      if (e instanceof CertificateError) return fail(req, res, 409, e.code, e.message);
+      valueFailure(req, res, e, `certificate request for ${row.secretId}`);
+    }
+  });
+
+  r.post('/internal/v1/secrets/certificate/complete', requireSignature, async (req: SignedRequest, res) => {
+    const b = req.json ?? {};
+    const orgId = id(b.org_id);
+    const secretId = id(b.secret_id);
+    const version = posInt(b.version);
+    const pending = await getValue(orgId, id(b.request_id), id(b.request_ref));
+    if (!pending || pending.typeKey !== 'certificate-request') return fail(req, res, 404, 'CERTIFICATE_REQUEST_NOT_FOUND', 'No key is waiting for that request');
+    if (!secretId || !version) return fail(req, res, 400, 'INVALID_CERTIFICATE_REQUEST', 'secret_id and version are required');
+    const type = await typeOf(b.type_key);
+    if (!type || !SECRET_CERTIFICATE_TYPES[type.key]?.renewable) return fail(req, res, 400, 'SECRET_TYPE_UNKNOWN', 'Not a renewable certificate type');
+    try {
+      const key = await readValue(pending);
+      let certificate = typeof b.certificate === 'string' ? b.certificate : '';
+      let chain = typeof b.chain === 'string' ? b.chain : '';
+      const issuer = b.issuer && typeof b.issuer === 'object' ? (b.issuer as Record<string, unknown>) : null;
+      if (issuer) {
+        const ca = await getValue(orgId, id(issuer.secret_id), id(issuer.value_ref));
+        if (!ca || !SECRET_CERTIFICATE_TYPES[ca.typeKey]?.issuer) return fail(req, res, 409, 'CERTIFICATE_ISSUER_INVALID', 'The issuer is not a certificate authority secret');
+        const days = Number.isInteger(b.validity_days) && b.validity_days >= 1 && b.validity_days <= 825 ? b.validity_days : 90;
+        ({ certificate, chain } = await issueCertificate(String(key.csr), await readValue(ca), days));
+      }
+      if (!certificate) return fail(req, res, 400, 'INVALID_CERTIFICATE_REQUEST', 'Give the certificate the CA issued, or an issuer');
+      const { value, issues } = validateSecretPayload(type, { certificate, privateKey: key.privateKey, ...(chain ? { chain } : {}) });
+      if (Object.keys(issues).length) return fail(req, res, 400, 'SECRET_INVALID', 'The certificate does not match its secret type', { fields: issues });
+      let info: CertificateInfo | null;
+      try {
+        info = readCertificate(type.key, value, { refuseExpired: true });
+      } catch (e) {
+        if (e instanceof CertificateError && e.code === 'CERTIFICATE_KEY_MISMATCH') return fail(req, res, 400, e.code, 'This certificate is not for the key of this request (issued from another CSR?)', { fields: { certificate: 'Not for this request’s key' } });
+        throw e;
+      }
+      const v = await storeValue(orgId, secretId, version, type.key, value);
+      await destroyValues(orgId, pending.secretId, [pending.valueRef]);
+      console.log(`[vault] certificate request ${pending.secretId} completed: secret=${secretId} v${version} stored as ${v.valueRef}${issuer ? ' (issued by a CA secret)' : ''}`);
+      signedJson(req, res, 201, { ...storedView(type, value, v, info), issued: !!issuer });
+    } catch (e) {
+      if (e instanceof CertificateError) return fail(req, res, e.code === 'CERTIFICATE_ISSUER_INVALID' ? 409 : 400, e.code, e.message, e.field ? { fields: { [e.field]: e.message } } : undefined);
+      if (pgCode(e) === '23505') return fail(req, res, 409, 'SECRET_VERSION_EXISTS', `Version ${version} of this secret is already stored`);
+      valueFailure(req, res, e, `certificate request ${pending.secretId}`);
     }
   });
 

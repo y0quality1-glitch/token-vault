@@ -46,6 +46,10 @@ export interface SecretVersionView {
   createdBy: { id: string; name: string };
   createdAt: string;
   destroyedAt: string | null;
+  /** Key types: whether this version may be used for operations (false: deactivated). null for other types. */
+  keyEnabled: boolean | null;
+  /** Certificate types: what the certificate in this version says (read by the customer webhook). */
+  certificate: CertificateInfo | null;
 }
 
 export interface SecretView {
@@ -74,6 +78,10 @@ export interface SecretView {
   provider: { capabilities: SecretProviderCapabilities; status: 'OK' | 'FAILING' | null; checkedAt: string | null; error: string | null } | null;
   /** Organization-defined type (spec 4.9.3 K). */
   customType: boolean;
+  /** Key types (spec 4.9.3 E): what the key may be used for through the agent API, and what its type supports. */
+  key: { operations: KeyOperation[]; supported: KeyOperation[]; external: SecretKeyCapabilities['external'] } | null;
+  /** Certificate types (spec 4.9.3 F): the active version's certificate. */
+  certificate: CertificateInfo | null;
   lastRetrievedAt: string | null;
   createdBy: { id: string; name: string };
   createdAt: string;
@@ -84,6 +92,8 @@ export interface SecretView {
 export interface SecretDetail extends SecretView {
   /** Dynamic secrets: leases issued from it (newest first, at most 50). */
   leases: SecretLeaseView[];
+  /** Certificates: renewal requests (newest first, at most 20). */
+  certificateRequests: CertificateRequestView[];
   versions: SecretVersionView[];
   /** Latest rotation runs, newest first. */
   rotationJobs: SecretRotationJobView[];
@@ -133,6 +143,10 @@ export interface SecretAccessGrantView {
   versions: SecretGrantVersions;
   allowedCidrs: string[];
   requireApproval: boolean;
+  /** Whether the agent may read the value (retrieve, or lease a dynamic secret). false: it may only use the key. */
+  allowRetrieve: boolean;
+  /** Key operations the agent may ask the webhook to perform with the key (spec 4.9.3 E); empty: none. */
+  keyOperations: KeyOperation[];
   validFrom: string;
   expiresAt: string | null;
   status: SecretGrantStatus;
@@ -155,6 +169,9 @@ export interface SecretRetrievalApprovalView {
   secret: { id: string; name: string };
   version: number | null;
   fields: string[];
+  /** What was asked: a retrieval, a lease, or a key operation (with a SHA-256 of its input). */
+  operation: 'retrieve' | 'lease' | KeyOperation;
+  inputDigest: string | null;
   reason: string;
   status: SecretApprovalStatus;
   requestedAt: string;
@@ -182,6 +199,10 @@ export interface AgentSecretInfo {
   requires_approval: boolean;
   /** A dynamic secret: ask for a lease (POST /agent/v1/secret/lease), it cannot be retrieved. */
   dynamic: boolean;
+  /** Whether the grant lets the agent read the value (or lease it). */
+  retrieve: boolean;
+  /** Key operations it may ask for (POST /agent/v1/secret/key/{operation}): allowed by the grant and the key. */
+  key_operations: KeyOperation[];
 }
 
 /** Agent API: POST /agent/v1/secret/retrieve answer. */
@@ -487,4 +508,122 @@ export interface SecretExportFile {
   ciphertext: string;
   exportId: string;
   createdAt: string;
+}
+
+// ── keys and certificates (spec 4.9.3 E, F) ──────────────────────────
+
+/** What the customer webhook can do with a key for an application that never sees it. */
+export const KEY_OPERATIONS = ['sign', 'verify', 'encrypt', 'decrypt', 'mac'] as const;
+export type KeyOperation = (typeof KEY_OPERATIONS)[number];
+
+/**
+ * Algorithms, by JOSE name. For a key stored in Token Vault the key itself narrows them (a P-384
+ * key signs with ES384 only); the first one that fits is the default. ECDSA signatures are
+ * r || s (as in JWS), not DER. `verify` checks a signature, or a MAC for MAC keys.
+ */
+export const KEY_ALGORITHMS: Record<'sign' | 'encrypt' | 'mac', readonly string[]> = {
+  sign: ['PS256', 'PS384', 'PS512', 'RS256', 'RS384', 'RS512', 'ES256', 'ES384', 'ES512', 'EdDSA'],
+  encrypt: ['A256GCM', 'A192GCM', 'A128GCM', 'RSA-OAEP-256'],
+  mac: ['HS256', 'HS384', 'HS512'],
+};
+
+export interface SecretKeyCapabilities {
+  operations: KeyOperation[];
+  /** Held by an external service: the stored value is how to reach the key there, never the key. */
+  external: 'vault-transit' | 'aws-kms' | null;
+}
+
+/** Types the customer webhook can perform key operations with. */
+export const SECRET_KEY_CAPABILITIES: Record<string, SecretKeyCapabilities> = {
+  'aes-key': { operations: ['encrypt', 'decrypt'], external: null },
+  'rsa-private-key': { operations: ['sign', 'verify', 'encrypt', 'decrypt'], external: null },
+  'ecc-private-key': { operations: ['sign', 'verify'], external: null },
+  'signing-key': { operations: ['sign', 'verify'], external: null },
+  'hmac-secret': { operations: ['mac', 'verify'], external: null },
+  'jwt-signing-secret': { operations: ['mac', 'verify'], external: null },
+  'vault-transit-key': { operations: ['sign', 'verify', 'encrypt', 'decrypt', 'mac'], external: 'vault-transit' },
+  'aws-kms-key': { operations: ['sign', 'verify', 'encrypt', 'decrypt', 'mac'], external: 'aws-kms' },
+};
+
+/** Largest input of one key operation (decoded bytes). */
+export const KEY_OPERATION_MAX_BYTES = 65_536;
+
+/** Agent API: POST /agent/v1/secret/key/{operation} answer. */
+export interface AgentKeyOperationResult {
+  secret_id: string;
+  name: string;
+  operation: KeyOperation;
+  /** The key version used (for verify and decrypt: the one the signature or ciphertext names). */
+  version: number;
+  algorithm: string;
+  /** sign: base64. External keys return the provider's format (Vault: "vault:v1:…"). */
+  signature?: string;
+  /** mac: base64 (Vault: "vault:v1:…"). */
+  mac?: string;
+  /** verify */
+  valid?: boolean;
+  /** encrypt: "tv:v<version>:<base64>" for keys stored in Token Vault; the provider's format for external keys. */
+  ciphertext?: string;
+  /** decrypt: base64. */
+  plaintext?: string;
+  grant_id: string;
+  request_id: string;
+}
+
+/** What a certificate says, read by the customer webhook when it is stored (never the private key). */
+export interface CertificateInfo {
+  subject: string;
+  commonName: string | null;
+  issuer: string;
+  serialNumber: string;
+  notBefore: string;
+  notAfter: string;
+  /** "DNS:api.example.com", "IP Address:10.0.0.1", … */
+  subjectAltNames: string[];
+  fingerprintSha256: string;
+  /** "RSA 2048", "EC P-256", "Ed25519" */
+  publicKey: string;
+  isCA: boolean;
+  selfSigned: boolean;
+  /** Whether the stored private key belongs to the certificate (a key that does not is refused). */
+  privateKey: 'matches' | 'absent';
+  /** The certificates after it (chain field or bundle), in order. */
+  chain: { subject: string; issuer: string; notAfter: string }[];
+  /** Each chain certificate signed the one before it; null without a chain. */
+  chainValid: boolean | null;
+}
+
+/** Certificate types the customer webhook reads; `renewable`: a renewal request (new key and CSR) can be made. */
+export const SECRET_CERTIFICATE_TYPES: Record<string, { renewable: boolean; issuer: boolean }> = {
+  'tls-certificate': { renewable: true, issuer: false },
+  'ca-certificate': { renewable: false, issuer: true },
+  pkcs12: { renewable: false, issuer: false },
+};
+
+export const CERTIFICATE_KEY_ALGORITHMS = ['EC-P256', 'EC-P384', 'RSA-2048', 'RSA-3072', 'RSA-4096'] as const;
+export type CertificateKeyAlgorithm = (typeof CERTIFICATE_KEY_ALGORITHMS)[number];
+
+export type CertificateRequestStatus = 'PENDING' | 'COMPLETED' | 'CANCELLED' | 'EXPIRED';
+
+/**
+ * A certificate renewal: the customer webhook made a new key pair (kept encrypted, never shown) and
+ * a CSR for it. It completes when a certificate for that key is stored, uploaded from a CA or issued
+ * by a CA secret in this organization, as the secret's next version.
+ */
+export interface CertificateRequestView {
+  id: string;
+  secretId: string;
+  status: CertificateRequestStatus;
+  keyAlgorithm: CertificateKeyAlgorithm;
+  subject: string;
+  subjectAltNames: string[];
+  /** PKCS#10, PEM: give it to the certificate authority. */
+  csr: string;
+  createdBy: { id: string; name: string };
+  createdAt: string;
+  expiresAt: string;
+  completedAt: string | null;
+  completedVersion: number | null;
+  issuer: { id: string; name: string } | null;
+  cancelledReason: string | null;
 }

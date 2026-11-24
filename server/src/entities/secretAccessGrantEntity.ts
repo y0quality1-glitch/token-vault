@@ -1,5 +1,5 @@
 import { BaseEntity, Column, Entity, PrimaryColumn } from 'typeorm';
-import type { SecretGrantVersions, SecretSelector } from '@token-vault/shared';
+import type { KeyOperation, SecretGrantVersions, SecretSelector } from '@token-vault/shared';
 import { tsColumn } from './columns';
 
 /**
@@ -71,4 +71,11 @@ export class SecretAccessGrantEntity extends BaseEntity {
 
   @Column({ name: 'use_count', type: 'integer', default: 0 })
   useCount!: number;
+
+  /** false: the agent may use the key (key_operations) but never read the value. */
+  @Column({ name: 'allow_retrieve', type: 'boolean', default: true })
+  allowRetrieve!: boolean;
+
+  @Column({ name: 'key_operations', type: 'jsonb', default: () => "'[]'::jsonb" })
+  keyOperations!: KeyOperation[];
 }

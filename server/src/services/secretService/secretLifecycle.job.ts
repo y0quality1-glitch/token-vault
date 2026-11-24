@@ -46,6 +46,8 @@ export interface LifecycleReport {
   versionsDestroyed: number;
   leasesEnded: number;
   leasesFailed: number;
+  /** Certificate renewals that never got their certificate (their waiting keys destroyed). */
+  certificateRequestsExpired: number;
   providersChecked: number;
 }
 
@@ -71,7 +73,7 @@ function warn(what: string, e: unknown) {
 }
 
 async function runOnce(): Promise<LifecycleReport> {
-  const report: LifecycleReport = { expiring: 0, expired: 0, active: 0, rotationsScheduled: 0, rotationsSucceeded: 0, rotationsRetrying: 0, rotationsFailed: 0, versionsDestroyed: 0, leasesEnded: 0, leasesFailed: 0, providersChecked: 0 };
+  const report: LifecycleReport = { expiring: 0, expired: 0, active: 0, rotationsScheduled: 0, rotationsSucceeded: 0, rotationsRetrying: 0, rotationsFailed: 0, versionsDestroyed: 0, leasesEnded: 0, leasesFailed: 0, certificateRequestsExpired: 0, providersChecked: 0 };
   const policyCache = new Map<string, SecretPolicyEntity[]>();
   const policyFor = async (s: SecretEntity) => {
     if (!policyCache.has(s.organizationId)) policyCache.set(s.organizationId, await policiesOf(s.organizationId));
@@ -149,6 +151,7 @@ async function runOnce(): Promise<LifecycleReport> {
 
   // Export files nobody downloaded in time are deleted.
   await SecretExportService.expireFiles();
+  report.certificateRequestsExpired = await service.expireCertificateRequests();
 
   // 6. Provider health.
   const checkable = Object.entries(SECRET_PROVIDER_CAPABILITIES).filter(([, c]) => c.check).map(([k]) => k);

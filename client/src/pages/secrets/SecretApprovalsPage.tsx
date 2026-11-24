@@ -16,6 +16,7 @@ import { DataTable, FilterTabs } from '@/components/ui/table';
 import { PageHeader } from '@/components/ui/navigation';
 import { useToast } from '@/components/ui/toast';
 import { SecretsSectionTabs, decisionErrorTitle } from './secretAccess';
+import { ApprovalOperation, keyOperationLabel } from './secretKeys';
 
 type Filter = SecretApprovalStatus | 'all';
 const STATUS: Record<SecretApprovalStatus, { label: string; tone: 'amber' | 'green' | 'red' | 'gray' | 'blue' }> = {
@@ -137,11 +138,14 @@ export function SecretApprovalsPage() {
                   </span>
                 ),
               },
+              { key: 'operation', header: 'Asks to', cell: (r) => <ApprovalOperation approval={r} /> },
               {
                 key: 'fields',
                 header: 'Fields',
                 cell: (r) =>
-                  r.fields.length ? (
+                  r.operation !== 'retrieve' && r.operation !== 'lease' ? (
+                    <span className="text-slate-400">—</span>
+                  ) : r.fields.length ? (
                     <div className="flex max-w-[12rem] flex-wrap gap-1">
                       {r.fields.map((f) => (
                         <Badge key={f}>{f}</Badge>
@@ -228,11 +232,14 @@ function DecisionDialog({ approval: r, outcome, onClose, onDone, onStale }: { ap
   const [note, setNote] = useState('');
   const save = useMutation((n: string) => api.post<SecretRetrievalApprovalView>(`/secretAccess/${outcome}`, { id: r.id, ...(n.trim() ? { note: n.trim() } : {}) }));
   const approving = outcome === 'approve';
+  // Retrievals and leases keep their wording; key operations are "requests".
+  const retrieval = r.operation === 'retrieve' || r.operation === 'lease' || !r.operation;
+  const what = r.operation === 'lease' ? `get a lease from ${r.secret.name}` : retrieval ? `retrieve ${r.secret.name}${r.version ? ` v${r.version}` : ''}${r.fields.length ? ` (${r.fields.join(', ')})` : ''}` : `${keyOperationLabel(r.operation).toLowerCase()} with ${r.secret.name}${r.version ? ` v${r.version}` : ''}, for exactly this input`;
 
   async function submit() {
     const res = await save.run(note);
     if (res) {
-      toast.success(approving ? 'Retrieval approved' : 'Retrieval rejected', approving ? `${r.agent.name} can retrieve ${r.secret.name} once within 15 minutes.` : undefined);
+      toast.success(approving ? (retrieval ? 'Retrieval approved' : 'Request approved') : retrieval ? 'Retrieval rejected' : 'Request rejected', approving ? `${r.agent.name} can ${what} once within 15 minutes.` : undefined);
       await onDone();
     } else {
       // The request may have expired or been decided meanwhile: refresh the list behind the dialog.
@@ -245,24 +252,21 @@ function DecisionDialog({ approval: r, outcome, onClose, onDone, onStale }: { ap
       open
       onClose={onClose}
       size="sm"
-      title={approving ? 'Approve this retrieval' : 'Reject this retrieval'}
-      description={
-        approving
-          ? `${r.agent.name} may then retrieve ${r.secret.name}${r.version ? ` v${r.version}` : ''}${r.fields.length ? ` (${r.fields.join(', ')})` : ''} once, within 15 minutes. Every other check runs again at that moment.`
-          : `${r.agent.name} is refused and sees your note.`
-      }
+      title={retrieval ? (approving ? 'Approve this retrieval' : 'Reject this retrieval') : approving ? 'Approve this request' : 'Reject this request'}
+      description={approving ? `${r.agent.name} may then ${what} once, within 15 minutes. Every other check runs again at that moment.` : `${r.agent.name} is refused and sees your note.`}
       footer={
         <>
           <Button variant="outline" onClick={onClose}>
             Cancel
           </Button>
           <Button variant={approving ? 'primary' : 'danger'} loading={save.pending} onClick={submit} data-testid="secret-approval-confirm">
-            {approving ? 'Approve retrieval' : 'Reject retrieval'}
+            {retrieval ? (approving ? 'Approve retrieval' : 'Reject retrieval') : approving ? 'Approve' : 'Reject'}
           </Button>
         </>
       }
     >
       <div className="space-y-3" data-testid="secret-approval-dialog">
+        {!retrieval && <ApprovalOperation approval={r} />}
         {r.reason && (
           <div className="rounded-md border border-amber-200 bg-amber-50/60 p-2.5 text-sm text-slate-700">
             <p className="text-xs font-semibold uppercase tracking-wide text-amber-800">Reason given by the agent</p>

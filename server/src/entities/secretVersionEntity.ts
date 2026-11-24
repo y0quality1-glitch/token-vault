@@ -1,5 +1,5 @@
 import { BaseEntity, Column, Entity, PrimaryColumn } from 'typeorm';
-import type { SecretVersionState } from '@token-vault/shared';
+import type { CertificateInfo, SecretVersionState } from '@token-vault/shared';
 import { tsColumn } from './columns';
 
 /**
@@ -57,4 +57,12 @@ export class SecretVersionEntity extends BaseEntity {
 
   @tsColumn('destroyed_at', true)
   destroyedAt!: string | null;
+
+  /** Key types: false once this version is deactivated (no operations); null for other types. */
+  @Column({ name: 'key_enabled', type: 'boolean', nullable: true })
+  keyEnabled!: boolean | null;
+
+  /** Certificate types: what the certificate says (public; read by the webhook when stored). */
+  @Column({ name: 'certificate', type: 'jsonb', nullable: true })
+  certificate!: CertificateInfo | null;
 }

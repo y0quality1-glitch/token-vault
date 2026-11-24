@@ -5,11 +5,16 @@ import {
   RETRIEVABLE_SECRET_STATUSES,
   ROLE_PERMISSIONS,
   SECRET_STATUSES,
+  SECRET_CERTIFICATE_TYPES,
+  SECRET_KEY_CAPABILITIES,
   SECRET_PROVIDER_CAPABILITIES,
   SECRET_TRANSITIONS,
   generatableSecretFields,
   validateSecretMetadata,
   validateSecretPayload,
+  type CertificateInfo,
+  type CertificateRequestView,
+  type KeyOperation,
   type Permission,
   type SecretDetail,
   type SecretPayload,
@@ -23,9 +28,9 @@ import {
 } from '@token-vault/shared';
 import { Pagination } from '../../core/Y0Params';
 import { db, transaction } from '../../databases/client';
-import type { RetrieveSecretDto, SaveSecretDto, SecretLifecycleDto, SecretVersionDto, UpdateSecretValueDto } from '../../databases/repository/secret/secret.dto';
+import type { CancelCertificateDto, CertificateRequestDto, CompleteCertificateDto, KeyVersionDto, RetrieveSecretDto, SaveSecretDto, SecretLifecycleDto, SecretVersionDto, UpdateSecretValueDto } from '../../databases/repository/secret/secret.dto';
 import type { RotateSecretDto } from '../../databases/repository/secret/secretLifecycle.dto';
-import { RotationJobEntity, SecretAccessGrantEntity, SecretEntity, SecretLeaseEntity, SecretVersionEntity } from '../../entities';
+import { CertificateRequestEntity, RotationJobEntity, SecretAccessGrantEntity, SecretEntity, SecretLeaseEntity, SecretVersionEntity } from '../../entities';
 import { HttpError, badRequest, conflict, forbidden, notFound } from '../../lib/errors';
 import { newId } from '../../lib/ids';
 import { webhookRepo } from '../../store/repos';
@@ -115,7 +120,46 @@ export function rotationJobView(j: RotationJobEntity, secretName: string): Secre
 
 const OPEN_JOB = In(['PENDING', 'RUNNING', 'WAITING_FOR_VALUE']);
 
-type Stored = { value_ref: string; version: number; fingerprint: string; summary: Record<string, string>; type_version: number; copied_from?: number };
+type Stored = { value_ref: string; version: number; fingerprint: string; summary: Record<string, string>; type_version: number; copied_from?: number; certificate?: CertificateInfo };
+
+/** How long a renewal's new key waits for its certificate. */
+const CERTIFICATE_REQUEST_DAYS = 30;
+
+export function certificateRequestView(r: CertificateRequestEntity): CertificateRequestView {
+  return {
+    id: r.id,
+    secretId: r.secretId,
+    status: r.status,
+    keyAlgorithm: r.keyAlgorithm,
+    subject: r.subject,
+    subjectAltNames: r.subjectAltNames,
+    csr: r.csr,
+    createdBy: { id: r.createdBy, name: r.createdByName },
+    createdAt: r.createdAt,
+    expiresAt: r.expiresAt,
+    completedAt: r.completedAt,
+    completedVersion: r.completedVersion,
+    issuer: r.issuerSecretId ? { id: r.issuerSecretId, name: r.issuerName ?? r.issuerSecretId } : null,
+    cancelledReason: r.cancelledReason,
+  };
+}
+
+/**
+ * A certificate decides its secret's expiry (its notAfter) and fills the type's descriptive
+ * metadata (common name, issuer, valid until, serial number) so they can be searched.
+ */
+function certificateFacts(type: SecretTypeDefinition, metadata: SecretPayload, cert: CertificateInfo | undefined | null): { expiresAt: string; metadata: SecretPayload } | null {
+  if (!cert) return null;
+  const facts: Record<string, string | null> = { commonName: cert.commonName, issuer: cert.issuer, notAfter: cert.notAfter, serialNumber: cert.serialNumber };
+  const patch = Object.fromEntries(Object.entries(facts).filter(([k, v]) => v !== null && type.metadata[k]));
+  return { expiresAt: cert.notAfter, metadata: { ...metadata, ...patch } as SecretPayload };
+}
+
+/** Key operations a secret allows: its own setting, within what its type supports. */
+export function keyOperationsOf(s: Pick<SecretEntity, 'typeKey' | 'keyOperations'>): KeyOperation[] {
+  const supported = SECRET_KEY_CAPABILITIES[s.typeKey]?.operations ?? [];
+  return s.keyOperations ? supported.filter((o) => s.keyOperations!.includes(o)) : supported;
+}
 
 /** Maps a webhook failure to a response that says what happened without revealing anything. */
 function webhookFailure(e: unknown, what: string): never {
@@ -127,6 +171,11 @@ function rejected(res: { status: number; body: any }, fieldsPrefix = 'payload'):
   const err = res.body?.error ?? {};
   // Provider errors keep their code (PROVIDER_UNAVAILABLE is retried, the others are not).
   if (typeof err.code === 'string' && /^(PROVIDER_|LEASE_|SECRET_NOT_GENERATABLE)/.test(err.code)) throw new HttpError(res.status === 503 ? 503 : 409, err.code, err.message ?? 'The provider refused the request');
+  // Certificates: unreadable, not matching their key, expired, or a CA that cannot issue (field details kept).
+  if (typeof err.code === 'string' && err.code.startsWith('CERTIFICATE_')) {
+    const fields = err.details?.fields ? Object.fromEntries(Object.entries(err.details.fields as Record<string, string>).map(([k, v]) => [`${fieldsPrefix}.${k}`, v])) : undefined;
+    throw new HttpError(res.status === 400 ? 400 : 409, err.code, err.message ?? 'The certificate was refused', fields ? { fields } : undefined);
+  }
   if (res.status === 400 && err.code === 'SECRET_INVALID') {
     const fields = Object.fromEntries(Object.entries((err.details?.fields ?? {}) as Record<string, string>).map(([k, v]) => [`${fieldsPrefix}.${k}`, v]));
     throw badRequest('The value does not match its secret type', { fields });
@@ -236,6 +285,8 @@ export default class SecretService extends BaseServices<SecretEntity, SecretView
       },
       provider: SECRET_PROVIDER_CAPABILITIES[s.typeKey] ? { capabilities: SECRET_PROVIDER_CAPABILITIES[s.typeKey]!, status: s.providerStatus, checkedAt: s.providerCheckedAt, error: s.providerError } : null,
       customType: isCustomTypeKey(s.typeKey),
+      key: SECRET_KEY_CAPABILITIES[s.typeKey] ? { operations: keyOperationsOf(s), supported: SECRET_KEY_CAPABILITIES[s.typeKey]!.operations, external: SECRET_KEY_CAPABILITIES[s.typeKey]!.external } : null,
+      certificate: active?.certificate ?? null,
       lastRetrievedAt: s.lastRetrievedAt,
       createdBy: { id: s.createdBy, name: s.createdByName },
       createdAt: s.createdAt,
@@ -258,6 +309,8 @@ export default class SecretService extends BaseServices<SecretEntity, SecretView
       createdBy: { id: v.createdBy, name: v.createdByName },
       createdAt: v.createdAt,
       destroyedAt: v.destroyedAt,
+      keyEnabled: v.keyEnabled,
+      certificate: v.certificate,
     };
   }
 
@@ -272,6 +325,7 @@ export default class SecretService extends BaseServices<SecretEntity, SecretView
       versions: versions.map((v) => this.versionView(v)),
       rotationJobs: jobs.map((j) => rotationJobView(j, s.name)),
       leases: SECRET_PROVIDER_CAPABILITIES[s.typeKey]?.lease ? (await db.find(SecretLeaseEntity, { where: { secretId: s.id }, order: { createdAt: 'DESC' }, take: 50 })).map((l) => leaseView(l, s)) : [],
+      certificateRequests: SECRET_CERTIFICATE_TYPES[s.typeKey] ? (await db.find(CertificateRequestEntity, { where: { secretId: s.id }, order: { createdAt: 'DESC' }, take: 20 })).map(certificateRequestView) : [],
       policy: resolvePolicy(await policiesOf(ctx.org.id), s, getSecretType(s.typeKey, s.organizationId)),
       can: {
         retrieve: has(ctx, PERMISSIONS.SECRET_RETRIEVE) && RETRIEVABLE_SECRET_STATUSES.includes(status),
@@ -381,6 +435,15 @@ export default class SecretService extends BaseServices<SecretEntity, SecretView
     return value;
   }
 
+  private keyOperationsSetting(type: SecretTypeDefinition, ops: KeyOperation[] | null | undefined): KeyOperation[] | null | undefined {
+    if (ops === undefined || ops === null) return ops;
+    const supported = SECRET_KEY_CAPABILITIES[type.key]?.operations;
+    if (!supported) throw badRequest('Request validation failed', { fields: { keyOperations: `${type.name} secrets are not keys` } });
+    const extra = ops.filter((o) => !supported.includes(o));
+    if (extra.length) throw badRequest('Request validation failed', { fields: { keyOperations: `${type.name} keys can only ${supported.join(', ')}` } });
+    return [...new Set(ops)];
+  }
+
   private lifecycleSettings(type: SecretTypeDefinition, dto: Pick<SaveSecretDto, 'expiresAt' | 'rotationEnabled' | 'rotationIntervalDays' | 'rotationStrategy' | 'rotationGraceHours'>, current?: SecretEntity, defaultExpiresInDays?: number | null) {
     const fields: Record<string, string> = {};
     // A new secret without an expiry gets the policy's default (or the type's), spec 4.9.12.
@@ -433,8 +496,12 @@ export default class SecretService extends BaseServices<SecretEntity, SecretView
     if (await this.nameTaken(db, ctx.org.id, scope)) throw conflict(`A secret named "${dto.name}" already exists in ${scope.project}/${scope.workspace} (${scope.environment})`);
     const webhook = await this.targetWebhook(ctx.org.id, dto.webhookId);
 
+    const keyOperations = this.keyOperationsSetting(type, dto.keyOperations) ?? null;
+
     const id = newId('sec');
     const stored = await this.storeOnWebhook(webhook, ctx.org.id, id, 1, type, dto.payload!);
+    // A certificate sets the expiry and descriptive metadata itself.
+    const cert = certificateFacts(type, metadata, stored.certificate);
     const t = now();
     const actor = userActor(ctx);
     try {
@@ -447,12 +514,14 @@ export default class SecretService extends BaseServices<SecretEntity, SecretView
           category: type.category,
           ...scope,
           tags: [...new Set(dto.tags ?? [])],
-          metadata,
-          status: dto.activate === false ? 'PENDING' : 'ACTIVE',
+          metadata: cert?.metadata ?? metadata,
+          status: dto.activate === false ? 'PENDING' : cert ? expiryStatus(cert.expiresAt, policy.expiryWarningDays.value) : 'ACTIVE',
           activeVersion: 1,
           webhookId: webhook.id,
           integrationId: dto.integrationId ?? null,
           ...lifecycle,
+          ...(cert ? { expiresAt: cert.expiresAt } : {}),
+          keyOperations,
           lastRotatedAt: null,
           lastRetrievedAt: null,
           createdBy: ctx.user.id,
@@ -463,7 +532,7 @@ export default class SecretService extends BaseServices<SecretEntity, SecretView
           updatedAt: t,
           deletedAt: null,
         });
-        await ex.insert(SecretVersionEntity, this.versionRow(writerOf(ctx), id, stored, 'Initial value', t));
+        await ex.insert(SecretVersionEntity, this.versionRow(writerOf(ctx), id, type, stored, 'Initial value', t));
         await recordEvent({ orgId: ctx.org.id, actor, eventType: 'secret.created', target: { type: 'secret', id, name: dto.name }, metadata: { typeKey: type.key, project: scope.project, workspace: scope.workspace, environment: scope.environment, version: 1, fingerprint: stored.fingerprint, status: dto.activate === false ? 'PENDING' : 'ACTIVE', ...(opts.source ? { source: opts.source } : {}) } }, ex);
       });
     } catch (e) {
@@ -475,7 +544,7 @@ export default class SecretService extends BaseServices<SecretEntity, SecretView
     return this.detail(ctx, id);
   }
 
-  private versionRow(w: Writer, secretId: string, stored: Stored, reason: string, t: string): Partial<SecretVersionEntity> {
+  private versionRow(w: Writer, secretId: string, type: SecretTypeDefinition, stored: Stored, reason: string, t: string): Partial<SecretVersionEntity> {
     return {
       id: newId('secv'),
       secretId,
@@ -493,6 +562,8 @@ export default class SecretService extends BaseServices<SecretEntity, SecretView
       createdAt: t,
       supersededAt: null,
       destroyedAt: null,
+      keyEnabled: SECRET_KEY_CAPABILITIES[type.key] ? true : null,
+      certificate: stored.certificate ?? null,
     };
   }
 
@@ -530,6 +601,11 @@ export default class SecretService extends BaseServices<SecretEntity, SecretView
       const type = this.typeOf(s.typeKey, s.organizationId);
       const metadata = dto.metadata === undefined ? s.metadata : this.checkMetadata(type, dto.metadata);
       const lifecycle = this.lifecycleSettings(type, dto, s);
+      const keyOperations = this.keyOperationsSetting(type, dto.keyOperations);
+      if (SECRET_CERTIFICATE_TYPES[s.typeKey] && dto.expiresAt !== undefined && s.activeVersion) {
+        const cert = (await ex.findOneBy(SecretVersionEntity, { secretId: s.id, version: s.activeVersion }))?.certificate;
+        if (cert && (!lifecycle.expiresAt || Date.parse(lifecycle.expiresAt) > Date.parse(cert.notAfter))) throw badRequest('Request validation failed', { fields: { expiresAt: `The certificate is valid until ${cert.notAfter}; the secret cannot outlive it (renew the certificate instead)` } });
+      }
       if (dto.name !== s.name && (await this.nameTaken(ex, ctx.org.id, { ...s, name: dto.name }, s.id))) throw conflict(`A secret named "${dto.name}" already exists in ${s.project}/${s.workspace} (${s.environment})`);
       // Renewal (spec 4.9.12): an expired secret given a future expiry is active again.
       const renewed = effectiveStatus(s) === 'EXPIRED' && !!lifecycle.expiresAt && Date.parse(lifecycle.expiresAt) > Date.now();
@@ -540,6 +616,7 @@ export default class SecretService extends BaseServices<SecretEntity, SecretView
         metadata,
         ...lifecycle,
         integrationId: dto.integrationId !== undefined ? dto.integrationId : s.integrationId,
+        ...(keyOperations !== undefined ? { keyOperations } : {}),
         ...(renewed ? { status: 'ACTIVE' as const } : s.status !== effectiveStatus(s) ? { status: effectiveStatus(s) } : {}),
         updatedBy: ctx.user.id,
         updatedByName: ctx.user.fullName,
@@ -563,7 +640,7 @@ export default class SecretService extends BaseServices<SecretEntity, SecretView
    * A new value completes a rotation in progress (its job is closed); a rotation also renews
    * the expiry when a policy or the type gives secrets a lifetime.
    */
-  private async newVersion(w: Writer, id: string, opts: { payload?: Record<string, unknown>; copyFrom?: number; generate?: boolean; provider?: boolean; reason: string; eventType: string; trigger?: SecretRotationTrigger }): Promise<SecretEntity> {
+  private async newVersion(w: Writer, id: string, opts: { payload?: Record<string, unknown>; copyFrom?: number; generate?: boolean; provider?: boolean; certificate?: { request: CertificateRequestEntity; certificate?: string; chain?: string; issuer?: { secret: SecretEntity; valueRef: string }; validityDays?: number }; reason: string; eventType: string; trigger?: SecretRotationTrigger }): Promise<SecretEntity> {
     const s = await this.secret(w.orgId, id);
     const status = effectiveStatus(s);
     if (['REVOKED', 'ARCHIVED', 'DELETED'].includes(status)) throw new HttpError(409, 'SECRET_NOT_WRITABLE', `This secret is ${status.toLowerCase()}; its value cannot change`);
@@ -591,7 +668,27 @@ export default class SecretService extends BaseServices<SecretEntity, SecretView
       if (res.status !== 201) rejected(res);
       return res.body;
     };
-    if (opts.copyFrom !== undefined) stored = await copyOrGenerate('/internal/v1/secrets/copy', await fromRef(opts.copyFrom, false));
+    if (opts.certificate) {
+      const c = opts.certificate;
+      let res;
+      try {
+        res = await callWebhook<Stored>(webhook, 'POST', '/internal/v1/secrets/certificate/complete', {
+          org_id: w.orgId,
+          secret_id: s.id,
+          type_key: s.typeKey,
+          request_id: c.request.id,
+          request_ref: c.request.requestRef,
+          version: next,
+          ...(c.certificate ? { certificate: c.certificate } : {}),
+          ...(c.chain ? { chain: c.chain } : {}),
+          ...(c.issuer ? { issuer: { secret_id: c.issuer.secret.id, value_ref: c.issuer.valueRef }, validity_days: c.validityDays ?? 90 } : {}),
+        });
+      } catch (e) {
+        webhookFailure(e, 'Nothing changed.');
+      }
+      if (res.status !== 201) rejected(res);
+      stored = res.body;
+    } else if (opts.copyFrom !== undefined) stored = await copyOrGenerate('/internal/v1/secrets/copy', await fromRef(opts.copyFrom, false));
     else if (opts.provider) {
       if (!SECRET_PROVIDER_CAPABILITIES[type.key]?.rotate) throw new HttpError(409, 'PROVIDER_NOT_SUPPORTED', `The webhook cannot rotate ${type.name} secrets at their provider`);
       if (!s.activeVersion) throw new HttpError(409, 'SECRET_VERSION_DESTROYED', 'This secret has no active version to rotate from');
@@ -612,7 +709,12 @@ export default class SecretService extends BaseServices<SecretEntity, SecretView
         if (locked.activeVersion !== s.activeVersion) throw conflict('Another version was stored meanwhile; reload and try again');
         const t = now();
         await ex.update(SecretVersionEntity, { secretId: s.id, state: 'ACTIVE' }, { state: 'PREVIOUS', supersededAt: t });
-        await ex.insert(SecretVersionEntity, this.versionRow(w, s.id, stored, opts.reason, t));
+        await ex.insert(SecretVersionEntity, this.versionRow(w, s.id, type, stored, opts.reason, t));
+        if (opts.certificate) {
+          const c = opts.certificate;
+          await ex.update(CertificateRequestEntity, { id: c.request.id }, { status: 'COMPLETED', completedAt: t, completedVersion: next, requestRef: null, issuerSecretId: c.issuer?.secret.id ?? null, issuerName: c.issuer?.secret.name ?? null });
+          if (c.issuer) await recordEvent({ orgId: w.orgId, actor: w.actor, eventType: 'secret.certificate_issued', target: { type: 'secret', id: c.issuer.secret.id, name: c.issuer.secret.name }, metadata: { issuedFor: s.id, issuedForName: s.name, version: next, serialNumber: stored.certificate?.serialNumber, notAfter: stored.certificate?.notAfter, requestId: c.request.id } }, ex);
+        }
 
         // A new value (not a rollback) completes the rotation in progress, if any.
         const job = opts.copyFrom === undefined ? await ex.findOne(RotationJobEntity, { where: { secretId: s.id, status: OPEN_JOB }, lock: { mode: 'pessimistic_write' } }) : null;
@@ -620,9 +722,10 @@ export default class SecretService extends BaseServices<SecretEntity, SecretView
         if (job) await ex.update(RotationJobEntity, { id: job.id }, { status: 'SUCCEEDED', fromVersion: s.activeVersion, toVersion: next, startedAt: job.startedAt ?? t, finishedAt: t, nextAttemptAt: null, errorCode: null, errorMessage: null });
         else if (rotation) await ex.insert(RotationJobEntity, { id: newId('rot'), organizationId: w.orgId, secretId: s.id, trigger: opts.trigger ?? 'MANUAL', strategy: opts.provider ? 'provider' : opts.generate ? 'generated' : 'manual', status: 'SUCCEEDED', attempts: 1, fromVersion: s.activeVersion, toVersion: next, errorCode: null, errorMessage: null, requestedBy: w.userId, requestedByName: w.userName, scheduledFor: t, startedAt: t, finishedAt: t, nextAttemptAt: null, createdAt: t });
 
-        // Rotation renews the lifetime (expiration-based rotation, spec 4.9.12).
+        // Rotation renews the lifetime (expiration-based rotation, spec 4.9.12); a certificate brings its own.
         const lifetime = policy.defaultExpiresInDays.value;
-        const expiresAt = rotated && lifetime && locked.expiresAt ? addDays(lifetime) : locked.expiresAt;
+        const cert = certificateFacts(type, locked.metadata, stored.certificate);
+        const expiresAt = cert ? cert.expiresAt : rotated && lifetime && locked.expiresAt ? addDays(lifetime) : locked.expiresAt;
         const st = effectiveStatus(locked);
         const nextStatus: SecretStatus =
           st === 'PENDING' ? 'PENDING' : opts.copyFrom !== undefined && st === 'ROTATION_PENDING' ? 'ROTATION_PENDING' : st === 'EXPIRED' && expiresAt === locked.expiresAt ? 'EXPIRED' : expiryStatus(expiresAt, policy.expiryWarningDays.value);
@@ -633,6 +736,7 @@ export default class SecretService extends BaseServices<SecretEntity, SecretView
             activeVersion: next,
             status: nextStatus,
             expiresAt,
+            ...(cert ? { metadata: cert.metadata } : {}),
             ...(locked.rotationEnabled && locked.rotationIntervalDays ? { nextRotationAt: addDays(locked.rotationIntervalDays) } : {}),
             ...(rotated ? { lastRotatedAt: t } : {}),
             updatedBy: w.userId,
@@ -652,6 +756,8 @@ export default class SecretService extends BaseServices<SecretEntity, SecretView
               previousVersion: s.activeVersion,
               fingerprint: stored.fingerprint,
               ...(opts.copyFrom ? { copiedFrom: opts.copyFrom } : {}),
+              ...(stored.certificate ? { certificateSerial: stored.certificate.serialNumber, notAfter: stored.certificate.notAfter } : {}),
+              ...(opts.certificate ? { requestId: opts.certificate.request.id, issuedBy: opts.certificate.issuer?.secret.id ?? null } : {}),
               ...(rotated ? { trigger: job?.trigger ?? opts.trigger ?? 'MANUAL', strategy: opts.provider ? 'provider' : opts.generate ? 'generated' : 'manual', ...(expiresAt !== locked.expiresAt ? { expiresAt } : {}) } : {}),
               reason: opts.reason,
             },
@@ -889,6 +995,7 @@ export default class SecretService extends BaseServices<SecretEntity, SecretView
     const versions = await db.findBy(SecretVersionEntity, { secretId: s.id });
     const refs = versions.filter((v) => v.valueRef).map((v) => v.valueRef!);
     await this.destroyOnWebhook(await this.webhookOf(ctx.org.id, s), ctx.org.id, s.id, refs);
+    for (const r of await db.findBy(CertificateRequestEntity, { secretId: s.id, status: 'PENDING' })) await this.endCertificateRequest(r, 'CANCELLED', 'Secret deleted', userActor(ctx));
     await transaction(async (ex) => {
       const t = now();
       await ex.update(SecretVersionEntity, { secretId: s.id, state: In(['ACTIVE', 'PREVIOUS']) }, { state: 'DESTROYED', valueRef: null, destroyedAt: t });
@@ -899,6 +1006,146 @@ export default class SecretService extends BaseServices<SecretEntity, SecretView
       await recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: 'secret.deleted', target: { type: 'secret', id: s.id, name: s.name }, severity: 'warning', metadata: { from, destroyedVersions: refs.length } }, ex);
     });
     return { id: s.id, status: 'DELETED', destroyedVersions: refs.length };
+  }
+
+  // ── keys (spec 4.9.3 E) ──────────────────────────────────────────
+
+  /** Deactivates or reactivates one key version: a deactivated version cannot sign, encrypt, verify or decrypt. */
+  async setKeyVersion(ctx: OrgContext, dto: KeyVersionDto, enabled: boolean): Promise<SecretDetail> {
+    const s = await this.secret(ctx.org.id, dto.id);
+    if (!SECRET_KEY_CAPABILITIES[s.typeKey]) throw new HttpError(409, 'SECRET_NOT_A_KEY', 'Only key secrets have versions to activate or deactivate');
+    if (s.status === 'DELETED') throw new HttpError(409, 'SECRET_DELETED', 'This secret is deleted');
+    await transaction(async (ex) => {
+      const v = await ex.findOne(SecretVersionEntity, { where: { secretId: s.id, version: dto.version }, lock: { mode: 'pessimistic_write' } });
+      if (!v) throw notFound(`Version ${dto.version}`);
+      if (v.state === 'DESTROYED') throw new HttpError(409, 'SECRET_VERSION_DESTROYED', `Version ${v.version} was destroyed`);
+      if ((v.keyEnabled ?? true) === enabled) return;
+      await ex.update(SecretVersionEntity, { id: v.id }, { keyEnabled: enabled });
+      await recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: enabled ? 'secret.key_version_enabled' : 'secret.key_version_disabled', target: { type: 'secret', id: s.id, name: s.name }, severity: enabled ? 'info' : 'warning', metadata: { version: v.version, active: v.state === 'ACTIVE', reason: dto.reason } }, ex);
+    });
+    return this.detail(ctx, s.id);
+  }
+
+  // ── certificate renewal (spec 4.9.3 F) ───────────────────────────
+
+  private async certificateRequest(orgId: string, id: string, ex: EntityManager = db, lock = false): Promise<CertificateRequestEntity> {
+    const r = await ex.findOne(CertificateRequestEntity, { where: { id, organizationId: orgId }, ...(lock ? { lock: { mode: 'pessimistic_write' as const } } : {}) });
+    if (!r) throw notFound('Certificate request');
+    return r;
+  }
+
+  /**
+   * Starts a renewal: the webhook makes a new key pair (kept encrypted, never shown) and a CSR with
+   * the current certificate's subject and names. One at a time per certificate.
+   */
+  async requestCertificate(ctx: OrgContext, dto: CertificateRequestDto): Promise<CertificateRequestView> {
+    const s = await this.secret(ctx.org.id, dto.id);
+    if (!SECRET_CERTIFICATE_TYPES[s.typeKey]?.renewable) throw new HttpError(409, 'CERTIFICATE_NOT_RENEWABLE', 'Renewal requests are made for TLS certificates; store a new value for other certificate types');
+    const status = effectiveStatus(s);
+    if (['REVOKED', 'ARCHIVED', 'DELETED'].includes(status)) throw new HttpError(409, 'SECRET_NOT_WRITABLE', `This secret is ${status.toLowerCase()}; it cannot be renewed`);
+    if (await db.findOneBy(CertificateRequestEntity, { secretId: s.id, status: 'PENDING' })) throw new HttpError(409, 'CERTIFICATE_REQUEST_PENDING', 'A renewal is already waiting for its certificate: complete or cancel it first');
+    const active = s.activeVersion ? await db.findOneBy(SecretVersionEntity, { secretId: s.id, version: s.activeVersion }) : null;
+    if (!active?.valueRef) throw new HttpError(409, 'SECRET_VERSION_DESTROYED', 'This secret has no active certificate to renew');
+    const webhook = await this.webhookOf(ctx.org.id, s);
+    const id = newId('crq');
+    let res;
+    try {
+      res = await callWebhook<{ request_ref: string; csr: string; subject: string; subject_alt_names: string[]; key_algorithm: CertificateRequestEntity['keyAlgorithm'] }>(webhook, 'POST', '/internal/v1/secrets/certificate/request', { org_id: ctx.org.id, secret_id: s.id, value_ref: active.valueRef, request_id: id, ...(dto.keyAlgorithm ? { key_algorithm: dto.keyAlgorithm } : {}) });
+    } catch (e) {
+      webhookFailure(e, 'No request was made.');
+    }
+    if (res.status !== 201) rejected(res);
+    const t = now();
+    const row: CertificateRequestEntity = Object.assign(new CertificateRequestEntity(), {
+      id,
+      organizationId: ctx.org.id,
+      secretId: s.id,
+      status: 'PENDING' as const,
+      keyAlgorithm: res.body.key_algorithm,
+      subject: res.body.subject,
+      subjectAltNames: res.body.subject_alt_names ?? [],
+      csr: res.body.csr,
+      requestRef: res.body.request_ref,
+      createdBy: ctx.user.id,
+      createdByName: ctx.user.fullName,
+      createdAt: t,
+      expiresAt: addDays(CERTIFICATE_REQUEST_DAYS),
+      completedAt: null,
+      completedVersion: null,
+      issuerSecretId: null,
+      issuerName: null,
+      cancelledReason: null,
+    });
+    try {
+      await transaction(async (ex) => {
+        await ex.insert(CertificateRequestEntity, row);
+        await recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: 'secret.certificate_requested', target: { type: 'secret', id: s.id, name: s.name }, metadata: { requestId: id, keyAlgorithm: row.keyAlgorithm, subject: row.subject } }, ex);
+      });
+    } catch (e) {
+      await this.destroyOnWebhook(webhook, ctx.org.id, id, [row.requestRef!]).catch(() => undefined);
+      if ((e as { driverError?: { code?: string } }).driverError?.code === '23505') throw new HttpError(409, 'CERTIFICATE_REQUEST_PENDING', 'A renewal is already waiting for its certificate');
+      throw e;
+    }
+    return certificateRequestView(row);
+  }
+
+  /**
+   * Completes a renewal with the certificate a CA issued for its CSR, or has a CA secret of this
+   * organization (with its private key, on the same webhook) issue it. The new key and
+   * certificate become the next version; the secret's expiry follows the new certificate.
+   */
+  async completeCertificate(ctx: OrgContext, dto: CompleteCertificateDto): Promise<SecretDetail> {
+    const r = await this.certificateRequest(ctx.org.id, dto.requestId);
+    if (r.status !== 'PENDING' || !r.requestRef) throw new HttpError(409, 'CERTIFICATE_REQUEST_NOT_PENDING', `This request is ${r.status.toLowerCase()}`);
+    if (Date.parse(r.expiresAt) <= Date.now()) throw new HttpError(409, 'CERTIFICATE_REQUEST_NOT_PENDING', 'This request has expired; make a new one');
+    if (!dto.certificate === !dto.issuerSecretId) throw badRequest('Request validation failed', { fields: { certificate: 'Give the certificate the CA issued, or choose a CA secret to issue it' } });
+    let issuer: { secret: SecretEntity; valueRef: string } | undefined;
+    if (dto.issuerSecretId) {
+      // Signing with a CA key is as sensitive as reading it.
+      SecretService.require(ctx, PERMISSIONS.SECRET_RETRIEVE);
+      const ca = await this.secret(ctx.org.id, dto.issuerSecretId);
+      const target = await this.secret(ctx.org.id, r.secretId);
+      if (!SECRET_CERTIFICATE_TYPES[ca.typeKey]?.issuer) throw new HttpError(409, 'CERTIFICATE_ISSUER_INVALID', 'Choose a certificate authority secret');
+      if (!RETRIEVABLE_SECRET_STATUSES.includes(effectiveStatus(ca))) throw new HttpError(409, 'CERTIFICATE_ISSUER_INVALID', `That CA secret is ${effectiveStatus(ca).toLowerCase()}`);
+      if (ca.webhookId !== target.webhookId) throw new HttpError(409, 'CERTIFICATE_ISSUER_INVALID', 'That CA secret is kept by another webhook');
+      const v = ca.activeVersion ? await db.findOneBy(SecretVersionEntity, { secretId: ca.id, version: ca.activeVersion }) : null;
+      if (!v?.valueRef) throw new HttpError(409, 'CERTIFICATE_ISSUER_INVALID', 'That CA secret has no active version');
+      issuer = { secret: ca, valueRef: v.valueRef };
+    }
+    await this.newVersion(writerOf(ctx), r.secretId, { certificate: { request: r, certificate: dto.certificate, chain: dto.chain, issuer, validityDays: dto.validityDays }, reason: dto.reason || (issuer ? `Renewed: issued by ${issuer.secret.name}` : 'Renewed certificate'), eventType: 'secret.certificate_renewed' });
+    return this.detail(ctx, r.secretId);
+  }
+
+  async cancelCertificate(ctx: OrgContext, dto: CancelCertificateDto): Promise<CertificateRequestView> {
+    const r = await this.certificateRequest(ctx.org.id, dto.requestId);
+    if (r.status !== 'PENDING') throw new HttpError(409, 'CERTIFICATE_REQUEST_NOT_PENDING', `This request is ${r.status.toLowerCase()}`);
+    return certificateRequestView(await this.endCertificateRequest(r, 'CANCELLED', dto.reason || 'Cancelled', userActor(ctx)));
+  }
+
+  /** Ends a waiting renewal: its key is destroyed on the webhook, then the request is closed. */
+  private async endCertificateRequest(r: CertificateRequestEntity, status: 'CANCELLED' | 'EXPIRED', reason: string, actor: Actor): Promise<CertificateRequestEntity> {
+    const s = await db.findOneBy(SecretEntity, { id: r.secretId });
+    if (r.requestRef && s) await this.destroyOnWebhook(await this.webhookOf(r.organizationId, s), r.organizationId, r.id, [r.requestRef]);
+    await transaction(async (ex) => {
+      await ex.update(CertificateRequestEntity, { id: r.id, status: 'PENDING' }, { status, requestRef: null, cancelledReason: reason });
+      await recordEvent({ orgId: r.organizationId, actor, eventType: status === 'EXPIRED' ? 'secret.certificate_request_expired' : 'secret.certificate_request_cancelled', target: { type: 'secret', id: r.secretId, name: s?.name ?? r.secretId }, metadata: { requestId: r.id, reason } }, ex);
+    });
+    return Object.assign(r, { status, requestRef: null, cancelledReason: reason });
+  }
+
+  /** Lifecycle job: renewals whose certificate never came are ended (their keys destroyed). */
+  async expireCertificateRequests(limit = 20): Promise<number> {
+    const due = await db.createQueryBuilder(CertificateRequestEntity, 'r').where(`r.status = 'PENDING' AND r.expires_at <= now()`).orderBy('r.expires_at', 'ASC').take(limit).getMany();
+    let n = 0;
+    for (const r of due) {
+      try {
+        await this.endCertificateRequest(r, 'EXPIRED', `No certificate within ${CERTIFICATE_REQUEST_DAYS} days`, SYSTEM_ACTOR);
+        n++;
+      } catch (e) {
+        console.warn(`[secrets] certificate request ${r.id} could not be expired yet: ${(e as Error).message}`);
+      }
+    }
+    return n;
   }
 
   /** A permission the route cannot express on its own (save: create vs update). */

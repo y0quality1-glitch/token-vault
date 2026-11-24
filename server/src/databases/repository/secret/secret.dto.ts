@@ -1,6 +1,6 @@
 import { Transform } from 'class-transformer';
 import { ArrayMaxSize, IsArray, IsBoolean, IsIn, IsInt, IsObject, IsOptional, IsString, Matches, Max, MaxLength, Min } from 'class-validator';
-import { SECRET_NAME, SECRET_ROTATION_STRATEGIES, SECRET_SCOPE_SLUG, SECRET_TAG, type Environment, type SecretRotationStrategy } from '@token-vault/shared';
+import { CERTIFICATE_KEY_ALGORITHMS, KEY_OPERATIONS, SECRET_NAME, SECRET_ROTATION_STRATEGIES, SECRET_SCOPE_SLUG, SECRET_TAG, type CertificateKeyAlgorithm, type Environment, type KeyOperation, type SecretRotationStrategy } from '@token-vault/shared';
 import { Check, trim } from '../common/validators';
 
 /**
@@ -68,6 +68,11 @@ class SecretMetadataFields {
   @Min(0, { message: 'At least 0 hours' })
   @Max(720, { message: 'At most 720 hours (30 days)' })
   rotationGraceHours?: number;
+
+  /** Key types: operations allowed through the agent API (a subset of the type's); null: all of them. */
+  @IsOptional()
+  @Check((v: unknown) => (v === null || (Array.isArray(v) && v.every((o) => (KEY_OPERATIONS as readonly unknown[]).includes(o))) ? null : `Key operations are ${KEY_OPERATIONS.join(', ')}`))
+  keyOperations?: KeyOperation[] | null;
 }
 
 /**
@@ -175,3 +180,55 @@ export class SecretLifecycleDto extends SecretIdDto {
 /** Filters accepted by /secret/getall (inside `filters`). */
 export const SECRET_LIST_FILTERS = ['typeKey', 'category', 'project', 'workspace', 'environment', 'status', 'tag', 'integrationId', 'createdFrom', 'createdTo', 'updatedFrom', 'updatedTo', 'expiresBefore', 'expiresAfter'] as const;
 export const isoProblem = iso;
+
+/** POST /secret/keyVersion/enable and /disable: whether a key version may be used (spec 4.9.3 E). */
+export class KeyVersionDto extends SecretVersionDto {}
+
+/** POST /secret/certificate/request: a renewal (a new key and CSR on the webhook). */
+export class CertificateRequestDto extends SecretIdDto {
+  @IsOptional()
+  @IsIn(CERTIFICATE_KEY_ALGORITHMS, { message: `Choose ${CERTIFICATE_KEY_ALGORITHMS.join(', ')}` })
+  keyAlgorithm?: CertificateKeyAlgorithm;
+}
+
+class CertificateRequestRef {
+  @IsString({ message: 'requestId is required' })
+  @Matches(/^crq_[A-Za-z0-9]{8,40}$/, { message: 'requestId is not a certificate request id' })
+  requestId!: string;
+
+  @Transform(trim)
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  reason: string = '';
+}
+
+/**
+ * POST /secret/certificate/complete: the certificate the CA issued for the request's CSR (with its
+ * chain), or `issuerSecretId`: a CA secret in this organization issues it.
+ */
+export class CompleteCertificateDto extends CertificateRequestRef {
+  @IsOptional()
+  @IsString()
+  @MaxLength(65_536)
+  certificate?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(65_536)
+  chain?: string;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^sec_[A-Za-z0-9]{8,40}$/, { message: 'issuerSecretId is not a secret id' })
+  issuerSecretId?: string;
+
+  @IsOptional()
+  @IsInt({ message: 'Validity must be a number of days' })
+  @Min(1)
+  @Max(825, { message: 'At most 825 days' })
+  validityDays?: number;
+}
+
+/** POST /secret/certificate/cancel: the waiting key is destroyed. */
+export class CancelCertificateDto extends CertificateRequestRef {}

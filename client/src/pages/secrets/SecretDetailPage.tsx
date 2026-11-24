@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { Archive, Eye, EyeOff, KeyRound, Pencil, PlayCircle, RefreshCw, RotateCcw, ShieldOff, Sparkles, Timer, Trash2, Upload } from 'lucide-react';
+import { Archive, Ban, Eye, EyeOff, KeyRound, Pencil, PlayCircle, RefreshCw, RotateCcw, ShieldOff, Sparkles, Timer, Trash2, Upload } from 'lucide-react';
 import { PERMISSIONS, orderedFields, type EffectiveSecretPolicy, type SecretDetail, type SecretRetrieval, type SecretRotationJobView, type SecretTypeInfo, type SecretVersionView } from '@token-vault/shared';
 import { useApi, useMutation } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
@@ -35,6 +35,7 @@ import {
 } from './secretUi';
 import { SecretAccessCard } from './secretAccess';
 import { LeasesCard, ProviderCard } from './secretLeases';
+import { CertificateCard, KeyCard, KeyVersionBadge, KeyVersionDialog, VersionCertificate } from './secretKeys';
 import { LifecycleFields, NameFields, ROTATION_STRATEGY_LABELS, SETTINGS_FIELDS, settingsBody, settingsFromSecret, validateSettings, type SettingsValues } from './secretSettings';
 
 type DialogState =
@@ -42,7 +43,8 @@ type DialogState =
   | { kind: 'reveal'; version?: number }
   | { kind: 'value' | 'edit' | 'activate' | 'revoke' | 'archive' | 'delete' }
   | { kind: 'rotate'; mode: RotateMode }
-  | { kind: 'rollback' | 'destroy'; version: number };
+  | { kind: 'rollback' | 'destroy'; version: number }
+  | { kind: 'keyVersion'; version: number; enable: boolean };
 
 /** How long revealed values stay on screen. */
 const REVEAL_SECONDS = 30;
@@ -105,8 +107,18 @@ export function SecretDetailPage() {
   }
 
   const versionColumns = [
-    { key: 'version', header: 'Version', cell: (v: SecretVersionView) => <span className="font-medium">v{v.version}</span> },
+    {
+      key: 'version',
+      header: 'Version',
+      cell: (v: SecretVersionView) => (
+        <span className="font-medium" data-testid="secret-version-row" data-version={v.version} data-key-enabled={v.keyEnabled === null ? undefined : String(v.keyEnabled)}>
+          v{v.version}
+        </span>
+      ),
+    },
     { key: 'state', header: 'State', cell: (v: SecretVersionView) => <VersionStateBadge state={v.state} /> },
+    ...(s.key ? [{ key: 'key', header: 'Key use', cell: (v: SecretVersionView) => (v.state === 'DESTROYED' ? <span className="text-slate-400">—</span> : <KeyVersionBadge version={v} />) }] : []),
+    ...(s.certificate || s.versions.some((v) => v.certificate) ? [{ key: 'certificate', header: 'Certificate', cell: (v: SecretVersionView) => <VersionCertificate version={v} />, hideBelow: 'md' as const }] : []),
     { key: 'fp', header: 'Fingerprint', cell: (v: SecretVersionView) => <Mono className="block max-w-[12rem] truncate">{v.fingerprint}</Mono>, hideBelow: 'lg' as const },
     {
       key: 'reason',
@@ -146,6 +158,17 @@ export function SecretDetailPage() {
             <Button variant="ghost" size="sm" onClick={() => setDialog({ kind: 'reveal', version: v.version })} data-testid={`secret-version-reveal-${v.version}`}>
               <Eye className="h-3.5 w-3.5" /> Reveal
             </Button>
+          )}
+          {s.key && s.can.manageVersions && v.state !== 'DESTROYED' && v.keyEnabled !== null && s.status !== 'DELETED' && (
+            v.keyEnabled ? (
+              <Button variant="ghost" size="sm" className="text-red-700 hover:bg-red-50 hover:text-red-800" onClick={() => setDialog({ kind: 'keyVersion', version: v.version, enable: false })} data-testid="secret-key-version-disable" data-version={v.version}>
+                <Ban className="h-3.5 w-3.5" /> Deactivate
+              </Button>
+            ) : (
+              <Button variant="ghost" size="sm" onClick={() => setDialog({ kind: 'keyVersion', version: v.version, enable: true })} data-testid="secret-key-version-enable" data-version={v.version}>
+                <PlayCircle className="h-3.5 w-3.5" /> Activate
+              </Button>
+            )
           )}
           {s.can.manageVersions && v.state === 'PREVIOUS' && (
             <>
@@ -345,6 +368,8 @@ export function SecretDetailPage() {
 
       {s.provider && <ProviderCard secret={s} onChanged={reload} />}
       {s.provider?.capabilities.lease && <LeasesCard secret={s} onChanged={reload} />}
+      {s.key && <KeyCard key={`key-${s.id}-${s.key.operations.join(',')}`} secret={s} onChanged={reload} />}
+      {(s.certificate || s.certificateRequests.length > 0) && <CertificateCard key={`certificate-${s.id}`} secret={s} onChanged={reload} />}
 
       <RotationCard secret={s} canRotate={canRotate} canEdit={s.can.updateMetadata && !!type} onRotate={openRotate} onEdit={() => setDialog({ kind: 'edit' })} />
 
@@ -355,13 +380,13 @@ export function SecretDetailPage() {
         </div>
       </Card>
 
-      <SecretAccessCard key={s.id} secret={s} types={types.data?.types ?? []} />
+      <SecretAccessCard key={`access-${s.id}`} secret={s} types={types.data?.types ?? []} />
 
       {/* Dialogs: keyed by secret, so nothing typed or revealed survives a change of page. */}
       {dialog?.kind === 'reveal' && <RevealDialog key={`${s.id}-${dialog.version ?? 'active'}`} secret={s} type={type} version={dialog.version} onClose={close} />}
       {(dialog?.kind === 'value' || dialog?.kind === 'rotate') && (
         <ValueDialog
-          key={s.id}
+          key={`value-${s.id}`}
           secret={s}
           type={type}
           rotate={dialog.kind === 'rotate'}
@@ -377,7 +402,7 @@ export function SecretDetailPage() {
       )}
       {dialog?.kind === 'edit' && type && (
         <EditMetadataDialog
-          key={s.id}
+          key={`edit-${s.id}`}
           secret={s}
           type={type}
           onClose={close}
@@ -399,6 +424,19 @@ export function SecretDetailPage() {
       )}
       {dialog?.kind === 'destroy' && (
         <ReasonDialog title={`Destroy version ${dialog.version}`} description={`The value of v${dialog.version} is destroyed on the customer webhook and can never be retrieved or rolled back to. Its fingerprint stays in the history.`} confirmLabel="Destroy version" tone="danger" loading={busy} error={actionError} onClose={close} onConfirm={(reason) => act('/secret/destroyVersion', { id: s.id, version: dialog.version, reason }, `Version ${dialog.version} destroyed`)} />
+      )}
+      {dialog?.kind === 'keyVersion' && (
+        <KeyVersionDialog
+          key={`${s.id}-${dialog.version}`}
+          secret={s}
+          version={dialog.version}
+          enable={dialog.enable}
+          onClose={close}
+          onDone={async () => {
+            setDialog(null);
+            await reload();
+          }}
+        />
       )}
       {dialog?.kind === 'delete' && (
         <ConfirmDialog

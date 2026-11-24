@@ -512,7 +512,7 @@ export async function seedIfEmpty(): Promise<boolean> {
  */
 export async function resetDatabase(ex: Executor = pg) {
   const run = async (tx: Executor) => {
-    await tx.query(`TRUNCATE ${[...TABLES_IN_INSERT_ORDER, 'provider_catalog_state', 'oauth_pending', 'secret_export_requests', 'secret_leases', 'custom_secret_types', 'notification_deliveries', 'notification_channels', 'rotation_jobs', 'secret_policies', 'secret_retrieval_approvals', 'secret_access_grants', 'secret_versions', 'secrets'].join(', ')} CASCADE`);
+    await tx.query(`TRUNCATE ${[...TABLES_IN_INSERT_ORDER, 'provider_catalog_state', 'oauth_pending', 'certificate_requests', 'secret_export_requests', 'secret_leases', 'custom_secret_types', 'notification_deliveries', 'notification_channels', 'rotation_jobs', 'secret_policies', 'secret_retrieval_approvals', 'secret_access_grants', 'secret_versions', 'secrets'].join(', ')} CASCADE`);
     await insertSeed(buildSeed(), tx);
   };
   if (ex === pg) await transaction(run);

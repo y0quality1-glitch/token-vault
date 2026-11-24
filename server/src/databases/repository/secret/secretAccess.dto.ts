@@ -1,6 +1,6 @@
 import { Transform, Type } from 'class-transformer';
 import { ArrayMaxSize, IsArray, IsBoolean, IsIn, IsOptional, IsString, Matches, MaxLength, ValidateNested } from 'class-validator';
-import { SECRET_SCOPE_SLUG, SECRET_TAG, type Environment } from '@token-vault/shared';
+import { SECRET_SCOPE_SLUG, SECRET_TAG, type Environment, KEY_OPERATIONS, type KeyOperation } from '@token-vault/shared';
 import { isValidCidr } from '../../../lib/net';
 import { Check, trim } from '../common/validators';
 
@@ -78,6 +78,18 @@ export class CreateSecretGrantDto {
   @IsOptional()
   @Check((v: unknown) => iso(v) ?? (v == null || Date.parse(v as string) > Date.now() ? null : 'must be in the future'))
   expiresAt?: string | null;
+
+  /** false: the agent may use the key (keyOperations) but never read the value. Default true. */
+  @IsOptional()
+  @IsBoolean()
+  allowRetrieve?: boolean;
+
+  /** Key operations the agent may ask the webhook to perform with the key (spec 4.9.3 E). */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(5)
+  @Check((v: unknown) => (Array.isArray(v) && v.every((o) => (KEY_OPERATIONS as readonly unknown[]).includes(o)) ? null : `Key operations are ${KEY_OPERATIONS.join(', ')}`))
+  keyOperations?: KeyOperation[];
 }
 
 export class SecretGrantRevokeDto {

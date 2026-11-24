@@ -12,11 +12,13 @@
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
+    "@peculiar/x509": "2.2.0",
     "@playwright/test": "1.63.0",
     "@token-vault/shared": "0.1.0",
     "@types/node": "^22.15.0",
     "@types/pg": "^8.23.1",
     "pg": "^8.23.1",
+    "reflect-metadata": "^0.2.2",
     "typescript": "^5.8.3"
   }
 }
