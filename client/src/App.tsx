@@ -38,6 +38,9 @@ import { CreateSecretPage } from '@/pages/secrets/CreateSecretPage';
 import { SecretDetailPage } from '@/pages/secrets/SecretDetailPage';
 import { SecretAccessPage } from '@/pages/secrets/SecretAccessPage';
 import { SecretApprovalsPage } from '@/pages/secrets/SecretApprovalsPage';
+import { SecretRotationsPage } from '@/pages/secrets/SecretRotationsPage';
+import { SecretPoliciesPage } from '@/pages/secrets/SecretPoliciesPage';
+import { NotificationsPage } from '@/pages/settings/NotificationsPage';
 
 export function App() {
   return (
@@ -90,6 +93,22 @@ export function App() {
           element={
             <RequirePermission permission={PERMISSIONS.SECRET_READ_METADATA}>
               <SecretApprovalsPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="secrets/rotations"
+          element={
+            <RequirePermission permission={PERMISSIONS.SECRET_READ_METADATA}>
+              <SecretRotationsPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="secrets/policies"
+          element={
+            <RequirePermission permission={PERMISSIONS.SECRET_READ_METADATA}>
+              <SecretPoliciesPage />
             </RequirePermission>
           }
         />
@@ -156,6 +175,14 @@ export function App() {
         <Route path="settings/api-clients" element={<ApiClientsPage />} />
         <Route path="settings/user-identity" element={<UserIdentityPage />} />
         <Route path="settings/slack" element={<SlackApprovalsPage />} />
+        <Route
+          path="settings/notifications"
+          element={
+            <RequirePermission permission={PERMISSIONS.NOTIFICATION_MANAGE}>
+              <NotificationsPage />
+            </RequirePermission>
+          }
+        />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>

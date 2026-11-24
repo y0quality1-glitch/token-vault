@@ -4,7 +4,9 @@ import type { SecretTypeDefinitionInput } from './schema';
  * The predefined secret types of spec 4.9.3 A–I, as the CMS seeds them (published and signed).
  * They are ordinary catalog entries: the CMS can edit them through review, or add more.
  * Dynamic secrets (J) arrive with their generators; custom types (K) are defined per
- * organization.
+ * organization. Fields with `generate` hold values the organization issues itself: the
+ * webhook can create a new one, so such secrets can rotate on schedule without a person
+ * (version 2 of those types added it).
  */
 
 type Fields = SecretTypeDefinitionInput['fields'];
@@ -38,7 +40,7 @@ function ordered(t: SecretTypeDefinitionInput): SecretTypeDefinitionInput {
 
 const TYPES: SecretTypeDefinitionInput[] = [
   // ── A. API secrets ─────────────────────────────────────────────
-  { key: 'api-key', version: 1, name: 'API key', category: 'api', description: 'A single API key for an external or internal API.', fields: { apiKey: secret('API key', { maxLength: 4096 }) }, metadata: providerMeta, defaults: { rotationIntervalDays: 90 }, tags: ['api'] },
+  { key: 'api-key', version: 2, name: 'API key', category: 'api', description: 'A single API key for an external or internal API.', fields: { apiKey: secret('API key', { maxLength: 4096, generate: { encoding: 'base64url', bytes: 32 } }) }, metadata: providerMeta, defaults: { rotationIntervalDays: 90 }, tags: ['api'] },
   {
     key: 'api-client-credentials',
     version: 1,
@@ -51,7 +53,7 @@ const TYPES: SecretTypeDefinitionInput[] = [
     defaults: { rotationIntervalDays: 180 },
     tags: ['api', 'oauth'],
   },
-  { key: 'bearer-token', version: 1, name: 'Bearer token', category: 'api', description: 'A static bearer token sent in the Authorization header.', fields: { token: secret('Token', { maxLength: 8192 }) }, metadata: providerMeta, defaults: { rotationIntervalDays: 90 }, tags: ['api'] },
+  { key: 'bearer-token', version: 2, name: 'Bearer token', category: 'api', description: 'A static bearer token sent in the Authorization header.', fields: { token: secret('Token', { maxLength: 8192, generate: { encoding: 'base64url', bytes: 32 } }) }, metadata: providerMeta, defaults: { rotationIntervalDays: 90 }, tags: ['api'] },
   {
     key: 'third-party-api',
     version: 1,
@@ -148,8 +150,8 @@ const TYPES: SecretTypeDefinitionInput[] = [
   },
   { key: 'personal-access-token', version: 1, name: 'Personal access token', category: 'auth', description: 'A token issued to a person, e.g. a GitHub or GitLab PAT.', fields: { token: secret('Token', { maxLength: 4096 }) }, metadata: tokenMeta, defaults: { expiresInDays: 90, rotationIntervalDays: 90 }, tags: ['token'] },
   { key: 'service-account-token', version: 1, name: 'Service account token', category: 'auth', description: 'A token that authenticates a service account or workload.', fields: { token: secret('Token', { maxLength: 16_384 }) }, metadata: tokenMeta, defaults: { rotationIntervalDays: 90 }, tags: ['token', 'service-account'] },
-  { key: 'jwt-signing-secret', version: 1, name: 'JWT signing secret', category: 'auth', description: 'A shared secret for HMAC-signed JWTs (HS256/384/512).', fields: { secret: secret('Secret', { minLength: 32, maxLength: 4096 }) }, metadata: { algorithm: meta('Algorithm', { kind: 'enum', values: ['HS256', 'HS384', 'HS512'] }), issuer: meta('Issuer') }, defaults: { rotationIntervalDays: 180 }, tags: ['jwt'] },
-  { key: 'app-auth-secret', version: 1, name: 'Application authentication secret', category: 'auth', description: 'A secret an application uses to authenticate itself to another.', fields: { appId: plain('Application ID', { maxLength: 200 }), secret: secret('Secret', { maxLength: 4096 }) }, identifiedBy: ['appId'], metadata: tokenMeta, defaults: { rotationIntervalDays: 180 }, tags: ['application'] },
+  { key: 'jwt-signing-secret', version: 2, name: 'JWT signing secret', category: 'auth', description: 'A shared secret for HMAC-signed JWTs (HS256/384/512).', fields: { secret: secret('Secret', { minLength: 32, maxLength: 4096, generate: { encoding: 'base64url', bytes: 64 } }) }, metadata: { algorithm: meta('Algorithm', { kind: 'enum', values: ['HS256', 'HS384', 'HS512'] }), issuer: meta('Issuer') }, defaults: { rotationIntervalDays: 180 }, tags: ['jwt'] },
+  { key: 'app-auth-secret', version: 2, name: 'Application authentication secret', category: 'auth', description: 'A secret an application uses to authenticate itself to another.', fields: { appId: plain('Application ID', { maxLength: 200 }), secret: secret('Secret', { maxLength: 4096, generate: { encoding: 'base64url', bytes: 32 } }) }, identifiedBy: ['appId'], metadata: tokenMeta, defaults: { rotationIntervalDays: 180 }, tags: ['application'] },
 
   // ── D. Cloud provider secrets ──────────────────────────────────
   {
@@ -204,10 +206,10 @@ const TYPES: SecretTypeDefinitionInput[] = [
   { key: 'cloud-api-token', version: 1, name: 'Cloud API token', category: 'cloud', description: 'An API token for a cloud platform (e.g. Cloudflare, DigitalOcean) or a deployment or provisioning pipeline.', fields: { token: secret('Token', { maxLength: 8192 }) }, metadata: { ...cloudMeta, provider: meta('Cloud provider'), purpose: meta('Purpose', { kind: 'enum', values: ['api', 'deployment', 'provisioning'] }) }, defaults: { rotationIntervalDays: 90 }, tags: ['cloud'] },
 
   // ── E. Cryptographic secrets ───────────────────────────────────
-  { key: 'aes-key', version: 1, name: 'AES encryption key', category: 'crypto', description: 'A symmetric key, base64-encoded (128, 192 or 256 bits). Also used for data and key encryption keys.', fields: { key: secret('Key (base64)', { pattern: '^[A-Za-z0-9+/]{22,44}={0,2}$' }) }, metadata: { ...keyMeta, role: meta('Role', { kind: 'enum', values: ['data-encryption-key', 'key-encryption-key', 'general'] }) }, defaults: { rotationIntervalDays: 365 }, tags: ['aes'] },
+  { key: 'aes-key', version: 2, name: 'AES encryption key', category: 'crypto', description: 'A symmetric key, base64-encoded (128, 192 or 256 bits). Also used for data and key encryption keys.', fields: { key: secret('Key (base64)', { pattern: '^[A-Za-z0-9+/]{22,44}={0,2}$', generate: { encoding: 'base64', bytes: 32 } }) }, metadata: { ...keyMeta, role: meta('Role', { kind: 'enum', values: ['data-encryption-key', 'key-encryption-key', 'general'] }) }, defaults: { rotationIntervalDays: 365 }, tags: ['aes'] },
   { key: 'rsa-private-key', version: 1, name: 'RSA private key', category: 'crypto', description: 'An RSA private key in PEM.', fields: { privateKey: secret('Private key (PEM)', PEM_KEY), publicKey: plain('Public key (PEM)', PEM_KEY), passphrase: secret('Passphrase', { required: false, maxLength: 1024 }) }, metadata: keyMeta, defaults: { rotationIntervalDays: 365 }, tags: ['rsa'] },
   { key: 'ecc-private-key', version: 1, name: 'ECC private key', category: 'crypto', description: 'An elliptic-curve private key (P-256, P-384, Ed25519) in PEM.', fields: { privateKey: secret('Private key (PEM)', PEM_KEY), publicKey: plain('Public key (PEM)', PEM_KEY) }, metadata: { ...keyMeta, curve: meta('Curve', { kind: 'enum', values: ['P-256', 'P-384', 'P-521', 'Ed25519', 'secp256k1'] }) }, defaults: { rotationIntervalDays: 365 }, tags: ['ecc'] },
-  { key: 'hmac-secret', version: 1, name: 'HMAC secret', category: 'crypto', description: 'A shared secret for message authentication codes.', fields: { secret: secret('Secret', { minLength: 32, maxLength: 4096 }) }, metadata: keyMeta, defaults: { rotationIntervalDays: 365 }, tags: ['hmac'] },
+  { key: 'hmac-secret', version: 2, name: 'HMAC secret', category: 'crypto', description: 'A shared secret for message authentication codes.', fields: { secret: secret('Secret', { minLength: 32, maxLength: 4096, generate: { encoding: 'base64url', bytes: 32 } }) }, metadata: keyMeta, defaults: { rotationIntervalDays: 365 }, tags: ['hmac'] },
   { key: 'signing-key', version: 1, name: 'Signing key', category: 'crypto', description: 'A private key used to sign JWTs, releases or application artifacts.', fields: { privateKey: secret('Private key (PEM)', PEM_KEY), keyId: plain('Key ID (kid)', { maxLength: 200 }) }, identifiedBy: ['keyId'], metadata: keyMeta, defaults: { rotationIntervalDays: 365 }, tags: ['jwt', 'signing'] },
 
   // ── F. Certificates and PKI ────────────────────────────────────
@@ -264,10 +266,10 @@ const TYPES: SecretTypeDefinitionInput[] = [
   { key: 'app-database', version: 1, name: 'Application database credentials', category: 'application', description: 'The database login of one application, with its connection details.', fields: { username: plain('Username', { required: true, maxLength: 128 }), password: secret('Password', { maxLength: 1024 }) }, identifiedBy: ['username'], metadata: { application: meta('Application'), ...dbMeta(5432) }, defaults: { rotationIntervalDays: 90 }, tags: ['database'] },
 
   // ── I. Webhook secrets ─────────────────────────────────────────
-  { key: 'webhook-signing-secret', version: 1, name: 'Webhook signing secret', category: 'webhook', description: 'The secret webhook payloads are signed or verified with.', fields: { secret: secret('Secret', { minLength: 16, maxLength: 4096 }) }, metadata: { provider: meta('Provider'), endpoint: meta('Webhook endpoint', { kind: 'url' }), algorithm: meta('Algorithm', { placeholder: 'e.g. HMAC-SHA256' }), direction: meta('Direction', { kind: 'enum', values: ['outgoing', 'incoming'] }) }, defaults: { rotationIntervalDays: 180 }, tags: ['webhook'] },
-  { key: 'webhook-auth-token', version: 1, name: 'Webhook authentication token', category: 'webhook', description: 'A token a webhook sender presents, or a receiver expects.', fields: { token: secret('Token', { maxLength: 4096 }) }, metadata: { provider: meta('Provider'), endpoint: meta('Webhook endpoint', { kind: 'url' }), header: meta('Header name') }, defaults: { rotationIntervalDays: 180 }, tags: ['webhook'] },
+  { key: 'webhook-signing-secret', version: 2, name: 'Webhook signing secret', category: 'webhook', description: 'The secret webhook payloads are signed or verified with.', fields: { secret: secret('Secret', { minLength: 16, maxLength: 4096, generate: { encoding: 'hex', bytes: 32 } }) }, metadata: { provider: meta('Provider'), endpoint: meta('Webhook endpoint', { kind: 'url' }), algorithm: meta('Algorithm', { placeholder: 'e.g. HMAC-SHA256' }), direction: meta('Direction', { kind: 'enum', values: ['outgoing', 'incoming'] }) }, defaults: { rotationIntervalDays: 180 }, tags: ['webhook'] },
+  { key: 'webhook-auth-token', version: 2, name: 'Webhook authentication token', category: 'webhook', description: 'A token a webhook sender presents, or a receiver expects.', fields: { token: secret('Token', { maxLength: 4096, generate: { encoding: 'base64url', bytes: 32 } }) }, metadata: { provider: meta('Provider'), endpoint: meta('Webhook endpoint', { kind: 'url' }), header: meta('Header name') }, defaults: { rotationIntervalDays: 180 }, tags: ['webhook'] },
   { key: 'webhook-api-credential', version: 1, name: 'Webhook API credential', category: 'webhook', description: 'A username and password or key a webhook endpoint requires.', fields: { username: plain('Username or key ID', { maxLength: 256 }), secret: secret('Password or key', { maxLength: 4096 }) }, identifiedBy: ['username'], metadata: { provider: meta('Provider'), endpoint: meta('Webhook endpoint', { kind: 'url' }) }, defaults: { rotationIntervalDays: 180 }, tags: ['webhook'] },
-  { key: 'webhook-verification-secret', version: 1, name: 'Webhook verification secret', category: 'webhook', description: 'A secret used to answer a provider’s endpoint verification challenge.', fields: { secret: secret('Secret', { maxLength: 4096 }) }, metadata: { provider: meta('Provider'), endpoint: meta('Webhook endpoint', { kind: 'url' }) }, tags: ['webhook'] },
+  { key: 'webhook-verification-secret', version: 2, name: 'Webhook verification secret', category: 'webhook', description: 'A secret used to answer a provider’s endpoint verification challenge.', fields: { secret: secret('Secret', { maxLength: 4096, generate: { encoding: 'base64url', bytes: 32 } }) }, metadata: { provider: meta('Provider'), endpoint: meta('Webhook endpoint', { kind: 'url' }) }, tags: ['webhook'] },
 ];
 
 export const BUILTIN_SECRET_TYPES: SecretTypeDefinitionInput[] = TYPES.map(ordered);

@@ -51,6 +51,10 @@ export class SecretVersionEntity extends BaseEntity {
   @tsColumn('created_at')
   createdAt!: string;
 
+  /** When a newer version became active (retention and the rotation grace period count from here). */
+  @tsColumn('superseded_at', true)
+  supersededAt!: string | null;
+
   @tsColumn('destroyed_at', true)
   destroyedAt!: string | null;
 }

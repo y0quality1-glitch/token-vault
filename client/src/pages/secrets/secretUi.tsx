@@ -7,6 +7,11 @@ import {
   validateSecretPayload,
   type SecretCategory,
   type SecretPayload,
+  type SecretPolicySource,
+  type SecretRotationJobStatus,
+  type SecretRotationJobView,
+  type SecretRotationStrategy,
+  type SecretRotationTrigger,
   type SecretStatus,
   type SecretTypeInfo,
   type SecretTypesResponse,
@@ -57,6 +62,47 @@ const VERSION_TONES: Record<SecretVersionState, Tone> = { ACTIVE: 'green', PREVI
 export function VersionStateBadge({ state }: { state: SecretVersionState }) {
   return <Badge tone={VERSION_TONES[state]}>{state.charAt(0) + state.slice(1).toLowerCase()}</Badge>;
 }
+
+// ── rotation and policies ────────────────────────────────────────
+
+const ROTATION_JOB_STATUS: Record<SecretRotationJobStatus, { label: string; tone: Tone }> = {
+  PENDING: { label: 'Pending', tone: 'amber' },
+  RUNNING: { label: 'Running', tone: 'violet' },
+  WAITING_FOR_VALUE: { label: 'Waiting for value', tone: 'blue' },
+  SUCCEEDED: { label: 'Succeeded', tone: 'green' },
+  FAILED: { label: 'Failed', tone: 'red' },
+  CANCELLED: { label: 'Cancelled', tone: 'gray' },
+};
+
+export function RotationJobStatusBadge({ job }: { job: Pick<SecretRotationJobView, 'status' | 'attempts'> }) {
+  const m = ROTATION_JOB_STATUS[job.status] ?? { label: job.status, tone: 'gray' as Tone };
+  // A pending job that has already been tried is waiting for its next attempt.
+  const label = job.status === 'PENDING' && job.attempts > 0 ? 'Retrying' : m.label;
+  return (
+    <span data-testid="rotation-job-status" data-status={job.status}>
+      <Badge tone={m.tone} dot>
+        {label}
+      </Badge>
+    </span>
+  );
+}
+
+export const ROTATION_TRIGGER_LABELS: Record<SecretRotationTrigger, string> = { SCHEDULED: 'Scheduled', MANUAL: 'Rotate now', EXPIRY: 'Expiry' };
+export const ROTATION_STRATEGY_SHORT: Record<SecretRotationStrategy, string> = { manual: 'Manual', generated: 'Generated' };
+
+/** `v3 → v4`, `v3 → …` while the new value is not stored yet. */
+export function rotationVersions(j: Pick<SecretRotationJobView, 'fromVersion' | 'toVersion'>): string {
+  if (j.fromVersion === null && j.toVersion === null) return '—';
+  return `${j.fromVersion !== null ? `v${j.fromVersion}` : '—'} → ${j.toVersion !== null ? `v${j.toVersion}` : '…'}`;
+}
+
+export const POLICY_SOURCE_LABELS: Record<SecretPolicySource, string> = {
+  TYPE: 'Type default',
+  ORGANIZATION: 'Organization',
+  PROJECT: 'Project',
+  WORKSPACE: 'Workspace',
+  NONE: 'Not set',
+};
 
 // ── types ────────────────────────────────────────────────────────
 
@@ -315,6 +361,7 @@ const ERROR_TITLES: Record<string, string> = {
   SECRET_VERSION_ACTIVE: 'That version is the active one',
   SECRET_VERSION_DESTROYED: 'That version was destroyed',
   SECRET_INVALID: 'The value no longer matches its secret type',
+  SECRET_NOT_GENERATABLE: 'The webhook cannot generate values of this type',
   WEBHOOK_UNAVAILABLE: 'The customer webhook is unavailable',
   WEBHOOK_NOT_CONNECTED: 'No connected customer webhook',
   WEBHOOK_NOT_FOUND: 'The customer webhook was not found',

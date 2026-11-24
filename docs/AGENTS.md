@@ -324,7 +324,7 @@ const key = await tv.secrets.get('release-signing', { waitForApproval: { timeout
 await tv.secrets.get('orders-db', { cacheTtlMs: 5 * 60_000 });
 ```
 
-`tv.secrets.list()` shows what the agent may read. Every retrieval and every refusal is in the audit log (**Security events**, `secret.*`), never with the value. The MCP server has no tool that reads secrets: models get brokered operations, never raw credentials.
+When a secret rotates, `get()` returns the new version at once. For the secret's grace period (24 hours unless changed) the version it replaced can still be read with `{ version: n }`, even under a grant limited to the active version, so a running service can finish with it. `tv.secrets.list()` shows what the agent may read. Every retrieval and every refusal is in the audit log (**Security events**, `secret.*`), never with the value. The MCP server has no tool that reads secrets: models get brokered operations, never raw credentials.
 
 ## 2b. TypeScript SDK
 

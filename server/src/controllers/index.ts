@@ -19,6 +19,8 @@ import { OrganizationController } from './organizationController/organizationCon
 import { PolicyController } from './policyController/policyController.controller';
 import { ProviderController } from './providerController/providerController.controller';
 import { SecretAccessController } from './secretAccessController/secretAccessController.controller';
+import { SecretPolicyController } from './secretPolicyController/secretPolicyController.controller';
+import { NotificationChannelController } from './notificationChannelController/notificationChannelController.controller';
 import { SecretController } from './secretController/secretController.controller';
 import { SecretTypeController } from './secretTypeController/secretTypeController.controller';
 import { SessionController } from './sessionController/sessionController.controller';
@@ -38,6 +40,8 @@ export const adminControllers = (): BaseController[] => [
   new SecretTypeController(),
   new SecretController(),
   new SecretAccessController(),
+  new SecretPolicyController(),
+  new NotificationChannelController(),
   new IntegrationController(),
   new AgentController(),
   new ApiClientController(),

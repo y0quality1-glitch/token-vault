@@ -41,6 +41,8 @@ export interface SecretVersionView {
   reason: string;
   /** Set for a rollback: the version whose value was copied. */
   copiedFrom: number | null;
+  /** When a newer version replaced it (retention and grace periods count from here). */
+  supersededAt: string | null;
   createdBy: { id: string; name: string };
   createdAt: string;
   destroyedAt: string | null;
@@ -67,7 +69,7 @@ export interface SecretView {
   webhookId: string;
   integrationId: string | null;
   expiresAt: string | null;
-  rotation: { enabled: boolean; intervalDays: number | null; nextRotationAt: string | null };
+  rotation: SecretRotationSettings;
   lastRetrievedAt: string | null;
   createdBy: { id: string; name: string };
   createdAt: string;
@@ -77,6 +79,10 @@ export interface SecretView {
 
 export interface SecretDetail extends SecretView {
   versions: SecretVersionView[];
+  /** Latest rotation runs, newest first. */
+  rotationJobs: SecretRotationJobView[];
+  /** Expiry warning and version retention that apply, and where each comes from. */
+  policy: EffectiveSecretPolicy;
   /** What the signed-in member may do with this secret now. */
   can: { retrieve: boolean; updateValue: boolean; updateMetadata: boolean; manageVersions: boolean; activate: boolean; revoke: boolean; archive: boolean; delete: boolean };
 }
@@ -181,4 +187,177 @@ export interface AgentSecretRetrieval {
   retrieved_at: string;
   grant_id: string;
   request_id: string;
+}
+
+// ── rotation, expiry policies, notifications (spec 4.9.11, 4.9.12, 4.9.18) ──
+
+/**
+ * How a scheduled rotation gets its new value:
+ *  - manual: the secret becomes ROTATION_PENDING and people are notified; it rotates when someone stores the new value;
+ *  - generated: the customer webhook creates the new value itself (types with `generate` fields).
+ * Rotation through the provider that issued a credential arrives with dynamic secrets.
+ */
+export const SECRET_ROTATION_STRATEGIES = ['manual', 'generated'] as const;
+export type SecretRotationStrategy = (typeof SECRET_ROTATION_STRATEGIES)[number];
+
+export interface SecretRotationSettings {
+  enabled: boolean;
+  intervalDays: number | null;
+  strategy: SecretRotationStrategy;
+  /** Hours during which the replaced version stays retrievable (grants allowing any version) and is never destroyed. */
+  graceHours: number;
+  nextRotationAt: string | null;
+  lastRotatedAt: string | null;
+  /** Whether the type has fields the webhook can generate. */
+  generatable: boolean;
+}
+
+export const SECRET_ROTATION_TRIGGERS = ['SCHEDULED', 'MANUAL', 'EXPIRY'] as const;
+export type SecretRotationTrigger = (typeof SECRET_ROTATION_TRIGGERS)[number];
+export const SECRET_ROTATION_JOB_STATUSES = ['PENDING', 'RUNNING', 'WAITING_FOR_VALUE', 'SUCCEEDED', 'FAILED', 'CANCELLED'] as const;
+export type SecretRotationJobStatus = (typeof SECRET_ROTATION_JOB_STATUSES)[number];
+
+/** One rotation of one secret (table rotation_jobs): its history and failures. */
+export interface SecretRotationJobView {
+  id: string;
+  secret: { id: string; name: string };
+  trigger: SecretRotationTrigger;
+  strategy: SecretRotationStrategy;
+  status: SecretRotationJobStatus;
+  attempts: number;
+  fromVersion: number | null;
+  toVersion: number | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  requestedBy: { id: string; name: string } | null;
+  scheduledFor: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  nextAttemptAt: string | null;
+  createdAt: string;
+}
+
+export const SECRET_POLICY_SCOPES = ['ORGANIZATION', 'PROJECT', 'WORKSPACE'] as const;
+export type SecretPolicyScope = (typeof SECRET_POLICY_SCOPES)[number];
+
+/** The settings a secret policy can carry; null: not set at this level (a broader one applies). */
+export interface SecretPolicySettings {
+  /** Days before expiry when a secret becomes EXPIRING (the type's default otherwise). */
+  expiryWarningDays: number | null;
+  /** Expiry given to new secrets, and to a secret after each rotation. */
+  defaultExpiresInDays: number | null;
+  /** Inactive versions kept: the newest n ... */
+  keepVersions: number | null;
+  /** ... and every version replaced less than d days ago. Older ones are destroyed. */
+  keepDays: number | null;
+}
+
+/**
+ * Expiry and retention settings at organization, project or workspace level (spec 4.9.12,
+ * 4.9.8). The most specific level that sets a value wins; the secret's own expiry date and
+ * rotation settings override all of them.
+ */
+export interface SecretPolicyView extends SecretPolicySettings {
+  id: string;
+  scope: SecretPolicyScope;
+  project: string | null;
+  workspace: string | null;
+  updatedBy: { id: string; name: string };
+  updatedAt: string;
+}
+
+export type SecretPolicySource = SecretPolicyScope | 'TYPE' | 'NONE';
+export interface EffectiveSecretPolicy {
+  expiryWarningDays: { value: number; source: SecretPolicySource };
+  defaultExpiresInDays: { value: number | null; source: SecretPolicySource };
+  keepVersions: { value: number | null; source: SecretPolicySource };
+  keepDays: { value: number | null; source: SecretPolicySource };
+}
+
+/** Lifecycle events people can be notified about (spec 4.9.18). Payloads never carry a value. */
+export const SECRET_NOTIFICATION_EVENTS = [
+  'secret.created',
+  'secret.updated',
+  'secret.expiring',
+  'secret.expired',
+  'secret.rotation_scheduled',
+  'secret.rotation_succeeded',
+  'secret.rotation_failed',
+  'secret.access_denied',
+  'secret.revoked',
+  'secret.provider_failure',
+] as const;
+export type SecretNotificationEvent = (typeof SECRET_NOTIFICATION_EVENTS)[number];
+
+export const SECRET_NOTIFICATION_EVENT_LABELS: Record<SecretNotificationEvent, string> = {
+  'secret.created': 'Secret created',
+  'secret.updated': 'Secret updated',
+  'secret.expiring': 'Secret expiring',
+  'secret.expired': 'Secret expired',
+  'secret.rotation_scheduled': 'Rotation scheduled',
+  'secret.rotation_succeeded': 'Rotation successful',
+  'secret.rotation_failed': 'Rotation failed',
+  'secret.access_denied': 'Secret access denied',
+  'secret.revoked': 'Secret revoked',
+  'secret.provider_failure': 'Provider failure',
+};
+
+export const NOTIFICATION_CHANNEL_KINDS = ['EMAIL', 'WEBHOOK', 'SLACK'] as const;
+export type NotificationChannelKind = (typeof NOTIFICATION_CHANNEL_KINDS)[number];
+
+/** Which secrets a channel hears about (all given keys must match; empty: every secret). */
+export interface NotificationScope {
+  project?: string;
+  environment?: Environment;
+}
+
+export interface NotificationChannelView {
+  id: string;
+  name: string;
+  kind: NotificationChannelKind;
+  enabled: boolean;
+  events: SecretNotificationEvent[];
+  scope: NotificationScope;
+  /** EMAIL: recipients. */
+  recipients: string[];
+  /** WEBHOOK: where events are POSTed, and a hint of the signing secret (shown in full once, on creation). */
+  url: string | null;
+  signingSecretHint: string | null;
+  /** SLACK: the channel (the organization's Slack connection posts there; its default channel when null). */
+  slackChannelId: string | null;
+  createdBy: { id: string; name: string };
+  createdAt: string;
+  updatedAt: string;
+  lastDelivery: { status: NotificationDeliveryStatus; at: string; error: string | null } | null;
+}
+
+export type NotificationDeliveryStatus = 'PENDING' | 'DELIVERED' | 'FAILED';
+
+export interface NotificationDeliveryView {
+  id: string;
+  channel: { id: string; name: string; kind: NotificationChannelKind };
+  event: SecretNotificationEvent | 'notification.test';
+  secret: { id: string; name: string } | null;
+  status: NotificationDeliveryStatus;
+  attempts: number;
+  lastError: string | null;
+  createdAt: string;
+  deliveredAt: string | null;
+  nextAttemptAt: string | null;
+}
+
+/**
+ * What a channel receives (the body of an outbound webhook; email and Slack render it as text).
+ * Webhook requests carry `Token-Vault-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of "t.body">`
+ * with the channel's signing secret, plus `Token-Vault-Event` and `Token-Vault-Delivery`.
+ */
+export interface SecretNotificationPayload {
+  id: string;
+  event: SecretNotificationEvent | 'notification.test';
+  occurredAt: string;
+  organization: { id: string; name: string };
+  secret: { id: string; name: string; typeKey: string; project: string; workspace: string; environment: Environment; status: SecretStatus; activeVersion: number | null; expiresAt: string | null } | null;
+  /** Event specifics: versions, reason codes, the actor's name. Never a value. */
+  details: Record<string, string | number | boolean | null>;
+  consoleUrl: string | null;
 }

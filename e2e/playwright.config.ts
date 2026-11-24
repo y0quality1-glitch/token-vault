@@ -100,6 +100,9 @@ export default defineConfig({
         DATABASE_URL: databaseUrl,
         SEED_MODE: 'reset',
         HEARTBEAT_INTERVAL_MS: '30000',
+        // Secret lifecycle job and notification delivery run often, so 33-secret-lifecycle.spec.ts sees them act.
+        SECRET_JOB_INTERVAL_MS: '2000',
+        NOTIFICATION_INTERVAL_MS: '1000',
         VAULT_ENCRYPTION_KEY: '',
         // Slack approvals talk to a stand-in Slack started by 28-slack-approvals.spec.ts.
         SLACK_API_URL: 'http://127.0.0.1:4900',

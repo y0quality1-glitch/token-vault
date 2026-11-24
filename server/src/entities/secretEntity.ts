@@ -1,5 +1,5 @@
 import { BaseEntity, Column, Entity, PrimaryColumn } from 'typeorm';
-import type { Environment, SecretCategory, SecretPayload, SecretStatus } from '@token-vault/shared';
+import type { Environment, SecretCategory, SecretPayload, SecretRotationStrategy, SecretStatus } from '@token-vault/shared';
 import { tsColumn } from './columns';
 
 /**
@@ -65,6 +65,17 @@ export class SecretEntity extends BaseEntity {
 
   @tsColumn('next_rotation_at', true)
   nextRotationAt!: string | null;
+
+  /** manual: people store the new value when asked; generated: the webhook creates it (spec 4.9.11). */
+  @Column({ name: 'rotation_strategy', type: 'text', default: 'manual' })
+  rotationStrategy!: SecretRotationStrategy;
+
+  /** Hours the replaced version stays usable after a rotation. */
+  @Column({ name: 'rotation_grace_hours', type: 'integer', default: 24 })
+  rotationGraceHours!: number;
+
+  @tsColumn('last_rotated_at', true)
+  lastRotatedAt!: string | null;
 
   @tsColumn('last_retrieved_at', true)
   lastRetrievedAt!: string | null;

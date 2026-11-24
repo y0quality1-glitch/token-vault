@@ -39,11 +39,20 @@ Authenticated with the `tv_session` httpOnly cookie, which is set by `POST /auth
 | POST | `/secret/getall` | `secret:read_metadata` | secrets, metadata only (never a value). Filters as top-level fields: `typeKey`, `category`, `project`, `workspace`, `environment`, `status` (`EXPIRED` includes secrets past their expiry), `tag`, `integrationId`, `createdFrom/To`, `updatedFrom/To`, `expiresBefore/After`, `search`, `sortBy` (`name`, `createdAt`, `updatedAt`, `expiresAt`), `sortOrder`. Deleted secrets only with `status: "DELETED"` |
 | GET | `/secret/getbyid/:id` | `secret:read_metadata` | metadata, masked summary and fingerprint of the active version, every version, and `can.*` for the signed-in member |
 | POST | `/secret/save` | `secret:create` (no `id`) · `secret:update_metadata` (`id`) | create (201): `{name, typeKey, environment, payload, project?, workspace?, description?, tags?, metadata?, expiresAt?, rotationEnabled?, rotationIntervalDays?, activate?, webhookId?}`. The value goes to the customer webhook, which validates it against the secret type and encrypts it. With `id`: metadata only (`name`, `description`, `tags`, `metadata`, `expiresAt`, rotation); a future `expiresAt` renews an expired secret |
-| POST | `/secret/updateValue` · `/secret/rotate` | `secret:update_value` · `secret:rotate` | `{id, payload, reason?}` → a new active version; the previous one stays until destroyed |
+| POST | `/secret/rotate` | `secret:rotate` | `{id, payload?, reason?}`: rotate now. With `payload`, that value; without, the customer webhook generates the new value (types with generated fields, e.g. `api-key`, `hmac-secret`, `aes-key`, `webhook-signing-secret`). Completes a rotation waiting for its value. A failed generated rotation is recorded and notified (`WEBHOOK_UNAVAILABLE`, `SECRET_NOT_GENERATABLE`) |
+| POST | `/secret/getRotations` | `secret:read_metadata` | `{secretId?, status?}` rotation history (table `rotation_jobs`): trigger (`SCHEDULED`, `MANUAL`, `EXPIRY`), strategy, status (`PENDING`, `RUNNING`, `WAITING_FOR_VALUE`, `SUCCEEDED`, `FAILED`, `CANCELLED`), attempts, versions, error |
 | POST | `/secret/retrieve` | `secret:retrieve` | `{id, version?, fields?, reason?}` → `{id, name, typeKey, version, payload, expiresAt, retrievedAt}`. Refused (and audited as `secret.access_denied`) for other roles, expired, pending, revoked or archived secrets, and destroyed versions; an older version needs `secret:manage_versions` |
 | POST | `/secret/rollback` · `/secret/destroyVersion` | `secret:manage_versions` | `{id, version, reason?}`: a new active version with that version's value (history is not rewritten) · crypto-shred an inactive version |
 | POST | `/secret/activate` · `/secret/revoke` · `/secret/archive` | `secret:update_metadata` · `secret:delete` · `secret:delete` | `{id, reason?}`: PENDING → ACTIVE · → REVOKED · REVOKED/EXPIRED → ARCHIVED |
 | DELETE | `/secret/delete/:id` | `secret:delete` | destroys every version on the webhook (nothing changes if it is unreachable), then keeps a DELETED tombstone; the name is free again |
+| POST | `/secretPolicy/getall` | `secret:read_metadata` | Expiry and retention policies of the organization, its projects and workspaces |
+| POST | `/secretPolicy/save` | `secret:manage_versions` | `{scope: ORGANIZATION \| PROJECT \| WORKSPACE, project?, workspace?, expiryWarningDays, defaultExpiresInDays, keepVersions, keepDays}` (each a number or null = not set here). Replaces that level's policy; all null removes it. The most specific level that sets a value wins, then the secret type's default |
+| DELETE | `/secretPolicy/delete/:id` | `secret:manage_versions` | |
+| POST | `/notificationChannel/getall` | `notification:manage` | Channels with their last delivery |
+| POST | `/notificationChannel/save` | `notification:manage` | (201 on create) `{id?, name, kind: EMAIL \| WEBHOOK \| SLACK, enabled, events: [secret.created, secret.updated, secret.expiring, secret.expired, secret.rotation_scheduled, secret.rotation_succeeded, secret.rotation_failed, secret.access_denied, secret.revoked, secret.provider_failure], scope?: {project?, environment?}, recipients? (EMAIL), url? (WEBHOOK; https in production), rotateSigningSecret? (WEBHOOK), slackChannelId? (SLACK)}`. A webhook channel's `signingSecret` is returned once, on creation or replacement |
+| DELETE | `/notificationChannel/delete/:id` | `notification:manage` | |
+| POST | `/notificationChannel/test` | `notification:manage` | `{id}`: sends a test notification now, returns the delivery |
+| POST | `/notificationChannel/getDeliveries` · `/notificationChannel/retryDelivery` | `notification:manage` | `{channelId?, status?}` recent deliveries (`PENDING`, `DELIVERED`, `FAILED`); `{id}` send a failed one again |
 | POST | `/secretAccess/getall` | `secret:read_metadata` | `{secretId?, agentId?, status?}` grants; a secret's list includes the selector grants that cover it. Each grant: agent, secret or selector, `fields` (empty: all), `versions`, `allowedCidrs`, `requireApproval`, validity, `status`, `useCount`, `lastUsedAt` |
 | POST | `/secretAccess/save` | `secret:manage_access` | (201) `{agentId, secretId | selector: {project?, workspace?, environment?, typeKey?, tag?}, fields?, versions? (ACTIVE, ANY), allowedCidrs?, requireApproval?, validFrom?, expiresAt?, description?}`: one secret, or every secret matching the selector (also secrets created later) |
 | POST | `/secretAccess/revoke` | `secret:manage_access` | `{id, reason?}`; held retrievals under the grant lapse |
@@ -243,3 +252,15 @@ For a GitHub App integration, `execution.credential` describes the token the web
 It is also recorded in the audit event's metadata. For PAT integrations it is `null`.
 
 If a stored credential cannot be decrypted with the configured key, `test` and `execute` return HTTP 500 with `CREDENTIAL_UNREADABLE`. No secret material or ciphertext is included.
+
+### Secret notifications (outbound webhooks)
+
+A webhook notification channel receives `POST <url>` with a JSON body (`SecretNotificationPayload`: `id`, `event`, `occurredAt`, `organization`, `secret` metadata, `details` such as versions, trigger and reason codes, and `consoleUrl`; never a value) and these headers:
+
+| Header | Value |
+| --- | --- |
+| `Token-Vault-Event` | The event, e.g. `secret.rotation_succeeded` (`notification.test` for a test) |
+| `Token-Vault-Delivery` | The delivery id (the same on retries: use it to ignore duplicates) |
+| `Token-Vault-Signature` | `t=<unix seconds>,v1=<hex HMAC-SHA256 of "<t>.<raw body>">` with the channel's signing secret |
+
+Verify the signature over the raw body, compare in constant time and reject timestamps older than five minutes. Answer 2xx to acknowledge; other answers, timeouts (5 seconds) and redirects are retried after 30 seconds, 2 minutes, 10 minutes and 1 hour, then the delivery is marked failed.

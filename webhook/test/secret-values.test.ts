@@ -127,6 +127,23 @@ suite('secret values (PostgreSQL)', () => {
     expect((await call('/internal/v1/secrets/destroy', { org_id: 'org_b', secret_id: 'sec_pg1', value_refs: [v3.body.value_ref] })).body.destroyed).toEqual([]);
   });
 
+  it('generates a new version for rotation: fresh random values, other fields kept, nothing returned', async () => {
+    const app = await call('/internal/v1/secrets/store', { org_id: 'org_a', secret_id: 'sec_app', version: 1, type_key: 'app-auth-secret', payload: { appId: 'billing', secret: 'the first application secret' } });
+    const g = await call('/internal/v1/secrets/generate', { org_id: 'org_a', secret_id: 'sec_app', from_ref: app.body.value_ref, version: 2 });
+    expect(g).toMatchObject({ status: 201, body: { version: 2, generated_fields: ['secret'], summary: { appId: 'billing', secret: '••••••••' } } });
+    expect(JSON.stringify(g.body)).not.toMatch(/"payload"/);
+    expect(g.body.fingerprint).not.toBe(app.body.fingerprint);
+    const read = (await call('/internal/v1/secrets/read', { org_id: 'org_a', secret_id: 'sec_app', value_ref: g.body.value_ref })).body.payload;
+    expect(read.appId).toBe('billing');
+    expect(read.secret).toMatch(/^[A-Za-z0-9_-]{43}$/);
+
+    // A type whose values come from elsewhere (a database password) cannot be generated.
+    const pgRef = (await call('/internal/v1/secrets/store', pg({ secret_id: 'sec_pg_gen' }))).body.value_ref;
+    expect((await call('/internal/v1/secrets/generate', { org_id: 'org_a', secret_id: 'sec_pg_gen', from_ref: pgRef, version: 2 })).body.error.code).toBe('SECRET_NOT_GENERATABLE');
+    // Another organization's value is not found.
+    expect((await call('/internal/v1/secrets/generate', { org_id: 'org_b', secret_id: 'sec_app', from_ref: app.body.value_ref, version: 3 })).status).toBe(404);
+  });
+
   it('accepts values larger than the general 64 KiB limit, up to the secret limit', async () => {
     const big = { org_id: 'org_a', secret_id: 'sec_env', version: 1, type_key: 'env-vars', payload: { variables: Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`VAR_${i}`, 'x'.repeat(1500)])) } };
     expect((await call('/internal/v1/secrets/store', big)).status).toBe(201);

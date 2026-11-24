@@ -2,6 +2,7 @@ import type { NextFunction, Request, Response } from 'express';
 import { PERMISSIONS } from '@token-vault/shared';
 import { APP_ROUTES } from '../../core/AppRoutes';
 import { RetrieveSecretDto, SaveSecretDto, SecretLifecycleDto, SecretVersionDto, UpdateSecretValueDto } from '../../databases/repository/secret/secret.dto';
+import { RotateSecretDto } from '../../databases/repository/secret/secretLifecycle.dto';
 import { orgCtx, requirePermission } from '../../middlewares/auth.middleware';
 import { validationMiddleware } from '../../middlewares/validation.middleware';
 import SecretService from '../../services/secretService/secretService.service';
@@ -15,7 +16,9 @@ import { adminGuards } from '../guards';
  *   GET    /getbyid/:id      metadata, versions, allowed actions              secret:read_metadata
  *   POST   /save             create with a value (no id, 201) | metadata (id)  secret:create | secret:update_metadata
  *   POST   /updateValue      `{id, payload, reason?}` new active version       secret:update_value
- *   POST   /rotate           `{id, payload, reason?}` manual rotation          secret:rotate
+ *   POST   /rotate           `{id, payload?, reason?}` rotate now; without a   secret:rotate
+ *                             payload the webhook generates the new value
+ *   POST   /getRotations     `{secretId?, status?}` rotation history           secret:read_metadata
  *   POST   /retrieve         `{id, version?, fields?, reason?}` the value      secret:retrieve (refusals audited)
  *   POST   /rollback         `{id, version, reason?}` new version from old     secret:manage_versions
  *   POST   /destroyVersion   `{id, version, reason?}` crypto-shred a version   secret:manage_versions
@@ -43,7 +46,8 @@ export class SecretController extends BaseController {
       return dto.id ? this.service.updateMetadata(orgCtx(req), dto) : new Reply(await this.service.create(orgCtx(req), dto), 201);
     });
     this.route('post', '/updateValue', [requirePermission(P.SECRET_UPDATE_VALUE), validationMiddleware(UpdateSecretValueDto)], (req) => this.service.updateValue(orgCtx(req), req.body as UpdateSecretValueDto));
-    this.route('post', '/rotate', [requirePermission(P.SECRET_ROTATE), validationMiddleware(UpdateSecretValueDto)], (req) => this.service.rotate(orgCtx(req), req.body as UpdateSecretValueDto));
+    this.route('post', '/rotate', [requirePermission(P.SECRET_ROTATE), validationMiddleware(RotateSecretDto)], (req) => this.service.rotate(orgCtx(req), req.body as RotateSecretDto));
+    this.route('post', '/getRotations', [requirePermission(P.SECRET_READ_METADATA)], (req) => this.service.rotations(orgCtx(req).org.id, req.body ?? {}));
     // secret:retrieve is checked by the service, so refusals are audited as secret.access_denied.
     this.route('post', '/retrieve', [requirePermission(P.SECRET_READ_METADATA), validationMiddleware(RetrieveSecretDto)], (req) => this.service.retrieve(orgCtx(req), req.body as RetrieveSecretDto));
     this.route('post', '/rollback', [requirePermission(P.SECRET_MANAGE_VERSIONS), validationMiddleware(SecretVersionDto)], (req) => this.service.rollback(orgCtx(req), req.body as SecretVersionDto));

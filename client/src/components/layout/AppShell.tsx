@@ -30,7 +30,7 @@ interface NavGroup {
   label: string;
   icon: React.ComponentType<{ className?: string }>;
   to?: string;
-  children?: { label: string; to: string; badge?: 'pendingRequests' | 'reviewsDue' | 'pendingApprovals' | 'pendingSecretApprovals'; end?: boolean }[];
+  children?: { label: string; to: string; badge?: 'pendingRequests' | 'reviewsDue' | 'pendingApprovals' | 'pendingSecretApprovals'; end?: boolean; permission?: Permission }[];
   badge?: string;
   /** Shown only to roles with this permission. */
   permission?: Permission;
@@ -55,6 +55,8 @@ const NAV: NavGroup[] = [
       { label: 'All Secrets', to: '/secrets', end: true },
       { label: 'Access Grants', to: '/secrets/access' },
       { label: 'Retrieval Approvals', to: '/secrets/approvals', badge: 'pendingSecretApprovals' },
+      { label: 'Rotations', to: '/secrets/rotations' },
+      { label: 'Expiry & Retention', to: '/secrets/policies' },
     ],
   },
   { label: 'Agents', icon: Bot, children: [{ label: 'Agent Registry', to: '/agents' }] },
@@ -96,6 +98,7 @@ const NAV: NavGroup[] = [
       { label: 'API Clients', to: '/settings/api-clients' },
       { label: 'User Identity', to: '/settings/user-identity' },
       { label: 'Slack approvals', to: '/settings/slack' },
+      { label: 'Notifications', to: '/settings/notifications', permission: PERMISSIONS.NOTIFICATION_MANAGE },
     ],
   },
 ];
@@ -166,7 +169,7 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                 {g.label}
               </p>
               <div className="space-y-0.5">
-                {g.children!.map((c) => (
+                {g.children!.filter((c) => !c.permission || can(c.permission)).map((c) => (
                   <NavLink
                     key={c.to}
                     to={c.to}

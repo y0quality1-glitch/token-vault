@@ -34,7 +34,7 @@ import { ApiErrorCallout } from './secretUi';
 
 // ── section tabs ─────────────────────────────────────────────────
 
-type Section = '/secrets' | '/secrets/access' | '/secrets/approvals';
+type Section = '/secrets' | '/secrets/access' | '/secrets/approvals' | '/secrets/rotations' | '/secrets/policies';
 
 /** Tabs across the Secrets section: the list, every access grant, and held retrievals. */
 export function SecretsSectionTabs({ current }: { current: Section }) {
@@ -48,6 +48,8 @@ export function SecretsSectionTabs({ current }: { current: Section }) {
           { value: '/secrets', label: 'Secrets' },
           { value: '/secrets/access', label: 'Access grants' },
           { value: '/secrets/approvals', label: 'Retrieval approvals' },
+          { value: '/secrets/rotations', label: 'Rotations' },
+          { value: '/secrets/policies', label: 'Expiry & retention' },
         ]}
       />
     </div>
