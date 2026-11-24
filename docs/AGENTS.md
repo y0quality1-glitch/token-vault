@@ -299,6 +299,33 @@ const helper = new TokenVault({ apiKey: d.token }); // tvdt_…, shown once
 
 **MCP.** Start the sub-agent's MCP server with its delegation token as `TOKEN_VAULT_API_KEY`. `token_vault_list_access` tells the model it is a sub-agent and what it was delegated; delegation denials are reported as final.
 
+## Secrets for applications and services
+
+Some workloads need the secret itself: a service connecting to its database, a job signing a release. Store the value as a secret (**Secrets** in the console, or `POST /api/v1/secret/save`), then give the agent a **secret access grant** on the secret's **Access** card (or for every secret matching a project, workspace, environment, type or tag). Without a grant the agent reads nothing.
+
+A grant can:
+- allow only some fields (for example only `password`);
+- allow only the active version (the default) or any version;
+- allow only some source IP ranges;
+- expire;
+- hold each retrieval for a human to approve. Someone other than the agent's owner approves under **Secret retrievals**; the approval covers that exact request, once, within 15 minutes.
+
+```ts
+import { TokenVault, ApprovalRequiredError } from '@token-vault/sdk';
+
+const tv = new TokenVault(); // TOKEN_VAULT_API_KEY, TOKEN_VAULT_URL
+const db = await tv.secrets.get('orders-db', { fields: ['password'], reason: 'startup' });
+connect({ password: db.payload.password as string });
+
+// Held for approval: wait for the decision, then retrieve.
+const key = await tv.secrets.get('release-signing', { waitForApproval: { timeoutMs: 10 * 60_000 } });
+
+// Keep a value in memory for five minutes (never written anywhere).
+await tv.secrets.get('orders-db', { cacheTtlMs: 5 * 60_000 });
+```
+
+`tv.secrets.list()` shows what the agent may read. Every retrieval and every refusal is in the audit log (**Security events**, `secret.*`), never with the value. The MCP server has no tool that reads secrets: models get brokered operations, never raw credentials.
+
 ## 2b. TypeScript SDK
 
 ```ts

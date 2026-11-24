@@ -144,7 +144,7 @@ The classification model of §4.9.3 as signed, published data.
 | --- | --- |
 | 1. Secret types | Done: schema and payload validation in `shared`, 51 predefined types, CMS workflow and signed `/catalog/v1/secret-types`, verified sync in the control plane (`/api/v1/secretType`) and the webhook, CMS console section ([CMS.md](CMS.md#secret-types)) |
 | 2. Static secrets and versions | Done: webhook `secret_values` store and signed `/internal/v1/secrets/*`; control plane `secrets` and `secret_versions`, admin API `/api/v1/secret` ([API.md](API.md)), secret permissions per role, lifecycle (activate, revoke, archive, delete), expiry enforced on retrieval, renewal, audit of every change, retrieval and refusal; console Secrets pages |
-| 3. Application access | Planned |
+| 3. Application access | Done: `secret_access_grants` (one secret or a selector; fields, versions, source IPs, validity, approval), held retrievals `secret_retrieval_approvals` (exact request, once, 15 minutes, not by the agent owner), agent API `/agent/v1/secret/getall` and `/retrieve` (default deny, every decision audited), admin API `/api/v1/secretAccess`, SDK `tv.secrets.get()` / `list()`, console Access card and Secret retrievals. Left for later: policies with conditions on secrets, and the Kubernetes injection example |
 | 4. Expiration, rotation, notifications | Planned |
 | 5. Dynamic secrets, import/export, custom types | Planned |
 | 6. Keys and certificates | Planned |

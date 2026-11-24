@@ -7,6 +7,7 @@ import { authenticate, authenticateCaller, executeAgentRequest, getAgentOperatio
 import { createDelegation, listForAgent, revokeByAgent } from '../../services/delegationService/delegationService.service';
 import { createFromAgent, getForAgent } from '../../services/grantRequestService/grantRequestService.service';
 import { BaseController, agentReply, bodyId } from '../baseController';
+import { AgentSecretController } from '../secretAccessController/secretAccessController.controller';
 
 /**
  * Agent-facing API at /agent/v1, authenticated ONLY by the agent credential
@@ -144,4 +145,4 @@ export class AgentDelegationController extends BaseController {
   }
 }
 
-export const agentControllers = () => [new AgentRequestController(), new AgentCapabilityController(), new AgentOperationController(), new AgentAccessRequestController(), new AgentApprovalController(), new AgentDelegationController()];
+export const agentControllers = () => [new AgentRequestController(), new AgentCapabilityController(), new AgentOperationController(), new AgentAccessRequestController(), new AgentApprovalController(), new AgentDelegationController(), new AgentSecretController()];

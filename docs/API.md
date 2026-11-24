@@ -44,6 +44,11 @@ Authenticated with the `tv_session` httpOnly cookie, which is set by `POST /auth
 | POST | `/secret/rollback` · `/secret/destroyVersion` | `secret:manage_versions` | `{id, version, reason?}`: a new active version with that version's value (history is not rewritten) · crypto-shred an inactive version |
 | POST | `/secret/activate` · `/secret/revoke` · `/secret/archive` | `secret:update_metadata` · `secret:delete` · `secret:delete` | `{id, reason?}`: PENDING → ACTIVE · → REVOKED · REVOKED/EXPIRED → ARCHIVED |
 | DELETE | `/secret/delete/:id` | `secret:delete` | destroys every version on the webhook (nothing changes if it is unreachable), then keeps a DELETED tombstone; the name is free again |
+| POST | `/secretAccess/getall` | `secret:read_metadata` | `{secretId?, agentId?, status?}` grants; a secret's list includes the selector grants that cover it. Each grant: agent, secret or selector, `fields` (empty: all), `versions`, `allowedCidrs`, `requireApproval`, validity, `status`, `useCount`, `lastUsedAt` |
+| POST | `/secretAccess/save` | `secret:manage_access` | (201) `{agentId, secretId | selector: {project?, workspace?, environment?, typeKey?, tag?}, fields?, versions? (ACTIVE, ANY), allowedCidrs?, requireApproval?, validFrom?, expiresAt?, description?}`: one secret, or every secret matching the selector (also secrets created later) |
+| POST | `/secretAccess/revoke` | `secret:manage_access` | `{id, reason?}`; held retrievals under the grant lapse |
+| POST | `/secretAccess/getApprovals` | `secret:read_metadata` | `{status?}` retrievals held for approval |
+| POST | `/secretAccess/approve` · `/secretAccess/reject` | `secret:manage_access` | `{id, note?}`; never by the agent's owner (403); valid 15 minutes, for that exact request, once |
 | POST | `/integration/save` | `integration:manage` | create (no `id`). PAT: `{provider, webhookId, displayName, environment, accountLabel, authType: "PAT", secret, allowedResources, description}`. GitHub App: `{…, authType: "GITHUB_APP", appId, installationId (optional), keySource: "stored" \| "webhook_env", privateKey (PEM, when stored)}`; `accountLabel` is optional and defaults to the installation's account. Secrets are forwarded to the webhook and never stored. An invalid key or unknown installation returns 400 `INVALID_PRIVATE_KEY` / `INSTALLATION_NOT_FOUND` / `APP_KEY_NOT_CONFIGURED` |
 | GET | `/integration/getbyid/:id` | any role | includes granted agents |
 | POST | `/integration/save` | `integration:manage` | with `id`: metadata only |
@@ -109,6 +114,15 @@ Authenticated with the `tv_session` httpOnly cookie, which is set by `POST /auth
 The same envelope as the admin API: `details` holds the bodies shown below (for `request/execute` the decision, also for denials, whose envelope has `status: "10001"`, `code` = `decision_code` and `error` = `reason`). Delegations: `POST /delegation/save`, `POST /delegation/getall`, `POST /delegation/revoke` `{id, reason?}`; `GET /accessRequest/getbyid/:id` reads a just-in-time request.
 
 Authenticated **only** with `Authorization: Bearer tvak_<keyId>_<secret>`. Admin cookies are ignored here.
+
+**Secrets** (Secret Management, see [SECRET_MANAGEMENT.md](SECRET_MANAGEMENT.md)): an agent reads a secret only under a secret access grant (default deny). Sub-agents (delegation tokens) cannot read secrets.
+
+| Method | Path | Body | Result |
+| --- | --- | --- | --- |
+| POST | `/agent/v1/secret/getall` | | `{items: [{secret_id, name, type_key, project, workspace, environment, status, active_version, expires_at, grant_id, fields, versions, requires_approval}]}`, never a value |
+| POST | `/agent/v1/secret/retrieve` | `{secret_id}` or `{name, project?, workspace?, environment?}`, plus `version?`, `fields?`, `reason?`, `approval_id?` | 200 `{secret_id, name, type_key, version, payload, expires_at, retrieved_at, grant_id, request_id}` with only the fields asked for (default: those the grant allows); 202 `{approval_id, status: "PENDING", expires_at, decision_code: "APPROVAL_REQUIRED"}` when the grant requires approval (retry with `approval_id` once approved) |
+
+Refusals (each audited as `secret.access_denied`): `SECRET_ACCESS_DENIED` (no grant, or no such secret: the same answer), `IP_NOT_ALLOWED`, `SECRET_FIELDS_NOT_PERMITTED`, `SECRET_VERSION_NOT_PERMITTED`, `SECRET_EXPIRED`, `SECRET_NOT_ACTIVE`, `SECRET_VERSION_DESTROYED`, `AGENT_DISABLED`, `EMERGENCY_STOP`, `APPROVAL_MISMATCH`, `APPROVAL_REJECTED`, `APPROVAL_USED`, `APPROVAL_EXPIRED`, `DELEGATION_NOT_ALLOWED`; and without refusal audit: `SECRET_AMBIGUOUS` (a name in several scopes), `SECRET_FIELD_UNKNOWN`.
 
 `POST /agent/v1/request/execute`
 

@@ -9,6 +9,7 @@ export enum APP_ROUTES {
   PROVIDER = '/provider',
   SECRET_TYPE = '/secretType',
   SECRET = '/secret',
+  SECRET_ACCESS = '/secretAccess',
   INTEGRATION = '/integration',
   AGENT = '/agent',
   API_CLIENT = '/apiClient',
@@ -34,6 +35,7 @@ export enum AGENT_ROUTES {
   ACCESS_REQUEST = '/accessRequest',
   APPROVAL = '/approval',
   DELEGATION = '/delegation',
+  SECRET = '/secret',
 }
 
 export enum SUCCESSMSG {

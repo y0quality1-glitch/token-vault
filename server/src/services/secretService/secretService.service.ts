@@ -20,7 +20,7 @@ import {
 import { Pagination } from '../../core/Y0Params';
 import { db, transaction } from '../../databases/client';
 import type { RetrieveSecretDto, SaveSecretDto, SecretLifecycleDto, SecretVersionDto, UpdateSecretValueDto } from '../../databases/repository/secret/secret.dto';
-import { SecretEntity, SecretVersionEntity } from '../../entities';
+import { SecretAccessGrantEntity, SecretEntity, SecretVersionEntity } from '../../entities';
 import { HttpError, badRequest, conflict, forbidden, notFound } from '../../lib/errors';
 import { newId } from '../../lib/ids';
 import { webhookRepo } from '../../store/repos';
@@ -593,6 +593,8 @@ export default class SecretService extends BaseServices<SecretEntity, SecretView
       const t = now();
       await ex.update(SecretVersionEntity, { secretId: s.id, state: In(['ACTIVE', 'PREVIOUS']) }, { state: 'DESTROYED', valueRef: null, destroyedAt: t });
       await ex.update(SecretEntity, { id: s.id }, { status: 'DELETED', activeVersion: null, deletedAt: t, updatedBy: ctx.user.id, updatedByName: ctx.user.fullName, updatedAt: t });
+      // Grants naming this secret end with it (selector grants simply stop matching it).
+      await ex.update(SecretAccessGrantEntity, { secretId: s.id, status: 'ACTIVE' }, { status: 'REVOKED', revokedAt: t, revokedBy: ctx.user.fullName, revocationReason: 'Secret deleted' });
       await recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: 'secret.deleted', target: { type: 'secret', id: s.id, name: s.name }, severity: 'warning', metadata: { from, destroyedVersions: refs.length } }, ex);
     });
     return { id: s.id, status: 'DELETED', destroyedVersions: refs.length };
