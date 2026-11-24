@@ -304,6 +304,9 @@ token-vault/
 | `DECISION_TOKEN_TTL_S` | How long a decision token is valid, 10–900 seconds (default 120) |
 | `SETTINGS_ENCRYPTION_KEY` | Optional: encrypts secrets Token Vault stores for itself (the Slack bot token and signing secret). Derived from `AUDIT_SIGNING_KEY` when unset |
 | `SLACK_API_URL` | Slack Web API base (default `https://slack.com/api`); tests point it at a stand-in |
+| `SECRET_JOB_INTERVAL_MS` | How often the secret lifecycle job runs: expiry (`EXPIRING`, `EXPIRED`), scheduled rotation and version retention (default 60000; `0` turns it off). Safe with several instances: one runs at a time (PostgreSQL advisory lock) |
+| `NOTIFICATION_INTERVAL_MS` | How often queued secret notifications are sent (default 5000; `0` turns sending off) |
+| `SMTP_URL` / `SMTP_FROM` | Email for secret notifications: an `smtp://` or `smtps://` URL (credentials in the URL) and the sender. Unset: email channels fail with "Email is not configured" |
 | `CMS_CATALOG_URL` | Provider CMS catalog (`http://localhost:4200/catalog/v1`). Optional: without it only the bundled definitions are used |
 | `CMS_PUBLIC_KEY` / `CMS_PUBLIC_KEY_FILE` | Pinned Ed25519 public key(s) of the CMS (PEM; `\n` escapes allowed; several concatenated during a key rotation). Required with `CMS_CATALOG_URL`; written by `npm run setup` |
 | `CMS_POLL_INTERVAL_MS` | Catalog polling interval (default 30000) |

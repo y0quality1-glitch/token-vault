@@ -261,6 +261,15 @@ export default class SecretAccessService {
   }
 
   /** Prefers a grant naming the secret over a selector, and one without approval. */
+  /**
+   * Whether `version` is the one the latest rotation replaced, less than the secret's grace period
+   * ago (a plain value update or a rollback opens no grace period).
+   */
+  private async inRotationGrace(s: SecretEntity, version: number): Promise<boolean> {
+    const v = await db.findOneBy(SecretVersionEntity, { secretId: s.id, version });
+    return !!v && v.state === 'PREVIOUS' && v.version === (s.activeVersion ?? 0) - 1 && !!v.supersededAt && v.supersededAt === s.lastRotatedAt && Date.parse(v.supersededAt) + s.rotationGraceHours * 3_600_000 > Date.now();
+  }
+
   private bestGrant(grants: Grant[]): Grant | null {
     return [...grants].sort((a, b) => Number(!a.secretId) - Number(!b.secretId) || Number(a.requireApproval) - Number(b.requireApproval))[0] ?? null;
   }
@@ -329,10 +338,12 @@ export default class SecretAccessService {
     if (unknown.length) throw new SecretAccessError(400, 'SECRET_FIELD_UNKNOWN', `Not fields of this secret: ${unknown.join(', ')}`);
     // A grant that allows this version and every requested field (the best one first).
     // Without `fields`, the agent gets the fields its grant allows.
-    const fits = (g: Grant) => (!version || version === s.activeVersion || g.versions === 'ANY') && (requested ?? []).every((f) => allowedFields(g, typeFields).includes(f));
+    // During a rotation's grace period the version it replaced stays readable under grants limited to the active version (spec 4.9.11).
+    const inGrace = !!version && version !== s.activeVersion && (await this.inRotationGrace(s, version));
+    const fits = (g: Grant) => (!version || version === s.activeVersion || g.versions === 'ANY' || inGrace) && (requested ?? []).every((f) => allowedFields(g, typeFields).includes(f));
     const grant = this.bestGrant(fromIp.filter(fits));
     if (!grant) {
-      const versionProblem = version && version !== s.activeVersion && !fromIp.some((g) => g.versions === 'ANY');
+      const versionProblem = version && version !== s.activeVersion && !inGrace && !fromIp.some((g) => g.versions === 'ANY');
       await deny(403, versionProblem ? 'SECRET_VERSION_NOT_PERMITTED' : 'SECRET_FIELDS_NOT_PERMITTED', versionProblem ? 'This agent may read only the active version' : `This agent may read only: ${allowedFields(fromIp[0]!, typeFields).join(', ')}`);
     }
     const g = grant!;

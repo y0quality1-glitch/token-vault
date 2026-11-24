@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { Archive, Eye, EyeOff, KeyRound, Pencil, PlayCircle, RefreshCw, RotateCcw, ShieldOff, Timer, Trash2, Upload } from 'lucide-react';
-import { PERMISSIONS, orderedFields, type SecretDetail, type SecretRetrieval, type SecretTypeInfo, type SecretVersionView } from '@token-vault/shared';
+import { Archive, Eye, EyeOff, KeyRound, Pencil, PlayCircle, RefreshCw, RotateCcw, ShieldOff, Sparkles, Timer, Trash2, Upload } from 'lucide-react';
+import { PERMISSIONS, orderedFields, type EffectiveSecretPolicy, type SecretDetail, type SecretRetrieval, type SecretRotationJobView, type SecretTypeInfo, type SecretVersionView } from '@token-vault/shared';
 import { useApi, useMutation } from '@/hooks/useApi';
 import { useAuth } from '@/context/AuthContext';
 import { api, type ApiError } from '@/lib/api';
@@ -9,21 +9,38 @@ import { formatDateTime, relativeTime } from '@/lib/utils';
 import { Badge, EnvBadge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardBody, CardHeader, DetailList } from '@/components/ui/card';
-import { Checkbox, Field, Textarea } from '@/components/ui/form';
+import { Checkbox, Field, RadioCard, Textarea } from '@/components/ui/form';
 import { Callout, ErrorState, PageSkeleton } from '@/components/ui/feedback';
 import { ConfirmDialog, Dialog } from '@/components/ui/dialog';
-import { DataTable } from '@/components/ui/table';
+import { DataTable, type Column } from '@/components/ui/table';
 import { PageHeader } from '@/components/ui/navigation';
 import { CopyButton, Mono } from '@/components/ui/secret';
 import { useToast } from '@/components/ui/toast';
-import { ApiErrorCallout, SecretStatusBadge, TypeFields, VersionStateBadge, categoryLabel, checkMetadata, checkPayload, initialValues, useSecretTypes, type FieldValues } from './secretUi';
+import {
+  ApiErrorCallout,
+  POLICY_SOURCE_LABELS,
+  ROTATION_STRATEGY_SHORT,
+  ROTATION_TRIGGER_LABELS,
+  RotationJobStatusBadge,
+  SecretStatusBadge,
+  TypeFields,
+  VersionStateBadge,
+  categoryLabel,
+  checkMetadata,
+  checkPayload,
+  initialValues,
+  rotationVersions,
+  useSecretTypes,
+  type FieldValues,
+} from './secretUi';
 import { SecretAccessCard } from './secretAccess';
-import { LifecycleFields, NameFields, SETTINGS_FIELDS, settingsBody, settingsFromSecret, validateSettings, type SettingsValues } from './secretSettings';
+import { LifecycleFields, NameFields, ROTATION_STRATEGY_LABELS, SETTINGS_FIELDS, settingsBody, settingsFromSecret, validateSettings, type SettingsValues } from './secretSettings';
 
 type DialogState =
   | null
   | { kind: 'reveal'; version?: number }
-  | { kind: 'value' | 'rotate' | 'edit' | 'activate' | 'revoke' | 'archive' | 'delete' }
+  | { kind: 'value' | 'edit' | 'activate' | 'revoke' | 'archive' | 'delete' }
+  | { kind: 'rotate'; mode: RotateMode }
   | { kind: 'rollback' | 'destroy'; version: number };
 
 /** How long revealed values stay on screen. */
@@ -49,6 +66,7 @@ export function SecretDetailPage() {
   const metadataLabels: [string, string][] = type ? orderedFields(type.metadata).map(([k, f]) => [k, f.label]) : Object.keys(s.metadata).map((k) => [k, k]);
   const canRotate = s.can.updateValue && can(PERMISSIONS.SECRET_ROTATE) && (type?.lifecycle.rotation ?? true);
   const close = () => setDialog(null);
+  const openRotate = (mode?: RotateMode) => setDialog({ kind: 'rotate', mode: mode ?? (s.rotation.generatable && s.status !== 'ROTATION_PENDING' ? 'generate' : 'manual') });
 
   /** Runs a lifecycle action; errors are shown on the page and in the dialog. */
   async function act(path: string, body: Record<string, unknown>, msg: string): Promise<boolean> {
@@ -109,6 +127,12 @@ export function SecretDetailPage() {
       ),
       hideBelow: 'md' as const,
     },
+    {
+      key: 'replaced',
+      header: 'Replaced',
+      cell: (v: SecretVersionView) => (v.supersededAt ? <span className="text-slate-500" title={formatDateTime(v.supersededAt)} data-testid="secret-version-replaced">replaced {relativeTime(v.supersededAt)}</span> : <span className="text-slate-400">—</span>),
+      hideBelow: 'lg' as const,
+    },
     { key: 'destroyed', header: 'Destroyed', cell: (v: SecretVersionView) => <span className="text-slate-500">{v.destroyedAt ? formatDateTime(v.destroyedAt) : '—'}</span>, hideBelow: 'xl' as const },
     {
       key: 'actions',
@@ -158,7 +182,7 @@ export function SecretDetailPage() {
               </Button>
             )}
             {canRotate && (
-              <Button variant="outline" onClick={() => setDialog({ kind: 'rotate' })} data-testid="secret-rotate">
+              <Button variant="outline" onClick={() => openRotate()} data-testid="secret-rotate">
                 <RefreshCw className="h-4 w-4" /> Rotate
               </Button>
             )}
@@ -174,6 +198,25 @@ export function SecretDetailPage() {
       {s.status === 'PENDING' && <Callout tone="warning" title="Pending activation">The secret cannot be retrieved until it is activated.</Callout>}
       {s.status === 'EXPIRED' && <Callout tone="danger" title={`Expired ${relativeTime(s.expiresAt)}`}>Retrieval is refused (SECRET_EXPIRED). Set a future expiry with “Edit metadata” to renew it, or store a new value.</Callout>}
       {s.status === 'EXPIRING' && <Callout tone="warning" title={`Expires ${relativeTime(s.expiresAt)}`}>Rotate the secret or extend its expiry.</Callout>}
+      {s.status === 'ROTATION_PENDING' && (
+        <div data-testid="secret-rotation-due">
+          <Callout
+            tone="warning"
+            title="Rotation due: store the new value to complete it"
+            action={
+              canRotate ? (
+                <Button size="sm" onClick={() => openRotate('manual')} data-testid="secret-rotation-due-action">
+                  <Upload className="h-3.5 w-3.5" /> Store new value
+                </Button>
+              ) : undefined
+            }
+          >
+            {s.rotation.nextRotationAt ? `The rotation was due ${relativeTime(s.rotation.nextRotationAt)}. ` : ''}The current value keeps working until the new one is stored.
+            {!canRotate && ' Members with secret:rotate and write access to this secret can complete it.'}
+          </Callout>
+        </div>
+      )}
+      {s.status === 'ROTATING' && <Callout tone="info" title="Rotation in progress">The customer webhook is creating the new value. Refresh in a moment to see the result.</Callout>}
       {s.status === 'REVOKED' && <Callout tone="danger" title="Revoked">The secret can no longer be retrieved. Archive or delete it.</Callout>}
       {s.status === 'DELETED' && <Callout tone="danger" title="Deleted">Every version was destroyed on the customer webhook. Only this record remains.</Callout>}
       <ApiErrorCallout error={actionError} />
@@ -241,17 +284,16 @@ export function SecretDetailPage() {
             </CardBody>
           </Card>
           <Card>
-            <CardHeader title="Expiry and rotation" icon={<Timer className="h-4 w-4" />} />
-            <CardBody>
+            <CardHeader title="Expiry" icon={<Timer className="h-4 w-4" />} />
+            <CardBody className="space-y-4">
               <DetailList
                 columns={1}
                 items={[
                   { label: 'Expires', value: s.expiresAt ? `${formatDateTime(s.expiresAt)} (${relativeTime(s.expiresAt)})` : 'Never' },
-                  { label: 'Rotation', value: s.rotation.enabled ? `Every ${s.rotation.intervalDays} days` : 'Off' },
-                  ...(s.rotation.enabled ? [{ label: 'Next rotation', value: `${formatDateTime(s.rotation.nextRotationAt)} (${relativeTime(s.rotation.nextRotationAt)})` }] : []),
                   { label: 'Last retrieved', value: relativeTime(s.lastRetrievedAt) },
                 ]}
               />
+              <PolicyInfo policy={s.policy} />
             </CardBody>
           </Card>
           {lifecycleActions && (
@@ -284,6 +326,8 @@ export function SecretDetailPage() {
         </div>
       </div>
 
+      <RotationCard secret={s} canRotate={canRotate} canEdit={s.can.updateMetadata && !!type} onRotate={openRotate} onEdit={() => setDialog({ kind: 'edit' })} />
+
       <Card>
         <CardHeader title="Versions" description="Every value the secret has had. Versions are told apart by fingerprint; values are never listed." />
         <div data-testid="secret-versions">
@@ -301,6 +345,7 @@ export function SecretDetailPage() {
           secret={s}
           type={type}
           rotate={dialog.kind === 'rotate'}
+          initialMode={dialog.kind === 'rotate' ? dialog.mode : 'manual'}
           onClose={close}
           onDone={async (msg) => {
             toast.success(msg);
@@ -507,15 +552,27 @@ function RevealDialog({ secret, type, version, onClose }: { secret: SecretDetail
   );
 }
 
-/** New value or manual rotation: a form generated from the type; the value is cleared after submit and on close. */
-function ValueDialog({ secret, type, rotate, onClose, onDone }: { secret: SecretDetail; type: SecretTypeInfo | null; rotate: boolean; onClose: () => void; onDone: (msg: string) => void }) {
+/**
+ * New value, or rotation. A rotation either takes the new value typed here, or (types with generated
+ * fields) asks the customer webhook to create it. A typed value is cleared after submit and on close.
+ */
+function ValueDialog({ secret, type, rotate, initialMode, onClose, onDone }: { secret: SecretDetail; type: SecretTypeInfo | null; rotate: boolean; initialMode: RotateMode; onClose: () => void; onDone: (msg: string) => void }) {
   const [values, setValues] = useState<FieldValues>(() => (type ? initialValues(type.fields) : {}));
   const [reason, setReason] = useState('');
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const canGenerate = rotate && secret.rotation.generatable;
+  const [mode, setMode] = useState<RotateMode>(canGenerate ? initialMode : 'manual');
+  const generate = canGenerate && mode === 'generate';
   const submit = useMutation((body: unknown) => api.post<SecretDetail>(rotate ? '/secret/rotate' : '/secret/updateValue', body));
   const allErrors = { ...submit.fieldErrors, ...errors };
+  const nextVersion = (Math.max(0, ...secret.versions.map((v) => v.version)) || 0) + 1;
 
   async function onSubmit() {
+    if (generate) {
+      const r = await submit.run({ id: secret.id, reason: reason.trim() });
+      if (r) onDone(`Secret rotated. The webhook generated version ${r.activeVersion ?? nextVersion}.`);
+      return;
+    }
     if (!type) return;
     const p = checkPayload(type, values);
     setErrors(p.issues);
@@ -533,14 +590,22 @@ function ValueDialog({ secret, type, rotate, onClose, onDone }: { secret: Secret
       onClose={onClose}
       size="lg"
       title={rotate ? `Rotate ${secret.name}` : `New value for ${secret.name}`}
-      description={`The new value becomes version ${(Math.max(0, ...secret.versions.map((v) => v.version)) || 0) + 1} and the active one. The current version is kept as a previous version.`}
+      description={`The new value becomes version ${nextVersion} and the active one. The current version is kept as a previous version${rotate && secret.rotation.graceHours > 0 ? ` and stays usable for ${secret.rotation.graceHours} hours` : ''}.`}
       footer={
         <>
           <Button variant="outline" onClick={onClose}>
             Cancel
           </Button>
-          <Button loading={submit.pending} disabled={!type} onClick={onSubmit} data-testid="secret-value-submit">
-            {rotate ? 'Rotate' : 'Store new value'}
+          <Button loading={submit.pending} disabled={!generate && !type} onClick={onSubmit} data-testid={rotate ? 'secret-rotate-confirm' : 'secret-value-submit'}>
+            {generate ? (
+              <>
+                <Sparkles className="h-4 w-4" /> Generate and rotate
+              </>
+            ) : rotate ? (
+              'Rotate'
+            ) : (
+              'Store new value'
+            )}
           </Button>
         </>
       }
@@ -554,7 +619,19 @@ function ValueDialog({ secret, type, rotate, onClose, onDone }: { secret: Secret
           void onSubmit();
         }}
       >
-        {!type ? (
+        {canGenerate && (
+          <div className="grid gap-2 sm:grid-cols-2" data-testid="secret-rotate-mode" data-mode={mode}>
+            <div data-testid="secret-rotate-generate">
+              <RadioCard checked={mode === 'generate'} onChange={() => setMode('generate')} title="Generate a new value" description="The customer webhook creates the new value. Nobody sees it." />
+            </div>
+            <div data-testid="secret-rotate-manual">
+              <RadioCard checked={mode === 'manual'} onChange={() => setMode('manual')} title="Enter the new value" description="Type the value you already changed at its source." />
+            </div>
+          </div>
+        )}
+        {generate ? (
+          <Callout tone="security">The webhook generates the new value of the generated fields; the other fields keep their current values. If the webhook cannot do it, nothing changes.</Callout>
+        ) : !type ? (
           <Callout tone="warning">The secret type {secret.typeKey} is not available, so its form cannot be shown.</Callout>
         ) : (
           <TypeFields prefix="payload" fields={type.fields} values={values} onChange={setValues} errors={allErrors} />
@@ -565,6 +642,141 @@ function ValueDialog({ secret, type, rotate, onClose, onDone }: { secret: Secret
         <ApiErrorCallout error={submit.error} shownFields={['reason']} />
       </form>
     </Dialog>
+  );
+}
+
+// ── rotation and policy ──────────────────────────────────────────
+
+type RotateMode = 'generate' | 'manual';
+
+function RotationCard({ secret: s, canRotate, canEdit, onRotate, onEdit }: { secret: SecretDetail; canRotate: boolean; canEdit: boolean; onRotate: (mode?: RotateMode) => void; onEdit: () => void }) {
+  const r = s.rotation;
+  const strategy = ROTATION_STRATEGY_LABELS[r.strategy];
+  const columns: Column<SecretRotationJobView>[] = [
+    {
+      key: 'when',
+      header: 'When',
+      cell: (j) => (
+        <div className="whitespace-nowrap" data-testid="secret-rotation-job-row" data-status={j.status} data-trigger={j.trigger}>
+          <span className="block text-slate-700" title={formatDateTime(j.finishedAt ?? j.startedAt ?? j.scheduledFor)}>
+            {relativeTime(j.finishedAt ?? j.startedAt ?? j.scheduledFor)}
+          </span>
+          {j.requestedBy && <span className="block text-xs text-slate-500">by {j.requestedBy.name}</span>}
+        </div>
+      ),
+    },
+    { key: 'trigger', header: 'Trigger', cell: (j) => <span className="text-slate-600">{ROTATION_TRIGGER_LABELS[j.trigger] ?? j.trigger}</span>, hideBelow: 'md' },
+    { key: 'strategy', header: 'Strategy', cell: (j) => <span className="text-slate-600">{ROTATION_STRATEGY_SHORT[j.strategy] ?? j.strategy}</span>, hideBelow: 'lg' },
+    { key: 'status', header: 'Status', cell: (j) => <RotationJobStatusBadge job={j} /> },
+    { key: 'versions', header: 'Versions', cell: (j) => <span className="whitespace-nowrap font-mono text-[13px] text-slate-600">{rotationVersions(j)}</span> },
+    { key: 'attempts', header: 'Attempts', cell: (j) => <span className="text-slate-600">{j.attempts}</span>, hideBelow: 'lg' },
+    {
+      key: 'error',
+      header: 'Error',
+      cell: (j) =>
+        j.errorMessage || j.errorCode ? (
+          <span className="block max-w-xs break-words text-xs text-red-700">
+            {j.errorMessage}
+            {j.errorCode && <span className="ml-1 font-mono opacity-70">({j.errorCode})</span>}
+            {j.nextAttemptAt && j.status === 'PENDING' && <span className="block text-slate-500">next attempt {relativeTime(j.nextAttemptAt)}</span>}
+          </span>
+        ) : (
+          <span className="text-slate-400">—</span>
+        ),
+      hideBelow: 'md',
+    },
+  ];
+  return (
+    <Card data-testid="secret-rotation-card" data-enabled={r.enabled ? 'true' : 'false'} data-strategy={r.strategy}>
+      <CardHeader
+        title="Rotation"
+        description={r.enabled ? `Rotated every ${r.intervalDays} days.` : 'No scheduled rotation. The secret can still be rotated now.'}
+        icon={<RefreshCw className="h-4 w-4" />}
+        actions={
+          <>
+            {canEdit && (
+              <Button variant="outline" size="sm" onClick={onEdit} data-testid="secret-rotation-edit">
+                <Pencil className="h-3.5 w-3.5" /> Edit
+              </Button>
+            )}
+            {canRotate && (
+              <Button size="sm" onClick={() => onRotate()} data-testid="secret-rotate-now">
+                <RefreshCw className="h-3.5 w-3.5" /> Rotate now
+              </Button>
+            )}
+          </>
+        }
+      />
+      <CardBody>
+        <DetailList
+          columns={3}
+          items={[
+            { label: 'Scheduled rotation', value: r.enabled ? `Every ${r.intervalDays} days` : 'Off' },
+            {
+              label: 'Strategy',
+              value: (
+                <span data-testid="secret-rotation-strategy-value" data-strategy={r.strategy}>
+                  {strategy.label}: {strategy.description.charAt(0).toLowerCase() + strategy.description.slice(1, -1)}
+                  {!r.generatable && <span className="block text-xs text-slate-500">The webhook cannot generate values of this type.</span>}
+                </span>
+              ),
+            },
+            { label: 'Grace period', value: r.graceHours === 0 ? 'None. The replaced version stops working at once.' : `${r.graceHours} hours after a rotation` },
+            { label: 'Next rotation', value: r.enabled && r.nextRotationAt ? <span title={formatDateTime(r.nextRotationAt)}>{`${formatDateTime(r.nextRotationAt)} (${relativeTime(r.nextRotationAt)})`}</span> : '—' },
+            { label: 'Last rotated', value: r.lastRotatedAt ? <span title={formatDateTime(r.lastRotatedAt)}>{relativeTime(r.lastRotatedAt)}</span> : 'Never' },
+          ]}
+        />
+      </CardBody>
+      <div className="border-t border-slate-100" data-testid="secret-rotation-history">
+        <p className="px-5 pt-4 text-sm font-medium text-slate-700">Rotation history</p>
+        <DataTable rows={s.rotationJobs} rowKey={(j) => j.id} columns={columns} dense empty={<p className="px-5 py-6 text-sm text-slate-500">This secret has not been rotated yet.</p>} />
+      </div>
+    </Card>
+  );
+}
+
+function policyValue(key: keyof EffectiveSecretPolicy, v: number | null): string {
+  if (v === null) return key === 'defaultExpiresInDays' ? 'No default expiry' : 'No limit';
+  switch (key) {
+    case 'expiryWarningDays':
+      return `${v} days before expiry`;
+    case 'defaultExpiresInDays':
+      return `${v} days`;
+    case 'keepVersions':
+      return `Newest ${v}`;
+    case 'keepDays':
+      return `Replaced in the last ${v} days`;
+  }
+}
+
+/** The expiry warning and version retention that apply to this secret, and the level each comes from. */
+function PolicyInfo({ policy }: { policy: EffectiveSecretPolicy }) {
+  const rows: [keyof EffectiveSecretPolicy, string][] = [
+    ['expiryWarningDays', 'Expiry warning'],
+    ['defaultExpiresInDays', 'Default expiry'],
+    ['keepVersions', 'Keep versions'],
+    ['keepDays', 'Keep versions by age'],
+  ];
+  return (
+    <div className="border-t border-slate-100 pt-4" data-testid="secret-policy-info">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <p className="text-sm font-medium text-slate-700">Expiry and retention</p>
+        <Link className="text-xs text-brand-700 hover:underline" to="/secrets/policies">
+          Policies
+        </Link>
+      </div>
+      <dl className="space-y-2">
+        {rows.map(([k, label]) => (
+          <div key={k} className="flex items-start justify-between gap-3 text-sm" data-testid={`secret-policy-info-${k}`} data-source={policy[k].source}>
+            <dt className="text-slate-500">{label}</dt>
+            <dd className="text-right text-slate-800">
+              {policy[k].source === 'NONE' ? <span className="text-slate-400">Not set</span> : policyValue(k, policy[k].value)}
+              <span className="block text-xs text-slate-400">{POLICY_SOURCE_LABELS[policy[k].source] ?? policy[k].source}</span>
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </div>
   );
 }
 

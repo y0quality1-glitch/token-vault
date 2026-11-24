@@ -6,12 +6,15 @@ import {
   ROLE_PERMISSIONS,
   SECRET_STATUSES,
   SECRET_TRANSITIONS,
+  generatableSecretFields,
   validateSecretMetadata,
   validateSecretPayload,
   type Permission,
   type SecretDetail,
   type SecretPayload,
   type SecretRetrieval,
+  type SecretRotationJobView,
+  type SecretRotationTrigger,
   type SecretStatus,
   type SecretTypeDefinition,
   type SecretVersionView,
@@ -20,12 +23,14 @@ import {
 import { Pagination } from '../../core/Y0Params';
 import { db, transaction } from '../../databases/client';
 import type { RetrieveSecretDto, SaveSecretDto, SecretLifecycleDto, SecretVersionDto, UpdateSecretValueDto } from '../../databases/repository/secret/secret.dto';
-import { SecretAccessGrantEntity, SecretEntity, SecretVersionEntity } from '../../entities';
+import type { RotateSecretDto } from '../../databases/repository/secret/secretLifecycle.dto';
+import { RotationJobEntity, SecretAccessGrantEntity, SecretEntity, SecretVersionEntity } from '../../entities';
 import { HttpError, badRequest, conflict, forbidden, notFound } from '../../lib/errors';
 import { newId } from '../../lib/ids';
 import { webhookRepo } from '../../store/repos';
 import type { WebhookRecord } from '../../store/types';
-import { recordEvent, userActor } from '../auditService/auditService.service';
+import { SYSTEM_ACTOR, recordEvent, userActor, type Actor } from '../auditService/auditService.service';
+import { policiesOf, resolvePolicy } from '../secretPolicyService/secretPolicyService.service';
 import { BaseServices, type OrgContext } from '../baseService';
 import { getSecretType } from '../secretTypeService/registry';
 import { WebhookUnavailableError, callWebhook } from '../webhookService/webhook.client';
@@ -51,6 +56,52 @@ const expired = (s: Pick<SecretEntity, 'expiresAt'>) => !!s.expiresAt && Date.pa
 export function effectiveStatus(s: Pick<SecretEntity, 'status' | 'expiresAt'>): SecretStatus {
   return RETRIEVABLE_SECRET_STATUSES.includes(s.status) && expired(s) ? 'EXPIRED' : s.status;
 }
+
+/**
+ * The status a live, retrievable secret should have for its expiry: EXPIRED once it has passed,
+ * EXPIRING inside the warning window, otherwise ACTIVE (spec 4.9.12).
+ */
+export function expiryStatus(expiresAt: string | null, warningDays: number): 'ACTIVE' | 'EXPIRING' | 'EXPIRED' {
+  if (!expiresAt) return 'ACTIVE';
+  const left = Date.parse(expiresAt) - Date.now();
+  return left <= 0 ? 'EXPIRED' : left <= warningDays * DAY ? 'EXPIRING' : 'ACTIVE';
+}
+
+/** Who writes: a member (from the request) or Token Vault itself (scheduled rotation, retention). */
+export interface Writer {
+  orgId: string;
+  userId: string;
+  userName: string;
+  actor: Actor;
+}
+const writerOf = (ctx: OrgContext): Writer => ({ orgId: ctx.org.id, userId: ctx.user.id, userName: ctx.user.fullName, actor: userActor(ctx) });
+export const systemWriter = (orgId: string): Writer => ({ orgId, userId: SYSTEM_ACTOR.id, userName: SYSTEM_ACTOR.name, actor: SYSTEM_ACTOR });
+
+/** Rotation failures worth retrying (the webhook or its key service was unavailable). */
+export const PROVIDER_FAILURE_CODES = ['WEBHOOK_UNAVAILABLE', 'KEY_SERVICE_UNAVAILABLE'];
+
+export function rotationJobView(j: RotationJobEntity, secretName: string): SecretRotationJobView {
+  return {
+    id: j.id,
+    secret: { id: j.secretId, name: secretName },
+    trigger: j.trigger,
+    strategy: j.strategy,
+    status: j.status,
+    attempts: j.attempts,
+    fromVersion: j.fromVersion,
+    toVersion: j.toVersion,
+    errorCode: j.errorCode,
+    errorMessage: j.errorMessage,
+    requestedBy: j.requestedBy ? { id: j.requestedBy, name: j.requestedByName ?? '' } : null,
+    scheduledFor: j.scheduledFor,
+    startedAt: j.startedAt,
+    finishedAt: j.finishedAt,
+    nextAttemptAt: j.nextAttemptAt,
+    createdAt: j.createdAt,
+  };
+}
+
+const OPEN_JOB = In(['PENDING', 'RUNNING', 'WAITING_FOR_VALUE']);
 
 type Stored = { value_ref: string; version: number; fingerprint: string; summary: Record<string, string>; type_version: number; copied_from?: number };
 
@@ -158,7 +209,15 @@ export default class SecretService extends BaseServices<SecretEntity, SecretView
       webhookId: s.webhookId,
       integrationId: s.integrationId,
       expiresAt: s.expiresAt,
-      rotation: { enabled: s.rotationEnabled, intervalDays: s.rotationIntervalDays, nextRotationAt: s.nextRotationAt },
+      rotation: {
+        enabled: s.rotationEnabled,
+        intervalDays: s.rotationIntervalDays,
+        strategy: s.rotationStrategy,
+        graceHours: s.rotationGraceHours,
+        nextRotationAt: s.nextRotationAt,
+        lastRotatedAt: s.lastRotatedAt,
+        generatable: !!type && generatableSecretFields(type).length > 0,
+      },
       lastRetrievedAt: s.lastRetrievedAt,
       createdBy: { id: s.createdBy, name: s.createdByName },
       createdAt: s.createdAt,
@@ -177,6 +236,7 @@ export default class SecretService extends BaseServices<SecretEntity, SecretView
       typeVersion: v.typeVersion,
       reason: v.reason,
       copiedFrom: v.copiedFrom,
+      supersededAt: v.supersededAt,
       createdBy: { id: v.createdBy, name: v.createdByName },
       createdAt: v.createdAt,
       destroyedAt: v.destroyedAt,
@@ -188,9 +248,12 @@ export default class SecretService extends BaseServices<SecretEntity, SecretView
     const versions = await db.find(SecretVersionEntity, { where: { secretId: s.id }, order: { version: 'DESC' } });
     const status = effectiveStatus(s);
     const live = status !== 'DELETED';
+    const jobs = await db.find(RotationJobEntity, { where: { secretId: s.id }, order: { createdAt: 'DESC' }, take: 10 });
     return {
       ...this.view(s, versions.find((v) => v.state === 'ACTIVE') ?? null),
       versions: versions.map((v) => this.versionView(v)),
+      rotationJobs: jobs.map((j) => rotationJobView(j, s.name)),
+      policy: resolvePolicy(await policiesOf(ctx.org.id), s, getSecretType(s.typeKey)),
       can: {
         retrieve: has(ctx, PERMISSIONS.SECRET_RETRIEVE) && RETRIEVABLE_SECRET_STATUSES.includes(status),
         updateValue: has(ctx, PERMISSIONS.SECRET_UPDATE_VALUE) && !['REVOKED', 'ARCHIVED', 'DELETED'].includes(status),
@@ -202,6 +265,16 @@ export default class SecretService extends BaseServices<SecretEntity, SecretView
         delete: has(ctx, PERMISSIONS.SECRET_DELETE) && SECRET_TRANSITIONS.delete.includes(status),
       },
     };
+  }
+
+  /** Rotation history across the organization (newest first), optionally of one secret or status. */
+  async rotations(orgId: string, body: { secretId?: unknown; status?: unknown } = {}): Promise<{ items: SecretRotationJobView[] }> {
+    const q = db.createQueryBuilder(RotationJobEntity, 'j').where('j.organization_id = :orgId', { orgId }).orderBy('j.created_at', 'DESC').take(200);
+    if (typeof body.secretId === 'string' && body.secretId) q.andWhere('j.secret_id = :secretId', { secretId: body.secretId });
+    if (typeof body.status === 'string' && body.status) q.andWhere('j.status = :status', { status: body.status });
+    const jobs = await q.getMany();
+    const names = new Map((jobs.length ? await db.findBy(SecretEntity, { id: In([...new Set(jobs.map((j) => j.secretId))]) }) : []).map((s) => [s.id, s.name]));
+    return { items: jobs.map((j) => rotationJobView(j, names.get(j.secretId) ?? j.secretId)) };
   }
 
   // ── lookups ────────────────────────────────────────────────────
@@ -252,18 +325,28 @@ export default class SecretService extends BaseServices<SecretEntity, SecretView
     return value;
   }
 
-  private lifecycleSettings(type: SecretTypeDefinition, dto: Pick<SaveSecretDto, 'expiresAt' | 'rotationEnabled' | 'rotationIntervalDays'>, current?: SecretEntity) {
+  private lifecycleSettings(type: SecretTypeDefinition, dto: Pick<SaveSecretDto, 'expiresAt' | 'rotationEnabled' | 'rotationIntervalDays' | 'rotationStrategy' | 'rotationGraceHours'>, current?: SecretEntity, defaultExpiresInDays?: number | null) {
     const fields: Record<string, string> = {};
-    let expiresAt = dto.expiresAt !== undefined ? dto.expiresAt : current ? current.expiresAt : type.defaults.expiresInDays ? addDays(type.defaults.expiresInDays) : null;
+    // A new secret without an expiry gets the policy's default (or the type's), spec 4.9.12.
+    let expiresAt = dto.expiresAt !== undefined ? dto.expiresAt : current ? current.expiresAt : defaultExpiresInDays ? addDays(defaultExpiresInDays) : null;
     if (expiresAt && !type.lifecycle.expiration) fields.expiresAt = `${type.name} secrets do not expire`;
     if (expiresAt) expiresAt = new Date(expiresAt).toISOString();
     const interval = dto.rotationIntervalDays !== undefined ? dto.rotationIntervalDays : current ? current.rotationIntervalDays : (type.defaults.rotationIntervalDays ?? null);
     const enabled = dto.rotationEnabled ?? current?.rotationEnabled ?? !!type.defaults.rotationIntervalDays;
     if (enabled && !type.lifecycle.rotation) fields.rotationEnabled = `${type.name} secrets are not rotated`;
     if (enabled && !interval) fields.rotationIntervalDays = 'Give a rotation interval in days';
+    const strategy = dto.rotationStrategy ?? current?.rotationStrategy ?? 'manual';
+    if (strategy === 'generated' && !generatableSecretFields(type).length) fields.rotationStrategy = `${type.name} values cannot be generated by the webhook; use manual rotation`;
     if (Object.keys(fields).length) throw badRequest('Request validation failed', { fields });
     const keepSchedule = current && current.rotationEnabled && current.rotationIntervalDays === interval && current.nextRotationAt;
-    return { expiresAt, rotationEnabled: enabled, rotationIntervalDays: interval ?? null, nextRotationAt: enabled ? (keepSchedule ? current!.nextRotationAt : addDays(interval!)) : null };
+    return {
+      expiresAt,
+      rotationEnabled: enabled,
+      rotationIntervalDays: interval ?? null,
+      nextRotationAt: enabled ? (keepSchedule ? current!.nextRotationAt : addDays(interval!)) : null,
+      rotationStrategy: strategy,
+      rotationGraceHours: dto.rotationGraceHours ?? current?.rotationGraceHours ?? 24,
+    };
   }
 
   private async nameTaken(ex: EntityManager, orgId: string, s: Pick<SecretEntity, 'project' | 'workspace' | 'environment' | 'name'>, exceptId?: string) {
@@ -285,8 +368,9 @@ export default class SecretService extends BaseServices<SecretEntity, SecretView
     if (Object.keys(fields).length) throw badRequest('Request validation failed', { fields });
     this.checkPayload(type, dto.payload);
     const metadata = this.checkMetadata(type, dto.metadata);
-    const lifecycle = this.lifecycleSettings(type, dto);
     const scope = { project: dto.project ?? 'default', workspace: dto.workspace ?? 'default', environment: dto.environment!, name: dto.name };
+    const policy = resolvePolicy(await policiesOf(ctx.org.id), scope, type);
+    const lifecycle = this.lifecycleSettings(type, dto, undefined, policy.defaultExpiresInDays.value);
     if (await this.nameTaken(db, ctx.org.id, scope)) throw conflict(`A secret named "${dto.name}" already exists in ${scope.project}/${scope.workspace} (${scope.environment})`);
     const webhook = await this.targetWebhook(ctx.org.id, dto.webhookId);
 
@@ -310,6 +394,7 @@ export default class SecretService extends BaseServices<SecretEntity, SecretView
           webhookId: webhook.id,
           integrationId: dto.integrationId ?? null,
           ...lifecycle,
+          lastRotatedAt: null,
           lastRetrievedAt: null,
           createdBy: ctx.user.id,
           createdByName: ctx.user.fullName,
@@ -319,7 +404,7 @@ export default class SecretService extends BaseServices<SecretEntity, SecretView
           updatedAt: t,
           deletedAt: null,
         });
-        await ex.insert(SecretVersionEntity, this.versionRow(ctx, id, stored, 'Initial value', t));
+        await ex.insert(SecretVersionEntity, this.versionRow(writerOf(ctx), id, stored, 'Initial value', t));
         await recordEvent({ orgId: ctx.org.id, actor, eventType: 'secret.created', target: { type: 'secret', id, name: dto.name }, metadata: { typeKey: type.key, project: scope.project, workspace: scope.workspace, environment: scope.environment, version: 1, fingerprint: stored.fingerprint, status: dto.activate === false ? 'PENDING' : 'ACTIVE' } }, ex);
       });
     } catch (e) {
@@ -331,11 +416,11 @@ export default class SecretService extends BaseServices<SecretEntity, SecretView
     return this.detail(ctx, id);
   }
 
-  private versionRow(ctx: OrgContext, secretId: string, stored: Stored, reason: string, t: string): Partial<SecretVersionEntity> {
+  private versionRow(w: Writer, secretId: string, stored: Stored, reason: string, t: string): Partial<SecretVersionEntity> {
     return {
       id: newId('secv'),
       secretId,
-      organizationId: ctx.org.id,
+      organizationId: w.orgId,
       version: stored.version,
       valueRef: stored.value_ref,
       fingerprint: stored.fingerprint,
@@ -344,9 +429,10 @@ export default class SecretService extends BaseServices<SecretEntity, SecretView
       state: 'ACTIVE',
       reason,
       copiedFrom: stored.copied_from ?? null,
-      createdBy: ctx.user.id,
-      createdByName: ctx.user.fullName,
+      createdBy: w.userId,
+      createdByName: w.userName,
       createdAt: t,
+      supersededAt: null,
       destroyedAt: null,
     };
   }
@@ -402,7 +488,9 @@ export default class SecretService extends BaseServices<SecretEntity, SecretView
       };
       await ex.update(SecretEntity, { id: s.id }, changes);
       const changed = Object.keys(changes).filter((k) => !['updatedBy', 'updatedByName', 'updatedAt'].includes(k) && JSON.stringify((changes as Record<string, unknown>)[k]) !== JSON.stringify((s as unknown as Record<string, unknown>)[k]));
-      await recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: renewed ? 'secret.renewed' : 'secret.updated', target: { type: 'secret', id: s.id, name: dto.name }, metadata: { changed, expiresAt: lifecycle.expiresAt, rotationEnabled: lifecycle.rotationEnabled, rotationIntervalDays: lifecycle.rotationIntervalDays } }, ex);
+      await recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: renewed ? 'secret.renewed' : 'secret.updated', target: { type: 'secret', id: s.id, name: dto.name }, metadata: { changed, expiresAt: lifecycle.expiresAt, rotationEnabled: lifecycle.rotationEnabled, rotationIntervalDays: lifecycle.rotationIntervalDays, strategy: lifecycle.rotationStrategy } }, ex);
+      // Rotation turned off: a rotation waiting for its value no longer applies.
+      if (!lifecycle.rotationEnabled) await this.cancelOpenRotation(ex, s, 'Rotation turned off');
     });
     return this.detail(ctx, dto.id!);
   }
@@ -411,77 +499,220 @@ export default class SecretService extends BaseServices<SecretEntity, SecretView
 
   /**
    * Stores a new version on the webhook and makes it active (the previous one stays, as
-   * PREVIOUS, until destroyed). `copyFrom`: a rollback, whose value the webhook copies.
+   * PREVIOUS, until destroyed). `copyFrom`: a rollback, whose value the webhook copies;
+   * `generate`: the webhook creates fresh values for the type's generatable fields (rotation).
+   * A new value completes a rotation in progress (its job is closed); a rotation also renews
+   * the expiry when a policy or the type gives secrets a lifetime.
    */
-  private async newVersion(ctx: OrgContext, id: string, opts: { payload?: Record<string, unknown>; copyFrom?: number; reason: string; eventType: string }): Promise<SecretDetail> {
-    const s = await this.secret(ctx.org.id, id);
+  private async newVersion(w: Writer, id: string, opts: { payload?: Record<string, unknown>; copyFrom?: number; generate?: boolean; reason: string; eventType: string; trigger?: SecretRotationTrigger }): Promise<SecretEntity> {
+    const s = await this.secret(w.orgId, id);
     const status = effectiveStatus(s);
     if (['REVOKED', 'ARCHIVED', 'DELETED'].includes(status)) throw new HttpError(409, 'SECRET_NOT_WRITABLE', `This secret is ${status.toLowerCase()}; its value cannot change`);
     const type = this.typeOf(s.typeKey);
     if (!type.lifecycle.versioning && opts.copyFrom) throw new HttpError(409, 'SECRET_VERSIONING_OFF', `${type.name} secrets keep no versions to roll back to`);
-    const webhook = await this.webhookOf(ctx.org.id, s);
+    const webhook = await this.webhookOf(w.orgId, s);
     const next = (s.activeVersion ?? 0) + 1;
+    const policy = resolvePolicy(await policiesOf(w.orgId), s, type);
 
     let stored: Stored;
-    if (opts.copyFrom !== undefined) {
-      const from = await db.findOneBy(SecretVersionEntity, { secretId: s.id, version: opts.copyFrom });
-      if (!from) throw notFound(`Version ${opts.copyFrom}`);
+    const fromRef = async (version: number, activeAllowed: boolean) => {
+      const from = await db.findOneBy(SecretVersionEntity, { secretId: s.id, version });
+      if (!from) throw notFound(`Version ${version}`);
       if (from.state === 'DESTROYED' || !from.valueRef) throw new HttpError(409, 'SECRET_VERSION_DESTROYED', `Version ${from.version} was destroyed`);
-      if (from.state === 'ACTIVE') throw new HttpError(409, 'SECRET_VERSION_ACTIVE', `Version ${from.version} is already the active version`);
+      if (from.state === 'ACTIVE' && !activeAllowed) throw new HttpError(409, 'SECRET_VERSION_ACTIVE', `Version ${from.version} is already the active version`);
+      return from.valueRef;
+    };
+    const copyOrGenerate = async (path: string, ref: string) => {
       let res;
       try {
-        res = await callWebhook<Stored>(webhook, 'POST', '/internal/v1/secrets/copy', { org_id: ctx.org.id, secret_id: s.id, from_ref: from.valueRef, version: next });
+        res = await callWebhook<Stored>(webhook, 'POST', path, { org_id: w.orgId, secret_id: s.id, from_ref: ref, version: next });
       } catch (e) {
         webhookFailure(e, 'Nothing changed.');
       }
+      if (res.status === 409 && (res.body as any)?.error?.code === 'SECRET_NOT_GENERATABLE') throw new HttpError(409, 'SECRET_NOT_GENERATABLE', (res.body as any).error.message);
       if (res.status !== 201) rejected(res);
-      stored = res.body;
+      return res.body;
+    };
+    if (opts.copyFrom !== undefined) stored = await copyOrGenerate('/internal/v1/secrets/copy', await fromRef(opts.copyFrom, false));
+    else if (opts.generate) {
+      if (!generatableSecretFields(type).length) throw new HttpError(409, 'SECRET_NOT_GENERATABLE', `${type.name} values cannot be generated; give the new value`);
+      if (!s.activeVersion) throw new HttpError(409, 'SECRET_VERSION_DESTROYED', 'This secret has no active version to rotate from');
+      stored = await copyOrGenerate('/internal/v1/secrets/generate', await fromRef(s.activeVersion, true));
     } else {
       this.checkPayload(type, opts.payload);
-      stored = await this.storeOnWebhook(webhook, ctx.org.id, s.id, next, type, opts.payload!);
+      stored = await this.storeOnWebhook(webhook, w.orgId, s.id, next, type, opts.payload!);
     }
 
+    const rotation = opts.eventType === 'secret.rotated';
     try {
       await transaction(async (ex) => {
-        const locked = await this.secret(ctx.org.id, s.id, ex, true);
+        const locked = await this.secret(w.orgId, s.id, ex, true);
         if (locked.activeVersion !== s.activeVersion) throw conflict('Another version was stored meanwhile; reload and try again');
         const t = now();
-        await ex.update(SecretVersionEntity, { secretId: s.id, state: 'ACTIVE' }, { state: 'PREVIOUS' });
-        await ex.insert(SecretVersionEntity, this.versionRow(ctx, s.id, stored, opts.reason, t));
+        await ex.update(SecretVersionEntity, { secretId: s.id, state: 'ACTIVE' }, { state: 'PREVIOUS', supersededAt: t });
+        await ex.insert(SecretVersionEntity, this.versionRow(w, s.id, stored, opts.reason, t));
+
+        // A new value (not a rollback) completes the rotation in progress, if any.
+        const job = opts.copyFrom === undefined ? await ex.findOne(RotationJobEntity, { where: { secretId: s.id, status: OPEN_JOB }, lock: { mode: 'pessimistic_write' } }) : null;
+        const rotated = rotation || !!job;
+        if (job) await ex.update(RotationJobEntity, { id: job.id }, { status: 'SUCCEEDED', fromVersion: s.activeVersion, toVersion: next, startedAt: job.startedAt ?? t, finishedAt: t, nextAttemptAt: null, errorCode: null, errorMessage: null });
+        else if (rotation) await ex.insert(RotationJobEntity, { id: newId('rot'), organizationId: w.orgId, secretId: s.id, trigger: opts.trigger ?? 'MANUAL', strategy: opts.generate ? 'generated' : 'manual', status: 'SUCCEEDED', attempts: 1, fromVersion: s.activeVersion, toVersion: next, errorCode: null, errorMessage: null, requestedBy: w.userId, requestedByName: w.userName, scheduledFor: t, startedAt: t, finishedAt: t, nextAttemptAt: null, createdAt: t });
+
+        // Rotation renews the lifetime (expiration-based rotation, spec 4.9.12).
+        const lifetime = policy.defaultExpiresInDays.value;
+        const expiresAt = rotated && lifetime && locked.expiresAt ? addDays(lifetime) : locked.expiresAt;
         const st = effectiveStatus(locked);
+        const nextStatus: SecretStatus =
+          st === 'PENDING' ? 'PENDING' : opts.copyFrom !== undefined && st === 'ROTATION_PENDING' ? 'ROTATION_PENDING' : st === 'EXPIRED' && expiresAt === locked.expiresAt ? 'EXPIRED' : expiryStatus(expiresAt, policy.expiryWarningDays.value);
         await ex.update(
           SecretEntity,
           { id: s.id },
           {
             activeVersion: next,
-            status: st === 'PENDING' || st === 'EXPIRED' ? st : 'ACTIVE',
+            status: nextStatus,
+            expiresAt,
             ...(locked.rotationEnabled && locked.rotationIntervalDays ? { nextRotationAt: addDays(locked.rotationIntervalDays) } : {}),
-            updatedBy: ctx.user.id,
-            updatedByName: ctx.user.fullName,
+            ...(rotated ? { lastRotatedAt: t } : {}),
+            updatedBy: w.userId,
+            updatedByName: w.userName,
             updatedAt: t,
           },
         );
-        await recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: opts.eventType, target: { type: 'secret', id: s.id, name: s.name }, metadata: { version: next, previousVersion: s.activeVersion, fingerprint: stored.fingerprint, ...(opts.copyFrom ? { copiedFrom: opts.copyFrom } : {}), reason: opts.reason } }, ex);
+        const eventType = job && !rotation ? 'secret.rotated' : opts.eventType;
+        await recordEvent(
+          {
+            orgId: w.orgId,
+            actor: w.actor,
+            eventType,
+            target: { type: 'secret', id: s.id, name: s.name },
+            metadata: {
+              version: next,
+              previousVersion: s.activeVersion,
+              fingerprint: stored.fingerprint,
+              ...(opts.copyFrom ? { copiedFrom: opts.copyFrom } : {}),
+              ...(rotated ? { trigger: job?.trigger ?? opts.trigger ?? 'MANUAL', strategy: opts.generate ? 'generated' : 'manual', ...(expiresAt !== locked.expiresAt ? { expiresAt } : {}) } : {}),
+              reason: opts.reason,
+            },
+          },
+          ex,
+        );
       });
     } catch (e) {
-      await this.destroyOnWebhook(webhook, ctx.org.id, s.id, [stored.value_ref]).catch(() => undefined);
+      await this.destroyOnWebhook(webhook, w.orgId, s.id, [stored.value_ref]).catch(() => undefined);
       throw e;
     }
-    return this.detail(ctx, s.id);
+    return (await db.findOneBy(SecretEntity, { id: s.id }))!;
   }
 
-  updateValue(ctx: OrgContext, dto: UpdateSecretValueDto) {
-    return this.newVersion(ctx, dto.id, { payload: dto.payload, reason: dto.reason, eventType: 'secret.version_created' });
+  /** Closes a rotation that will not happen (rotation turned off, secret revoked). */
+  private async cancelOpenRotation(ex: EntityManager, s: SecretEntity, why: string) {
+    const job = await ex.findOneBy(RotationJobEntity, { secretId: s.id, status: OPEN_JOB });
+    if (!job) return;
+    await ex.update(RotationJobEntity, { id: job.id }, { status: 'CANCELLED', errorMessage: why, finishedAt: now(), nextAttemptAt: null });
+    if (s.status === 'ROTATION_PENDING' || s.status === 'ROTATING') await ex.update(SecretEntity, { id: s.id }, { status: 'ACTIVE' });
   }
 
-  /** Manual rotation (spec 4.9.11): a new value, recorded as a rotation; the schedule restarts. */
-  rotate(ctx: OrgContext, dto: UpdateSecretValueDto) {
-    return this.newVersion(ctx, dto.id, { payload: dto.payload, reason: dto.reason || 'Manual rotation', eventType: 'secret.rotated' });
+  async updateValue(ctx: OrgContext, dto: UpdateSecretValueDto) {
+    await this.newVersion(writerOf(ctx), dto.id, { payload: dto.payload, reason: dto.reason, eventType: 'secret.version_created' });
+    return this.detail(ctx, dto.id);
+  }
+
+  /**
+   * Rotate now (spec 4.9.11): with a payload, the given value; without, the webhook generates it
+   * (types with generatable fields). Recorded as a rotation, with a rotation job; the schedule
+   * restarts. A failed generated rotation is recorded (and notified) before the error is returned.
+   */
+  async rotate(ctx: OrgContext, dto: RotateSecretDto) {
+    const w = writerOf(ctx);
+    if (dto.payload) {
+      await this.newVersion(w, dto.id, { payload: dto.payload, reason: dto.reason || 'Manual rotation', eventType: 'secret.rotated', trigger: 'MANUAL' });
+      return this.detail(ctx, dto.id);
+    }
+    const s = await this.secret(ctx.org.id, dto.id);
+    try {
+      await this.newVersion(w, dto.id, { generate: true, reason: dto.reason || 'Manual rotation (generated value)', eventType: 'secret.rotated', trigger: 'MANUAL' });
+    } catch (e) {
+      if (e instanceof HttpError && !['SECRET_NOT_WRITABLE', 'CONFLICT', 'NOT_FOUND'].includes(e.code)) await this.recordRotationFailure(w, s, e, { trigger: 'MANUAL', final: true });
+      throw e;
+    }
+    return this.detail(ctx, dto.id);
+  }
+
+  /**
+   * Runs a generated rotation for the lifecycle job (scheduled or before expiry). On failure the
+   * job is retried later when the webhook or its key service was unavailable (up to 3 attempts),
+   * otherwise it fails at once; either way the previous version stays active.
+   */
+  async runRotationJob(jobId: string): Promise<'SUCCEEDED' | 'RETRY' | 'FAILED' | 'SKIPPED'> {
+    const job = await db.findOneBy(RotationJobEntity, { id: jobId });
+    if (!job || job.status !== 'PENDING') return 'SKIPPED';
+    const s = await db.findOneBy(SecretEntity, { id: job.secretId });
+    if (!s || !RETRIEVABLE_SECRET_STATUSES.includes(effectiveStatus(s))) {
+      await db.update(RotationJobEntity, { id: job.id }, { status: 'CANCELLED', errorMessage: 'The secret is no longer active', finishedAt: now(), nextAttemptAt: null });
+      return 'SKIPPED';
+    }
+    const t = now();
+    await db.update(RotationJobEntity, { id: job.id }, { status: 'RUNNING', attempts: job.attempts + 1, startedAt: job.startedAt ?? t });
+    await db.update(SecretEntity, { id: s.id }, { status: 'ROTATING' });
+    const w = systemWriter(s.organizationId);
+    try {
+      await this.newVersion(w, s.id, { generate: true, reason: job.trigger === 'EXPIRY' ? 'Rotation before expiry' : 'Scheduled rotation', eventType: 'secret.rotated', trigger: job.trigger });
+      return 'SUCCEEDED';
+    } catch (e) {
+      const attempts = job.attempts + 1;
+      const retry = PROVIDER_FAILURE_CODES.includes((e as HttpError).code) && attempts < 3;
+      await this.recordRotationFailure(w, s, e, { trigger: job.trigger, final: !retry, jobId: job.id, attempts });
+      return retry ? 'RETRY' : 'FAILED';
+    }
+  }
+
+  /** Records a failed rotation: the job, the secret's status back to normal, audit and notification. */
+  private async recordRotationFailure(w: Writer, s: SecretEntity, e: unknown, opts: { trigger: SecretRotationTrigger; final: boolean; jobId?: string; attempts?: number }) {
+    const err = e instanceof HttpError ? e : new HttpError(500, 'ROTATION_FAILED', 'The rotation failed');
+    const policy = resolvePolicy(await policiesOf(w.orgId), s, getSecretType(s.typeKey));
+    const t = now();
+    const retryAt = new Date(Date.now() + ((opts.attempts ?? 1) === 1 ? 15 : 60) * 60_000).toISOString();
+    await transaction(async (ex) => {
+      const locked = await this.secret(w.orgId, s.id, ex, true);
+      // A manual attempt that fails is its own record: a rotation already waiting for its value stays open.
+      const job = opts.jobId ? await ex.findOneBy(RotationJobEntity, { id: opts.jobId }) : null;
+      const jobChanges = { errorCode: err.code, errorMessage: err.message.slice(0, 300), ...(opts.final ? { status: 'FAILED' as const, finishedAt: t, nextAttemptAt: null } : { status: 'PENDING' as const, nextAttemptAt: retryAt }) };
+      if (job) await ex.update(RotationJobEntity, { id: job.id }, { ...jobChanges, attempts: opts.attempts ?? job.attempts + 1 });
+      else await ex.insert(RotationJobEntity, { id: newId('rot'), organizationId: w.orgId, secretId: s.id, trigger: opts.trigger, strategy: 'generated', attempts: 1, fromVersion: s.activeVersion, toVersion: null, requestedBy: w.userId, requestedByName: w.userName, scheduledFor: t, startedAt: t, createdAt: t, ...jobChanges, status: 'FAILED', finishedAt: t, nextAttemptAt: null });
+      // The previous version stays active; the secret goes back to its normal state.
+      if (locked.status === 'ROTATING') await ex.update(SecretEntity, { id: s.id }, { status: expiryStatus(locked.expiresAt, policy.expiryWarningDays.value) });
+      // A failed scheduled rotation is tried again tomorrow, not on every run of the job.
+      if (opts.final && opts.trigger !== 'MANUAL' && locked.rotationEnabled) await ex.update(SecretEntity, { id: s.id }, { nextRotationAt: addDays(1) });
+      const target = { type: 'secret', id: s.id, name: s.name };
+      if (PROVIDER_FAILURE_CODES.includes(err.code)) await recordEvent({ orgId: w.orgId, actor: w.actor, eventType: 'secret.provider_failure', target, outcome: 'FAILURE', severity: 'warning', metadata: { errorCode: err.code, trigger: opts.trigger, attempts: opts.attempts ?? 1, ...(opts.final ? {} : { nextAttemptAt: retryAt }) } }, ex);
+      if (opts.final) await recordEvent({ orgId: w.orgId, actor: w.actor, eventType: 'secret.rotation_failed', target, outcome: 'FAILURE', severity: 'warning', metadata: { errorCode: err.code, trigger: opts.trigger, attempts: opts.attempts ?? 1, version: s.activeVersion } }, ex);
+    });
   }
 
   /** Rollback (spec 4.9.8): a new active version with an older version's value; history is not rewritten. */
-  rollback(ctx: OrgContext, dto: SecretVersionDto) {
-    return this.newVersion(ctx, dto.id, { copyFrom: dto.version, reason: dto.reason || `Rollback to version ${dto.version}`, eventType: 'secret.rolled_back' });
+  async rollback(ctx: OrgContext, dto: SecretVersionDto) {
+    await this.newVersion(writerOf(ctx), dto.id, { copyFrom: dto.version, reason: dto.reason || `Rollback to version ${dto.version}`, eventType: 'secret.rolled_back' });
+    return this.detail(ctx, dto.id);
+  }
+
+  /**
+   * Destroys versions on the webhook for the retention policy (system actor), each audited.
+   * Returns how many were destroyed.
+   */
+  async destroyForRetention(s: SecretEntity, versions: SecretVersionEntity[], why: string): Promise<number> {
+    const refs = versions.filter((v) => v.valueRef && v.state === 'PREVIOUS').map((v) => v.valueRef!);
+    if (!refs.length) return 0;
+    const destroyed = new Set(await this.destroyOnWebhook(await this.webhookOf(s.organizationId, s), s.organizationId, s.id, refs));
+    // A ref the webhook no longer had is gone too.
+    const gone = versions.filter((v) => v.valueRef && (destroyed.has(v.valueRef) || refs.includes(v.valueRef)));
+    await transaction(async (ex) => {
+      const t = now();
+      for (const v of gone) {
+        await ex.update(SecretVersionEntity, { id: v.id, state: 'PREVIOUS' }, { state: 'DESTROYED', valueRef: null, destroyedAt: t });
+        await recordEvent({ orgId: s.organizationId, actor: SYSTEM_ACTOR, eventType: 'secret.version_destroyed', target: { type: 'secret', id: s.id, name: s.name }, metadata: { version: v.version, fingerprint: v.fingerprint, reason: why } }, ex);
+      }
+    });
+    return gone.length;
   }
 
   /** Destroys an inactive version on the webhook (crypto-shredding); its metadata stays. */
@@ -560,6 +791,7 @@ export default class SecretService extends BaseServices<SecretEntity, SecretView
       const from = effectiveStatus(s);
       if (!SECRET_TRANSITIONS[action].includes(from)) throw new HttpError(409, 'SECRET_INVALID_STATE', `A ${from.toLowerCase().replace('_', ' ')} secret cannot be ${action === 'activate' ? 'activated' : `${action}d`}`);
       if (action === 'activate' && expired(s)) throw new HttpError(409, 'SECRET_EXPIRED', 'Its expiry has passed; set a new expiry first');
+      if (action !== 'activate') await this.cancelOpenRotation(ex, s, `Secret ${action}d`);
       await ex.update(SecretEntity, { id: s.id }, { status: to, updatedBy: ctx.user.id, updatedByName: ctx.user.fullName, updatedAt: now() });
       await recordEvent({ orgId: ctx.org.id, actor: userActor(ctx), eventType: `secret.${action === 'activate' ? 'activated' : `${action}d`}`, target: { type: 'secret', id: s.id, name: s.name }, severity: action === 'revoke' ? 'warning' : 'info', metadata: { from, to, reason: dto.reason } }, ex);
     });
@@ -592,6 +824,7 @@ export default class SecretService extends BaseServices<SecretEntity, SecretView
     await transaction(async (ex) => {
       const t = now();
       await ex.update(SecretVersionEntity, { secretId: s.id, state: In(['ACTIVE', 'PREVIOUS']) }, { state: 'DESTROYED', valueRef: null, destroyedAt: t });
+      await this.cancelOpenRotation(ex, s, 'Secret deleted');
       await ex.update(SecretEntity, { id: s.id }, { status: 'DELETED', activeVersion: null, deletedAt: t, updatedBy: ctx.user.id, updatedByName: ctx.user.fullName, updatedAt: t });
       // Grants naming this secret end with it (selector grants simply stop matching it).
       await ex.update(SecretAccessGrantEntity, { secretId: s.id, status: 'ACTIVE' }, { status: 'REVOKED', revokedAt: t, revokedBy: ctx.user.fullName, revocationReason: 'Secret deleted' });

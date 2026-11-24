@@ -10,6 +10,8 @@ import { startHeartbeat } from './services/webhookService/webhookService.service
 import { startCredentialChecks } from './services/integrationService/credentialHealth';
 import { catalogSync } from './services/providerService/registry';
 import { secretTypeSync } from './services/secretTypeService/registry';
+import { startSecretLifecycle } from './services/secretService/secretLifecycle.job';
+import { startNotificationDelivery } from './services/notificationService/notificationService.service';
 
 async function main() {
   await runMigrations();
@@ -34,11 +36,15 @@ async function main() {
   });
   const heartbeat = startHeartbeat();
   const credentialChecks = startCredentialChecks();
+  const secretLifecycle = startSecretLifecycle();
+  const notifications = startNotificationDelivery();
 
   const shutdown = (signal: string) => {
     console.log(`[api] ${signal} received, shutting down`);
     clearInterval(heartbeat);
     if (credentialChecks) clearInterval(credentialChecks);
+    if (secretLifecycle) clearInterval(secretLifecycle);
+    if (notifications) clearInterval(notifications);
     server.close(() => void closeDatabase().finally(() => process.exit(0)));
     setTimeout(() => process.exit(1), 5000).unref();
   };

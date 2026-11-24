@@ -123,6 +123,13 @@ suite('Secret access for agents', () => {
     await m.secrets.updateValue(owner, { id: db.id, payload: { username: 'orders', password: 'second-value' } } as any);
     await expect(retrieve({ secret_id: db.id, version: 1 })).rejects.toMatchObject({ code: 'SECRET_VERSION_NOT_PERMITTED' });
     expect(((await retrieve({ secret_id: db.id })).body as any).payload.password).toBe('second-value');
+
+    // A rotation opens a grace period: the version it replaced stays readable (only that one), until the grace ends.
+    await m.secrets.rotate(owner, { id: db.id, payload: { username: 'orders', password: 'third-value' } } as any);
+    expect(((await retrieve({ secret_id: db.id, version: 2 })).body as any).payload.password).toBe('second-value');
+    await expect(retrieve({ secret_id: db.id, version: 1 })).rejects.toMatchObject({ code: 'SECRET_VERSION_NOT_PERMITTED' });
+    await m.client.db.query(`UPDATE secrets SET rotation_grace_hours = 0 WHERE id = $1`, [db.id]);
+    await expect(retrieve({ secret_id: db.id, version: 2 })).rejects.toMatchObject({ code: 'SECRET_VERSION_NOT_PERMITTED' });
   });
 
   it('a selector grant covers every matching secret, also ones created later; source IPs are enforced', async () => {

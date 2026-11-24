@@ -1,5 +1,5 @@
 import type { Request, Response, NextFunction, Router } from 'express';
-import { summarizeSecretPayload, unknownSecretFields, validateSecretPayload, type SecretPayload, type SecretTypeDefinition } from '@token-vault/shared';
+import { generatableSecretFields, generateSecretFieldValue, summarizeSecretPayload, unknownSecretFields, validateSecretPayload, type SecretPayload, type SecretTypeDefinition } from '@token-vault/shared';
 import { keyIdOfRef, KeyServiceUnavailableError } from './store/credential-store';
 import { SecretValueUnreadableError, destroyValues, getValue, readValue, storeValue } from './store/secret-store';
 import { secretTypeSync, secretTypes } from './providers/secret-types';
@@ -13,6 +13,8 @@ import { secretTypeSync, secretTypes } from './providers/secret-types';
  *   POST /internal/v1/secrets/store     {org_id, secret_id, version, type_key, payload} → 201 stored version
  *   POST /internal/v1/secrets/read      {org_id, secret_id, value_ref, fields?} → the payload (only `fields`, if given)
  *   POST /internal/v1/secrets/copy      {org_id, secret_id, from_ref, version} → 201 a new version with the same value (rollback)
+ *   POST /internal/v1/secrets/generate  {org_id, secret_id, from_ref, version} → 201 a new version whose generatable
+ *                                       fields are fresh random values (rotation; the value never leaves this webhook)
  *   POST /internal/v1/secrets/destroy   {org_id, secret_id, value_refs} → the refs destroyed
  */
 type SignedRequest = Request & { json?: Record<string, any> };
@@ -117,6 +119,30 @@ export function secretRoutes(r: Router, { requireSignature, signedJson }: Helper
     } catch (e) {
       if (pgCode(e) === '23505') return fail(req, res, 409, 'SECRET_VERSION_EXISTS', `Version ${version} of this secret is already stored`);
       valueFailure(req, res, e, `copy ${row.valueRef}`);
+    }
+  });
+
+  r.post('/internal/v1/secrets/generate', requireSignature, async (req: SignedRequest, res) => {
+    const b = req.json ?? {};
+    const version = posInt(b.version);
+    const row = await getValue(id(b.org_id), id(b.secret_id), id(b.from_ref));
+    if (!row || !version) return fail(req, res, 404, 'SECRET_VALUE_NOT_FOUND', 'No such value for this secret');
+    const type = await typeOf(row.typeKey);
+    if (!type) return fail(req, res, 400, 'SECRET_TYPE_UNKNOWN', 'The secret type of this value is no longer in the verified catalog');
+    const generated = generatableSecretFields(type);
+    if (!generated.length) return fail(req, res, 409, 'SECRET_NOT_GENERATABLE', `${type.name} values cannot be generated; store the new value instead`);
+    try {
+      // Fields that are not generated (an application ID, a key ID) carry over from the current version.
+      const next: Record<string, unknown> = { ...(await readValue(row)) };
+      for (const f of generated) next[f] = generateSecretFieldValue(type.fields[f]!.generate!);
+      const { value, issues } = validateSecretPayload(type, next);
+      if (Object.keys(issues).length) return fail(req, res, 409, 'SECRET_INVALID', `The current value no longer matches the ${type.name} type; store a new value instead`, { fields: issues });
+      const v = await storeValue(row.orgId, row.secretId, version, type.key, value);
+      console.log(`[vault] generated secret value ${v.valueRef} secret=${row.secretId} v${version} fields=${generated.length} (from ${row.valueRef})`);
+      signedJson(req, res, 201, { ...storedView(type, value, v), generated_fields: generated });
+    } catch (e) {
+      if (pgCode(e) === '23505') return fail(req, res, 409, 'SECRET_VERSION_EXISTS', `Version ${version} of this secret is already stored`);
+      valueFailure(req, res, e, `generate from ${row.valueRef}`);
     }
   });
 

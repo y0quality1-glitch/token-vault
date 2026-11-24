@@ -4,6 +4,7 @@ import { correlationId as newCorrelationId, newId } from '../../lib/ids';
 import { sanitize } from '../../lib/sanitize';
 import { auditRepo } from '../../store/repos';
 import type { AdminContext } from '../../types/express';
+import { enqueueSecretNotifications } from '../notificationService/notificationService.service';
 
 export interface Actor {
   type: AuditActorType;
@@ -35,7 +36,7 @@ export async function recordEvent(
   },
   ex: Executor = db,
 ): Promise<AuditEvent> {
-  return auditRepo.insertAuditEvent(
+  const event = await auditRepo.insertAuditEvent(
     {
       id: newId('evt'),
       organizationId: input.orgId,
@@ -54,6 +55,9 @@ export async function recordEvent(
     },
     ex,
   );
+  // Secret lifecycle events also go to the organization's notification channels, in the same transaction.
+  if (event.targetType === 'secret') await enqueueSecretNotifications(event, ex);
+  return event;
 }
 
 export async function recordAccessRequest(req: AccessRequest, ex: Executor = db): Promise<AccessRequest> {

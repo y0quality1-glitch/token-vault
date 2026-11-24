@@ -139,4 +139,14 @@ export const config = {
   decisionSigningKey: process.env.DECISION_SIGNING_KEY ?? '',
   /** How long a decision token (and the decision it carries) is valid. */
   decisionTokenTtlS: Math.min(Math.max(Number(process.env.DECISION_TOKEN_TTL_S ?? 120) || 120, 10), 900),
+  /**
+   * Secret lifecycle job (expiry, scheduled rotation, version retention): how often it runs
+   * (default 60 s; 0 = never). Several instances are safe: one runs at a time (database lock).
+   */
+  secretJobIntervalMs: Number(process.env.SECRET_JOB_INTERVAL_MS ?? 60_000),
+  /** How often pending notifications are sent (default 5 s; 0 = never). */
+  notificationIntervalMs: Number(process.env.NOTIFICATION_INTERVAL_MS ?? 5_000),
+  /** Email notifications: SMTP server (smtp:// or smtps:// URL, credentials in the URL) and sender. Unset: email channels fail visibly. */
+  smtpUrl: process.env.SMTP_URL ?? '',
+  smtpFrom: process.env.SMTP_FROM ?? 'Token Vault <no-reply@token-vault.local>',
 };

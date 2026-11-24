@@ -90,7 +90,54 @@ async function seedMissingCatalogEntries() {
       console.log(`[cms] added ${missingTypes.length} predefined secret type(s)`);
     }
     await addGithubCatalogListing(m);
+    await upgradePredefinedSecretTypes(m);
   });
+}
+
+/**
+ * Predefined secret types that gained something in a later bundled version (version 2: fields
+ * the webhook can generate). A type still exactly as the system published it, at an older
+ * version and with nothing open, is upgraded to the bundled version (audited). A type anyone
+ * has edited is left alone: its editors decide.
+ */
+async function upgradePredefinedSecretTypes(m: EntityManager) {
+  const t = new Date().toISOString();
+  let upgraded = 0;
+  for (const input of BUILTIN_SECRET_TYPES) {
+    const app = await m.findOneBy(ApplicationEntity, { key: input.key, kind: 'secret_type' });
+    const row = app && !app.archived_at ? await m.findOneBy(VersionEntity, { application_id: app.id, status: 'PUBLISHED' }) : null;
+    if (!app || !row || row.version >= input.version || row.reviewed_by !== 'system' || row.authors.length) continue;
+    if (await m.existsBy(VersionEntity, { application_id: app.id, status: In(['DRAFT', 'IN_REVIEW']) })) continue;
+    const def = validateSecretTypeDefinition(input);
+    const signed = signDefinition(def, 'secret_type');
+    await m.update(VersionEntity, { id: row.id }, { status: 'SUPERSEDED', updated_at: t });
+    await m.insert(VersionEntity, {
+      id: newId('ver'),
+      application_id: app.id,
+      version: def.version,
+      status: 'PUBLISHED',
+      definition: def,
+      digest: signed.digest,
+      signature: signed.signature,
+      key_id: signed.keyId,
+      created_by: 'System',
+      created_at: t,
+      updated_at: t,
+      authors: [],
+      reviewed_by: 'system',
+      reviewed_at: t,
+      review_note: `Upgrade of a predefined secret type to version ${def.version}`,
+      published_at: t,
+      host_change_acknowledged: true,
+    });
+    await audit(m, SYSTEM_ACTOR, 'version.published', { key: def.key, version: def.version }, { kind: 'secret_type', digest: signed.digest, keyId: signed.keyId, supersedes: row.version, upgrade: 'predefined secret type' });
+    upgraded++;
+  }
+  if (upgraded) {
+    await registerActiveKey(m);
+    await signPublishedWithActiveKey(m);
+    console.log(`[cms] upgraded ${upgraded} predefined secret type(s) to their bundled version`);
+  }
 }
 
 /**

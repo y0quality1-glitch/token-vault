@@ -1,6 +1,6 @@
 import { Transform } from 'class-transformer';
 import { ArrayMaxSize, IsArray, IsBoolean, IsIn, IsInt, IsObject, IsOptional, IsString, Matches, Max, MaxLength, Min } from 'class-validator';
-import { SECRET_NAME, SECRET_SCOPE_SLUG, SECRET_TAG, type Environment } from '@token-vault/shared';
+import { SECRET_NAME, SECRET_ROTATION_STRATEGIES, SECRET_SCOPE_SLUG, SECRET_TAG, type Environment, type SecretRotationStrategy } from '@token-vault/shared';
 import { Check, trim } from '../common/validators';
 
 /**
@@ -56,6 +56,18 @@ class SecretMetadataFields {
   @Min(1, { message: 'At least 1 day' })
   @Max(3650, { message: 'At most 3650 days' })
   rotationIntervalDays?: number | null;
+
+  /** manual (people store the new value when asked) or generated (the webhook creates it). */
+  @IsOptional()
+  @IsIn(SECRET_ROTATION_STRATEGIES, { message: 'Choose manual or generated' })
+  rotationStrategy?: SecretRotationStrategy;
+
+  /** Hours the replaced version stays usable after a rotation (0 to 720). */
+  @IsOptional()
+  @IsInt({ message: 'Grace period must be a number of hours' })
+  @Min(0, { message: 'At least 0 hours' })
+  @Max(720, { message: 'At most 720 hours (30 days)' })
+  rotationGraceHours?: number;
 }
 
 /**

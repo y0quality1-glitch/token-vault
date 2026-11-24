@@ -45,6 +45,17 @@ function isUniqueViolation(e: unknown): boolean {
 
 const hint = (token: string) => `${token.slice(0, 5)}…${token.slice(-4)}`;
 
+/**
+ * Posts a notification (secret lifecycle events) with the organization's Slack connection, to
+ * `channelId` or the connection's own channel. Throws when Slack is not connected or refuses.
+ */
+export async function postNotification(organizationId: string, channelId: string | null, text: string): Promise<void> {
+  const s = await settingsFor(organizationId);
+  if (!s) throw new SlackApiError('not_connected', 'Slack is not connected for this organization');
+  if (!s.enabled) throw new SlackApiError('disabled', 'The Slack connection is turned off');
+  await slack.postMessage(open(s.botTokenSealed, s.organizationId), { channel: channelId || s.channelId, text, blocks: [{ type: 'section', text: { type: 'mrkdwn', text } }] });
+}
+
 export async function getSettingsView(organizationId: string): Promise<SlackSettingsView> {
   const s = await settingsFor(organizationId);
   const updatedByName = s ? ((await orgRepo.userNames([s.updatedBy])).get(s.updatedBy) ?? null) : null;

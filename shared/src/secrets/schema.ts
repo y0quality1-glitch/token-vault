@@ -65,7 +65,19 @@ const baseField = {
   order: z.number().int().min(0).max(1000).default(0),
 };
 
-const payloadField = z.object({ ...baseField, sensitive: z.boolean().default(true) }).strict();
+/** Encodings a generated value can have (see generateSecretFieldValue). */
+export const SECRET_GENERATE_ENCODINGS = ['hex', 'base64', 'base64url', 'alphanumeric'] as const;
+export type SecretGenerateEncoding = (typeof SECRET_GENERATE_ENCODINGS)[number];
+
+/**
+ * A value the customer webhook can create itself (random bytes in an encoding), so a secret of
+ * this type can rotate without anyone typing the new value ("generated" rotation, spec 4.9.11).
+ * Only for values the organization issues itself: a provider-issued key cannot be invented.
+ */
+const generateSpec = z.object({ encoding: z.enum(SECRET_GENERATE_ENCODINGS), bytes: z.number().int().min(16).max(256) }).strict();
+export type SecretGenerateSpec = z.infer<typeof generateSpec>;
+
+const payloadField = z.object({ ...baseField, sensitive: z.boolean().default(true), generate: generateSpec.optional() }).strict();
 const metadataField = z.object(baseField).strict();
 
 export const secretTypeDefinitionSchema = z
@@ -137,13 +149,24 @@ function checkFieldSpec(where: string, f: z.infer<typeof metadataField>, issues:
   if ((f.min !== undefined || f.max !== undefined) && !['number', 'integer', 'port'].includes(f.kind)) issues.push(`${where}: only numeric fields have min and max`);
 }
 
+/** A generated value must be a sensitive text field and satisfy the field's own rules. */
+function checkGenerateSpec(where: string, f: SecretFieldDefinition, issues: string[]) {
+  if (f.kind !== 'text') return void issues.push(`${where}: only text fields can be generated`);
+  if (!f.sensitive) return void issues.push(`${where}: only sensitive fields can be generated`);
+  const issue = checkValue(f, generateSecretFieldValue(f.generate!)).issue;
+  if (issue) issues.push(`${where}: a generated value would not be valid (${issue})`);
+}
+
 /** Parses and semantically checks a secret type. Throws SecretTypeError with every problem found. */
 export function validateSecretTypeDefinition(raw: unknown): SecretTypeDefinition {
   const parsed = secretTypeDefinitionSchema.safeParse(raw);
   if (!parsed.success) throw new SecretTypeError(parsed.error.issues.map((i) => `${i.path.join('.') || 'definition'}: ${i.message}`));
   const def = parsed.data;
   const issues: string[] = [];
-  for (const [name, f] of Object.entries(def.fields)) checkFieldSpec(`fields.${name}`, f, issues);
+  for (const [name, f] of Object.entries(def.fields)) {
+    checkFieldSpec(`fields.${name}`, f, issues);
+    if (f.generate) checkGenerateSpec(`fields.${name}.generate`, f, issues);
+  }
   for (const [name, f] of Object.entries(def.metadata)) {
     checkFieldSpec(`metadata.${name}`, f, issues);
     if (def.fields[name]) issues.push(`metadata.${name}: also a payload field (use one or the other)`);
@@ -295,4 +318,53 @@ export function orderedFields<F extends { order: number }>(fields: Record<string
 /** Fields a retrieval may ask for: unknown names are refused rather than silently ignored. */
 export function unknownSecretFields(type: SecretTypeDefinition, requested: readonly string[]): string[] {
   return requested.filter((f) => !type.fields[f]);
+}
+
+// ── generated values (rotation strategy "generated") ───────────────
+
+const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+const ALNUM = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+
+function randomBytes(n: number): Uint8Array {
+  const out = new Uint8Array(n);
+  globalThis.crypto.getRandomValues(out);
+  return out;
+}
+
+function base64(bytes: Uint8Array, url: boolean): string {
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 3) {
+    const n = (bytes[i]! << 16) | ((bytes[i + 1] ?? 0) << 8) | (bytes[i + 2] ?? 0);
+    s += B64[(n >> 18) & 63]! + B64[(n >> 12) & 63]! + (i + 1 < bytes.length ? B64[(n >> 6) & 63]! : '=') + (i + 2 < bytes.length ? B64[n & 63]! : '=');
+  }
+  return url ? s.replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_') : s;
+}
+
+/**
+ * A fresh random value for a field with `generate` (cryptographically secure: Web Crypto, in
+ * Node and browsers). `bytes` is the entropy; alphanumeric values are long enough to carry it.
+ */
+export function generateSecretFieldValue(spec: SecretGenerateSpec): string {
+  switch (spec.encoding) {
+    case 'hex':
+      return Array.from(randomBytes(spec.bytes), (b) => b.toString(16).padStart(2, '0')).join('');
+    case 'base64':
+      return base64(randomBytes(spec.bytes), false);
+    case 'base64url':
+      return base64(randomBytes(spec.bytes), true);
+    case 'alphanumeric': {
+      const length = Math.ceil((spec.bytes * 8) / Math.log2(ALNUM.length));
+      let out = '';
+      // Rejection sampling: 248 = 4 * 62, so every character is equally likely.
+      while (out.length < length) for (const b of randomBytes(length)) if (b < 248 && out.length < length) out += ALNUM[b % 62];
+      return out;
+    }
+  }
+}
+
+/** The fields of a type the webhook can generate (empty: the type cannot rotate by itself). */
+export function generatableSecretFields(type: SecretTypeDefinition): string[] {
+  return orderedFields(type.fields)
+    .filter(([, f]) => !!f.generate)
+    .map(([name]) => name);
 }
