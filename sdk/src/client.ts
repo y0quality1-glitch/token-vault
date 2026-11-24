@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { AgentAccessRequestBody, AgentApprovalBody, AgentCapabilitiesBody, AgentDelegationBody, AgentOperationsBody, ExecuteRequestBody, ExecuteResponseBody } from '@token-vault/shared';
+import type { AgentAccessRequestBody, AgentApprovalBody, AgentCapabilitiesBody, AgentDelegationBody, AgentOperationsBody, AgentSecretInfo, AgentSecretRetrieval, ExecuteRequestBody, ExecuteResponseBody } from '@token-vault/shared';
 import { AccessDeniedError, ApprovalRequiredError, AuthenticationError, ExecutionFailedError, ResponseWithheldError, TokenVaultError } from './errors';
 
 export type GitHubOperation = 'github.repositories.read' | 'github.contents.read' | 'github.issues.list' | 'github.issues.create';
@@ -150,6 +150,32 @@ const KEY_PATTERN = /^tv(ak|dt)_[0-9a-f]{12}_[A-Za-z0-9_-]{20,64}$/;
  * The API key is held in a private field, so it does not appear in logs,
  * JSON.stringify(client) or util.inspect(client).
  */
+/** Which secret to read: its id (sec_…), its name, or a name within a scope. */
+export type SecretRef = string | { secretId?: string; name?: string; project?: string; workspace?: string; environment?: 'development' | 'staging' | 'production' };
+
+export interface GetSecretOptions {
+  /** Only these fields (default: every field the grant allows). */
+  fields?: string[];
+  /** A specific version (default: the active one); needs a grant allowing any version. */
+  version?: number;
+  /** Recorded in the audit log with the retrieval. */
+  reason?: string;
+  /** For a grant that requires approval: the approval this retrieval was granted under. */
+  approvalId?: string;
+  /**
+   * For a grant that requires approval: wait for a human to decide, then retrieve. Without it,
+   * a held retrieval throws ApprovalRequiredError with the approval id.
+   */
+  waitForApproval?: boolean | { timeoutMs?: number; intervalMs?: number; signal?: AbortSignal };
+  /**
+   * Keep the value in this client's memory for this long and answer repeated calls from it
+   * (never written anywhere). Default: no caching.
+   */
+  cacheTtlMs?: number;
+}
+
+export type SecretValue = AgentSecretRetrieval;
+
 export class TokenVault {
   readonly baseUrl: string;
   readonly #apiKey: string;
@@ -424,6 +450,69 @@ export class TokenVault {
     if (res.status === 404) throw new TokenVaultError(`Request ${requestId} not found`, { code: 'NOT_FOUND', httpStatus: 404 });
     if (!res.ok) throw new TokenVaultError(`Request lookup failed (HTTP ${res.status})`, { code: 'UNEXPECTED_RESPONSE', httpStatus: res.status });
     return body as Record<string, unknown>;
+  }
+
+  /**
+   * Secrets (Secret Management): read values this agent has a secret access grant for. Values
+   * come from the customer webhook through Token Vault; every retrieval is checked and audited.
+   *
+   *   const db = await tv.secrets.get('orders-db', { fields: ['password'] });
+   *   db.payload.password
+   */
+  readonly secrets = {
+    /** The secrets this agent may read (metadata, allowed fields, whether approval is needed). */
+    list: async (): Promise<AgentSecretInfo[]> => {
+      const res = await this.#request('POST', '/agent/v1/secret/getall', {});
+      return (await this.#secretResult<{ items: AgentSecretInfo[] }>(res, 'Listing secrets failed')).items;
+    },
+    /** Retrieves a secret's value. Throws AccessDeniedError without a grant, ApprovalRequiredError when held. */
+    get: async (ref: SecretRef, options: GetSecretOptions = {}): Promise<SecretValue> => {
+      const target = typeof ref === 'string' ? (ref.startsWith('sec_') ? { secret_id: ref } : { name: ref }) : { secret_id: ref.secretId, name: ref.name, project: ref.project, workspace: ref.workspace, environment: ref.environment };
+      const cacheKey = options.cacheTtlMs ? JSON.stringify([target, options.fields ?? null, options.version ?? null]) : null;
+      if (cacheKey) {
+        const hit = this.#secretCache.get(cacheKey);
+        if (hit && hit.until > Date.now()) return hit.value;
+        this.#secretCache.delete(cacheKey);
+      }
+      const body = { ...target, ...(options.fields ? { fields: options.fields } : {}), ...(options.version ? { version: options.version } : {}), ...(options.reason ? { reason: options.reason } : {}) };
+      const wait = options.waitForApproval ? (options.waitForApproval === true ? {} : options.waitForApproval) : null;
+      const deadline = Date.now() + (wait?.timeoutMs ?? 10 * 60_000);
+      const interval = Math.max(1000, wait?.intervalMs ?? 5000);
+      let approvalId = options.approvalId;
+      for (;;) {
+        const res = await this.#request('POST', '/agent/v1/secret/retrieve', { ...body, ...(approvalId ? { approval_id: approvalId } : {}) });
+        if (res.status === 202) {
+          const held = (await this.#envelope(res))?.details as { approval_id: string; expires_at: string; reason: string };
+          approvalId = held.approval_id;
+          if (!wait) throw new ApprovalRequiredError(held.reason, { code: 'APPROVAL_REQUIRED', httpStatus: 202, approvalId: held.approval_id, approvalExpiresAt: held.expires_at });
+          if (Date.now() + interval > deadline) throw new TokenVaultError(`Approval ${approvalId} is still pending`, { code: 'APPROVAL_WAIT_TIMEOUT' });
+          await new Promise<void>((resolve, reject) => {
+            const t = setTimeout(resolve, interval);
+            wait.signal?.addEventListener('abort', () => (clearTimeout(t), reject(wait.signal!.reason)), { once: true });
+          });
+          continue;
+        }
+        const value = await this.#secretResult<SecretValue>(res, 'Retrieving the secret failed');
+        if (cacheKey) this.#secretCache.set(cacheKey, { value, until: Date.now() + options.cacheTtlMs! });
+        return value;
+      }
+    },
+    /** Forgets every value cached by get({ cacheTtlMs }). */
+    clearCache: (): void => {
+      this.#secretCache.clear();
+    },
+  };
+
+  readonly #secretCache = new Map<string, { value: SecretValue; until: number }>();
+
+  async #secretResult<T>(res: Response, what: string): Promise<T> {
+    const env = await this.#envelope(res);
+    if (res.ok && env?.details) return env.details as T;
+    const code = env?.code ?? 'UNEXPECTED_RESPONSE';
+    const message = env?.error || `${what} (HTTP ${res.status})`;
+    if (res.status === 401) throw new AuthenticationError(message, { code, httpStatus: 401 });
+    if (res.status === 403) throw new AccessDeniedError(message, { code, httpStatus: 403 });
+    throw new TokenVaultError(message, { code, httpStatus: res.status });
   }
 
   async #request(method: 'GET' | 'POST', path: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<Response> {

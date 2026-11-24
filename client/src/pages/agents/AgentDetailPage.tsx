@@ -19,6 +19,7 @@ import { PageHeader, Tabs } from '@/components/ui/navigation';
 import { Mono, SecretOnceDialog } from '@/components/ui/secret';
 import { useToast } from '@/components/ui/toast';
 import { AGENT_TYPE_LABELS, formatDateTime, relativeTime } from '@/lib/utils';
+import { AgentSecretsCard } from '@/pages/secrets/secretAccess';
 import { AgentFields, agentToForm, formToBody, validateAgentForm, type AgentFormValues } from './AgentForm';
 
 type AgentDetail = Agent & { grants: Grant[]; activity: AccessRequest[]; maskedKey: string };
@@ -180,6 +181,7 @@ export function AgentDetailPage() {
               </div>
             </CardBody>
           </Card>
+          <AgentSecretsCard agentId={a.id} className="xl:col-span-3" />
         </div>
       )}
 

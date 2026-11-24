@@ -36,6 +36,8 @@ import { OAuthCallbackPage } from '@/pages/integrations/OAuthCallbackPage';
 import { SecretsPage } from '@/pages/secrets/SecretsPage';
 import { CreateSecretPage } from '@/pages/secrets/CreateSecretPage';
 import { SecretDetailPage } from '@/pages/secrets/SecretDetailPage';
+import { SecretAccessPage } from '@/pages/secrets/SecretAccessPage';
+import { SecretApprovalsPage } from '@/pages/secrets/SecretApprovalsPage';
 
 export function App() {
   return (
@@ -72,6 +74,22 @@ export function App() {
           element={
             <RequirePermission permission={PERMISSIONS.SECRET_CREATE}>
               <CreateSecretPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="secrets/access"
+          element={
+            <RequirePermission permission={PERMISSIONS.SECRET_READ_METADATA}>
+              <SecretAccessPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="secrets/approvals"
+          element={
+            <RequirePermission permission={PERMISSIONS.SECRET_READ_METADATA}>
+              <SecretApprovalsPage />
             </RequirePermission>
           }
         />

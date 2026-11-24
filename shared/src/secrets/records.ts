@@ -91,3 +91,94 @@ export interface SecretRetrieval {
   expiresAt: string | null;
   retrievedAt: string;
 }
+
+// ── application access (spec 4.9.9, 4.9.15) ─────────────────────────
+
+/**
+ * Which secrets a grant covers: one secret (`secretId`), or every secret matching a selector
+ * (all given keys must match). Selector grants follow secrets created later.
+ */
+export interface SecretSelector {
+  project?: string;
+  workspace?: string;
+  environment?: Environment;
+  typeKey?: string;
+  tag?: string;
+}
+
+export type SecretGrantStatus = 'ACTIVE' | 'REVOKED' | 'EXPIRED';
+export type SecretGrantVersions = 'ACTIVE' | 'ANY';
+
+export interface SecretAccessGrantView {
+  id: string;
+  organizationId: string;
+  agent: { id: string; name: string };
+  secret: { id: string; name: string } | null;
+  selector: SecretSelector | null;
+  description: string;
+  /** Fields the agent may read; empty: every field. */
+  fields: string[];
+  versions: SecretGrantVersions;
+  allowedCidrs: string[];
+  requireApproval: boolean;
+  validFrom: string;
+  expiresAt: string | null;
+  status: SecretGrantStatus;
+  createdBy: { id: string; name: string };
+  createdAt: string;
+  revokedAt: string | null;
+  revokedBy: string | null;
+  revocationReason: string | null;
+  lastUsedAt: string | null;
+  useCount: number;
+}
+
+export type SecretApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'USED' | 'EXPIRED';
+
+/** A held retrieval (grant with requireApproval): valid once, for this exact request, for 15 minutes. */
+export interface SecretRetrievalApprovalView {
+  id: string;
+  grantId: string;
+  agent: { id: string; name: string };
+  secret: { id: string; name: string };
+  version: number | null;
+  fields: string[];
+  reason: string;
+  status: SecretApprovalStatus;
+  requestedAt: string;
+  expiresAt: string;
+  decidedBy: { id: string; name: string } | null;
+  decidedAt: string | null;
+  note: string;
+  usedAt: string | null;
+}
+
+/** Agent API: a secret this agent may read (metadata, never a value). */
+export interface AgentSecretInfo {
+  secret_id: string;
+  name: string;
+  type_key: string;
+  project: string;
+  workspace: string;
+  environment: Environment;
+  status: SecretStatus;
+  active_version: number | null;
+  expires_at: string | null;
+  grant_id: string;
+  fields: string[];
+  versions: SecretGrantVersions;
+  requires_approval: boolean;
+}
+
+/** Agent API: POST /agent/v1/secret/retrieve answer. */
+export interface AgentSecretRetrieval {
+  secret_id: string;
+  name: string;
+  type_key: string;
+  version: number;
+  payload: SecretPayload;
+  expires_at: string | null;
+  retrieved_at: string;
+  grant_id: string;
+  request_id: string;
+}

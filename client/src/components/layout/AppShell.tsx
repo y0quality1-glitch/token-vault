@@ -30,7 +30,7 @@ interface NavGroup {
   label: string;
   icon: React.ComponentType<{ className?: string }>;
   to?: string;
-  children?: { label: string; to: string; badge?: 'pendingRequests' | 'reviewsDue' | 'pendingApprovals' }[];
+  children?: { label: string; to: string; badge?: 'pendingRequests' | 'reviewsDue' | 'pendingApprovals' | 'pendingSecretApprovals'; end?: boolean }[];
   badge?: string;
   /** Shown only to roles with this permission. */
   permission?: Permission;
@@ -47,7 +47,16 @@ const NAV: NavGroup[] = [
       { label: 'Credential Status', to: '/integrations/credentials' },
     ],
   },
-  { label: 'Secrets', icon: LockKeyhole, to: '/secrets', permission: PERMISSIONS.SECRET_READ_METADATA },
+  {
+    label: 'Secrets',
+    icon: LockKeyhole,
+    permission: PERMISSIONS.SECRET_READ_METADATA,
+    children: [
+      { label: 'All Secrets', to: '/secrets', end: true },
+      { label: 'Access Grants', to: '/secrets/access' },
+      { label: 'Retrieval Approvals', to: '/secrets/approvals', badge: 'pendingSecretApprovals' },
+    ],
+  },
   { label: 'Agents', icon: Bot, children: [{ label: 'Agent Registry', to: '/agents' }] },
   {
     label: 'Access Management',
@@ -92,32 +101,39 @@ const NAV: NavGroup[] = [
 ];
 
 /** Sidebar counts (pending access requests and approvals, grants due for review), refreshed on navigation and every 30 s. */
-function useNavCounts(pathname: string): { pendingRequests: number; reviewsDue: number; pendingApprovals: number } {
-  const [counts, setCounts] = useState({ pendingRequests: 0, reviewsDue: 0, pendingApprovals: 0 });
+function useNavCounts(pathname: string, secrets: boolean): { pendingRequests: number; reviewsDue: number; pendingApprovals: number; pendingSecretApprovals: number } {
+  const [counts, setCounts] = useState({ pendingRequests: 0, reviewsDue: 0, pendingApprovals: 0, pendingSecretApprovals: 0 });
   useEffect(() => {
     let cancelled = false;
-    const load = () =>
+    const load = () => {
       Promise.all([
         api.post<{ pending: number }>('/grantRequest/getall', { status: 'PENDING' }),
         api.post<{ due: number }>('/accessReview/getdata', { summary: '1' }),
         api.post<{ pending: number }>('/approval/getall', { status: 'PENDING' }),
       ])
-        .then(([r, v, a]) => !cancelled && setCounts({ pendingRequests: r.pending, reviewsDue: v.due, pendingApprovals: a.pending }))
+        .then(([r, v, a]) => !cancelled && setCounts((c) => ({ ...c, pendingRequests: r.pending, reviewsDue: v.due, pendingApprovals: a.pending })))
         .catch(() => undefined);
+      // Separate request: members without secret access must not lose the other counts.
+      if (secrets)
+        api
+          .post<{ items: unknown[] }>('/secretAccess/getApprovals', { status: 'PENDING' })
+          .then((r) => !cancelled && setCounts((c) => ({ ...c, pendingSecretApprovals: r.items.length })))
+          .catch(() => undefined);
+    };
     void load();
     const t = setInterval(load, 30_000);
     return () => {
       cancelled = true;
       clearInterval(t);
     };
-  }, [pathname]);
+  }, [pathname, secrets]);
   return counts;
 }
 
 function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const { pathname } = useLocation();
-  const navCounts = useNavCounts(pathname);
   const { can } = useAuth();
+  const navCounts = useNavCounts(pathname, can(PERMISSIONS.SECRET_READ_METADATA));
   return (
     <div className="flex h-full flex-col bg-slate-950 text-slate-300">
       <div className="flex h-14 items-center gap-2.5 border-b border-white/10 px-5">
@@ -154,7 +170,7 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                   <NavLink
                     key={c.to}
                     to={c.to}
-                    end={c.to === '/agents' ? false : undefined}
+                    end={c.end ?? (c.to === '/agents' ? false : undefined)}
                     onClick={onNavigate}
                     className={({ isActive }) => cn('block rounded-md py-1.5 pl-9 pr-2.5 text-sm transition', isActive ? 'bg-white/10 font-medium text-white' : 'text-slate-400 hover:bg-white/5 hover:text-white')}
                   >

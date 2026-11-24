@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowDown, ArrowUp, LockKeyhole, Plus, Search } from 'lucide-react';
+import { ArrowDown, ArrowUp, Filter, LockKeyhole, Plus, Search } from 'lucide-react';
 import { PERMISSIONS, SECRET_CATEGORIES, SECRET_STATUSES, type SecretView } from '@token-vault/shared';
 import { usePost } from '@/hooks/useApi';
+import { useToast } from '@/components/ui/toast';
 import { useAuth } from '@/context/AuthContext';
 import { compact } from '@/lib/api';
 import { ENV_LABELS, formatDateTime, relativeTime } from '@/lib/utils';
@@ -13,6 +14,7 @@ import { Input, Select } from '@/components/ui/form';
 import { EmptyState, ErrorState } from '@/components/ui/feedback';
 import { DataTable } from '@/components/ui/table';
 import { PageHeader } from '@/components/ui/navigation';
+import { GrantDialog, SecretsSectionTabs, selectorText } from './secretAccess';
 import { SECRET_STATUS_META, SecretStatusBadge, categoryLabel, useSecretTypes } from './secretUi';
 
 const PAGE_SIZE = 25;
@@ -34,6 +36,8 @@ export function SecretsPage() {
   const [sortBy, setSortBy] = useState<SortBy>('updatedAt');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [page, setPage] = useState(1);
+  const [granting, setGranting] = useState(false);
+  const toast = useToast();
 
   useEffect(() => {
     const t = setTimeout(() => setDebounced(search.trim()), 300);
@@ -65,13 +69,32 @@ export function SecretsPage() {
         description="Credentials and other secrets stored on your customer webhook. Token Vault keeps their metadata; values are only shown by an audited reveal."
         breadcrumbs={[{ label: 'Secrets' }]}
         actions={
-          can(PERMISSIONS.SECRET_CREATE) && (
-            <Button onClick={() => navigate('/secrets/new')} data-testid="secret-new">
-              <Plus className="h-4 w-4" /> New secret
-            </Button>
-          )
+          <>
+            {can(PERMISSIONS.SECRET_MANAGE_ACCESS) && (
+              <Button variant="outline" onClick={() => setGranting(true)} data-testid="secret-grant-by-selector">
+                <Filter className="h-4 w-4" /> Grant by selector
+              </Button>
+            )}
+            {can(PERMISSIONS.SECRET_CREATE) && (
+              <Button onClick={() => navigate('/secrets/new')} data-testid="secret-new">
+                <Plus className="h-4 w-4" /> New secret
+              </Button>
+            )}
+          </>
         }
       />
+      <SecretsSectionTabs current="/secrets" />
+      {granting && (
+        <GrantDialog
+          types={types.data?.types ?? []}
+          onClose={() => setGranting(false)}
+          onDone={(g) => {
+            setGranting(false);
+            toast.success('Access granted', `${g.agent.name} can now read secrets matching ${selectorText(g.selector)}.`);
+            navigate('/secrets/access');
+          }}
+        />
+      )}
       <div className="mb-4 flex flex-wrap gap-2" data-testid="secret-filters">
         <div className="relative w-full sm:w-64">
           <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
